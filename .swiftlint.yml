@@ -95,12 +95,12 @@ custom_rules:
   no_observable_object_protocol:
     name: "No ObservableObject inheritance"
     regex: "^\\s*(?:final\\s+)?class\\b[^\\n]*:\\s*[^\\n]*ObservableObject\\b"
-    message: "Use @Observable instead of ObservableObject."
+    message: "Keep UI observation types out of AgentStudioGit."
     severity: error
   no_published_wrapper:
     name: "No @Published"
     regex: "^\\s*@Published\\b"
-    message: "Replace @Published with @Observable-backed properties."
+    message: "Keep UI observation types out of AgentStudioGit."
     severity: error
   no_anycancellable:
     name: "No AnyCancellable"
@@ -110,14 +110,19 @@ custom_rules:
   no_observed_property_wrappers:
     name: "No legacy property wrappers for object views"
     regex: "^\\s*@(ObservedObject|StateObject|EnvironmentObject)\\b"
-    message: "Prefer @Bindable for @Observable-annotated dependencies."
+    message: "Keep UI property wrappers out of AgentStudioGit."
+    severity: error
+  no_main_actor:
+    name: "No @MainActor in Git data plane"
+    regex: "@MainActor\\b"
+    message: "Git work belongs in repository actors and non-main executors, not on MainActor."
     severity: error
   # Swift 6 concurrency anti-patterns (LUNA-325 migration scope)
   no_dispatch_queue_main:
     name: "No DispatchQueue.main.async/sync"
     regex: "DispatchQueue\\.main\\.(async|sync)"
-    message: "Use Task/@MainActor instead of DispatchQueue.main. LUNA-325 migrates remaining instances to typed event streams."
-    severity: warning
+    message: "Git work must not hop to DispatchQueue.main."
+    severity: error
   no_task_detached:
     name: "No Task.detached"
     regex: "Task\\.detached"
