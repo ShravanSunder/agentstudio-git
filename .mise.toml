@@ -1,0 +1,32 @@
+[env]
+PROJECT_ROOT = "{{config_root}}"
+
+[tasks.format]
+description = "Format Swift sources with swift-format"
+run = """
+swift-format format --in-place --recursive Sources/ Tests/
+echo "Formatted all Swift sources"
+"""
+
+[tasks.lint]
+description = "Lint Swift sources with swift-format and SwiftLint"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "--- swift-format lint ---"
+swift-format lint --recursive Sources/ Tests/ 2>&1 && echo "swift-format: OK" || { echo "swift-format: FAIL"; exit 1; }
+echo "--- swiftlint ---"
+swiftlint lint --strict 2>&1 && echo "swiftlint: OK" || { echo "swiftlint: FAIL"; exit 1; }
+"""
+
+[tasks.build]
+description = "Build the Swift package"
+run = "swift build"
+
+[tasks.test]
+description = "Run Swift Testing suites"
+run = "swift test"
+
+[tasks.check]
+description = "Run build, lint, and tests"
+depends = ["build", "lint", "test"]
