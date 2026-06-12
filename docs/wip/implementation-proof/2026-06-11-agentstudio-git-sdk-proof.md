@@ -16,11 +16,11 @@ Tasks 0-9: spec/tooling, public contracts, repository identity/runtime lanes, li
 
 ## Coverage
 
-- Plan line count: 952; read in chunks 1-240, 241-480, 481-720, 721-952.
-- Spec line count: 262; read 1-262.
+- Plan line count: 994; read in chunks 1-250, 251-500, 501-750, 751-994.
+- Spec line count: 266; read 1-266.
 - Goal contract line count: 156; read 1-156.
 - Plan review line count: 125; read 1-125.
-- AgentStudio consumption guide line count: 92; read 1-92.
+- AgentStudio consumption guide line count: 122; read 1-122.
 - Existing package scaffold read before edits.
 
 ## Red Evidence
@@ -2233,6 +2233,154 @@ Known external proof limits after this checkpoint:
 
 - The full live HTTPS credential-helper and SSH-agent smoke is executable, but still requires disposable writeable remotes configured through `AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL` and `AGENTSTUDIO_GIT_LIVE_SSH_REMOTE_URL`.
 - A real hosted `CLibGit2Local.xcframework.zip` URL is still required before claiming actual remote artifact download proof.
+
+## Hosted libgit2 Artifact Gate
+
+Date: 2026-06-12
+
+Status: verifier implemented; execution requires a real hosted public HTTPS artifact URL and matching SwiftPM checksum.
+
+Files changed:
+
+- `.mise.toml`
+- `Tests/AgentStudioGitTests/Packaging/LibGit2PackagingScriptTests.swift`
+- `scripts/verify-hosted-libgit2-artifact.sh`
+- `docs/specs/2026-06-10-agentstudio-git-libgit2-data-plane.md`
+- `docs/superpowers/plans/2026-06-10-agentstudio-git-libgit2-data-plane.md`
+- `docs/guides/agentstudio-consumption.md`
+- `docs/wip/implementation-proof/2026-06-11-agentstudio-git-sdk-proof.md`
+
+Red evidence:
+
+```bash
+bash scripts/run-swift-test-filter.sh LibGit2PackagingScriptTests
+```
+
+Exit code: 1
+
+Result before implementation:
+
+- `hosted artifact verifier proves release binary target download` failed because `scripts/verify-hosted-libgit2-artifact.sh` did not exist.
+
+Implementation notes:
+
+- `scripts/verify-hosted-libgit2-artifact.sh` requires `AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL` and `AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM`.
+- The verifier requires an HTTPS URL and a 64-character SwiftPM checksum before invoking SwiftPM.
+- The verifier builds and runs a scratch SwiftPM consumer that imports `AgentStudioGitLocal` and calls `LibGit2ImportCanary.version()` while the package manifest is forced into URL-binary-target mode.
+- The verifier does not run repo-local `mise` tasks inside the scratch consumer.
+
+Green proof:
+
+```bash
+bash scripts/run-swift-test-filter.sh LibGit2PackagingScriptTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 7 tests in 1 suite passed`.
+
+```bash
+mise run format
+```
+
+Exit code: 0
+
+Result:
+
+- formatted Swift sources.
+
+```bash
+mise run lint
+```
+
+Exit code: 0
+
+Result:
+
+- `swift-format lint` passed.
+- SwiftLint found 0 violations in 54 files.
+
+```bash
+swift test
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 80 tests in 18 suites passed`.
+- live auth test reported skipped because `AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_SMOKE` was not set.
+
+```bash
+mise run check
+```
+
+Exit code: 0
+
+Result:
+
+- rebuilt and verified `Artifacts/CLibGit2Local.xcframework`.
+- `swift build` completed.
+- `mise run lint` passed with 0 SwiftLint violations in 54 files.
+- `mise run test` passed with `Test run with 80 tests in 18 suites passed`.
+
+```bash
+bash scripts/verify-package-consumer.sh
+```
+
+Exit code: 0
+
+Result:
+
+- scratch umbrella consumer built and ran with `umbrella 1.9.4`.
+- scratch leaf consumer built and ran with `leaf 1.9.4`.
+
+```bash
+bash scripts/verify-hosted-libgit2-artifact.sh
+```
+
+Exit code: 2
+
+Result:
+
+- verifier reported `AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL is required for the hosted libgit2 artifact gate`.
+
+```bash
+mise run verify-hosted-libgit2-artifact
+```
+
+Exit code: 2
+
+Result:
+
+- task wrapper reached the hosted-artifact verifier and failed on missing `AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL`, as intended for an unconfigured external gate.
+
+```bash
+AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL=http://artifact.invalid/CLibGit2Local.xcframework.zip AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef bash scripts/verify-hosted-libgit2-artifact.sh
+```
+
+Exit code: 2
+
+Result:
+
+- verifier rejected non-HTTPS artifact URLs before running SwiftPM: `AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL must be an https URL for SwiftPM binary target download proof.`
+
+```bash
+git diff --check
+```
+
+Exit code: 0
+
+Result:
+
+- no whitespace errors.
+
+Known external proof limits after this checkpoint:
+
+- A real hosted `CLibGit2Local.xcframework.zip` URL and matching SwiftPM checksum are still required before claiming actual hosted artifact download proof.
+- The full live HTTPS credential-helper and SSH-agent smoke still requires disposable writeable remotes configured through `AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL` and `AGENTSTUDIO_GIT_LIVE_SSH_REMOTE_URL`.
 
 ## Live Remote/Auth Review Fixes
 

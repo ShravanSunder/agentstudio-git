@@ -56,6 +56,10 @@ run = "bash scripts/verify-agentstudio-compatibility.sh"
 description = "Verify live HTTPS credential-helper and SSH-agent remote/auth behavior"
 run = "bash scripts/verify-live-remote-auth.sh"
 
+[tasks.verify-hosted-libgit2-artifact]
+description = "Verify hosted HTTPS/checksum libgit2 artifact consumption"
+run = "bash scripts/verify-hosted-libgit2-artifact.sh"
+
 [tasks.check]
 description = "Run build, lint, and tests"
 run = """

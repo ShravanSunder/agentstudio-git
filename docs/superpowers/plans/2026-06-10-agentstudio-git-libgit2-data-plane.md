@@ -859,6 +859,7 @@ git commit -m "feat: add system Git remote auth seam"
 - Modify: `Package.swift`
 - Create: `docs/guides/agentstudio-consumption.md`
 - Create: `docs/wip/implementation-proof/2026-06-11-agentstudio-git-sdk-proof.md`
+- Create: `scripts/verify-hosted-libgit2-artifact.sh`
 
 - [x] **Step 1: Prove CI gates**
 
@@ -917,6 +918,14 @@ bash scripts/verify-package-consumer.sh
 AGENTSTUDIO_GIT_AGENTSTUDIO_PATH=/path/to/agent-studio bash scripts/verify-agentstudio-compatibility.sh
 ```
 
+- [ ] **External gate: Run hosted libgit2 artifact download proof**
+
+Pending until `CLibGit2Local.xcframework.zip` is published to a real public HTTPS URL:
+
+```bash
+AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL=<https-hosted-CLibGit2Local.xcframework.zip> AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM=<swiftpm-checksum> bash scripts/verify-hosted-libgit2-artifact.sh
+```
+
 - [ ] **External gate: Run final HTTPS/SSH live auth validation**
 
 Pending until disposable writeable remotes are configured:
@@ -956,6 +965,7 @@ mise run check
 swift test --sanitize address
 swift test --sanitize thread
 bash scripts/verify-package-consumer.sh
+AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL=<https-hosted-CLibGit2Local.xcframework.zip> AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM=<swiftpm-checksum> bash scripts/verify-hosted-libgit2-artifact.sh
 AGENTSTUDIO_GIT_AGENTSTUDIO_PATH=/path/to/agent-studio bash scripts/verify-agentstudio-compatibility.sh
 ```
 

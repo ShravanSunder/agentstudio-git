@@ -103,6 +103,26 @@ struct LibGit2PackagingScriptTests {
         #expect(miseContents.contains("bash scripts/verify-live-remote-auth.sh"))
     }
 
+    @Test("hosted artifact verifier proves release binary target download")
+    func hostedArtifactVerifierProvesReleaseBinaryTargetDownload() throws {
+        let scriptContents = try readFile("scripts/verify-hosted-libgit2-artifact.sh")
+        let miseContents = try readFile(".mise.toml")
+        let guideContents = try readFile("docs/guides/agentstudio-consumption.md")
+
+        #expect(scriptContents.contains("AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL"))
+        #expect(scriptContents.contains("AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM"))
+        #expect(scriptContents.contains("must be an https URL"))
+        #expect(scriptContents.contains(".package(path:"))
+        #expect(scriptContents.contains("import AgentStudioGitLocal"))
+        #expect(scriptContents.contains("LibGit2ImportCanary.version()"))
+        #expect(scriptContents.contains("swift run --package-path"))
+        #expect(!scriptContents.contains("mise run"))
+        #expect(miseContents.contains("[tasks.verify-hosted-libgit2-artifact]"))
+        #expect(miseContents.contains("bash scripts/verify-hosted-libgit2-artifact.sh"))
+        #expect(guideContents.contains("verify-hosted-libgit2-artifact.sh"))
+        #expect(guideContents.contains("AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL"))
+    }
+
     @Test("third-party notice records pinned libgit2 tag and license")
     func thirdPartyNoticeRecordsPinnedLibGit2TagAndLicense() throws {
         let contents = try readFile("ThirdPartyNotices/libgit2.md")
