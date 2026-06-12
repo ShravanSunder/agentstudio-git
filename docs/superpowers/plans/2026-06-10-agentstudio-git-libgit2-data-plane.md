@@ -386,7 +386,7 @@ git commit -m "feat: define AgentStudio Git SDK contracts"
 - Create: `Tests/AgentStudioGitTests/Runtime/GitRepositoryIdentityTests.swift`
 - Create: `Tests/AgentStudioGitTests/Runtime/GitRepositoryWriterRegistryTests.swift`
 
-- [ ] **Step 1: Write identity tests**
+- [x] **Step 1: Write identity tests**
 
 Cover:
 - relative path and absolute path equivalence
@@ -396,15 +396,15 @@ Cover:
 - linked worktree private index path resolves correctly
 - synthetic `main` display name does not collide with a real linked worktree named `main`
 
-- [ ] **Step 2: Implement identity resolver**
+- [x] **Step 2: Implement identity resolver**
 
 Use libgit2 repository APIs where available, especially common git dir and repository path APIs, rather than relying only on `URL.resolvingSymlinksInPath()`.
 
-- [ ] **Step 3: Implement writer registry**
+- [x] **Step 3: Implement writer registry**
 
 The registry is process-wide and actor-backed, keyed by canonical common git directory. It serializes this process only; Git/libgit2 still create real lock files for write operations.
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 ```bash
 scripts/run-swift-test-filter.sh GitRepositoryIdentityTests
@@ -412,7 +412,7 @@ scripts/run-swift-test-filter.sh GitRepositoryWriterRegistryTests
 swift test
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add Sources/AgentStudioGitLocal Tests/AgentStudioGitTests/Runtime

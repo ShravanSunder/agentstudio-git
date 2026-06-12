@@ -158,6 +158,92 @@ Result:
 
 - no whitespace errors
 
+## Task 2: Repository Identity And Writer Registry
+
+Status: implemented and verified.
+
+Files changed:
+
+- `Sources/AgentStudioGitLocal/Runtime/GitPathCanonicalizer.swift`
+- `Sources/AgentStudioGitLocal/Runtime/GitRepositoryIdentityResolver.swift`
+- `Sources/AgentStudioGitLocal/Runtime/GitRepositoryWriterRegistry.swift`
+- `Tests/AgentStudioGitTests/Runtime/GitRepositoryIdentityTests.swift`
+- `Tests/AgentStudioGitTests/Runtime/GitRepositoryWriterRegistryTests.swift`
+- `docs/superpowers/plans/2026-06-10-agentstudio-git-libgit2-data-plane.md`
+- `docs/wip/implementation-proof/2026-06-11-agentstudio-git-sdk-proof.md`
+
+Red evidence:
+
+```bash
+scripts/run-swift-test-filter.sh GitRepositoryIdentityTests
+```
+
+Exit code: 1
+
+Result before implementation:
+
+- compile failed because `GitRepositoryIdentityResolver` and `GitRepositoryWriterRegistry` did not exist
+
+Green proof:
+
+```bash
+scripts/run-swift-test-filter.sh GitRepositoryIdentityTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 3 tests in 1 suite passed`
+- covered absolute/symlink identity equivalence
+- covered main and linked worktrees sharing the common git directory
+- covered a linked worktree whose display name collides with the synthetic main display name
+
+```bash
+scripts/run-swift-test-filter.sh GitRepositoryWriterRegistryTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 2 tests in 1 suite passed`
+- covered lane reuse for the same repository identity
+- covered separate lanes for different repository identities
+
+```bash
+swift test
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 12 tests in 6 suites passed`
+
+```bash
+mise run format
+```
+
+Exit code: 0
+
+Result:
+
+- formatted Swift sources
+
+```bash
+mise run check
+```
+
+Exit code: 0
+
+Result:
+
+- `swift build` passed
+- `swift-format lint` passed
+- `swiftlint` found 0 violations
+- `swift test` passed with 12 tests in 6 suites
+
 ## Task 1: Public Contract Cutover
 
 Status: implemented and verified.
