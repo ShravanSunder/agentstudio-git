@@ -146,7 +146,7 @@ struct GitProcessRunnerTests {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let childPID = try #require(pid_t(pidText))
         defer { kill(childPID, SIGKILL) }
-        #expect(!processIsRunning(childPID))
+        #expect(waitUntilProcessExits(childPID, timeoutSeconds: 2))
     }
 }
 
@@ -177,6 +177,7 @@ struct FakeGitExecutable {
           (trap '' TERM HUP; sleep "${AGENTSTUDIO_FAKE_GIT_CHILD_SLEEP_SECONDS:-30}") &
           child_pid="$!"
           printf '%s\\n' "$child_pid" > "$AGENTSTUDIO_FAKE_GIT_CHILD_PID"
+          trap 'exit 143' TERM HUP
           wait "$child_pid"
         fi
         if [ -n "${AGENTSTUDIO_FAKE_GIT_SLEEP_SECONDS:-}" ]; then
@@ -252,4 +253,15 @@ struct FakeGitExecutable {
 
 private func processIsRunning(_ pid: pid_t) -> Bool {
     kill(pid, 0) == 0 || errno == EPERM
+}
+
+private func waitUntilProcessExits(_ pid: pid_t, timeoutSeconds: Double) -> Bool {
+    let deadline = Date().addingTimeInterval(timeoutSeconds)
+    while Date() < deadline {
+        if !processIsRunning(pid) {
+            return true
+        }
+        usleep(20_000)
+    }
+    return !processIsRunning(pid)
 }

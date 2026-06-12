@@ -2145,6 +2145,16 @@ Implementation notes:
 Green proof:
 
 ```bash
+mise run format
+```
+
+Exit code: 0
+
+Result:
+
+- formatted Swift sources.
+
+```bash
 bash scripts/run-swift-test-filter.sh LibGit2PackagingScriptTests
 ```
 
@@ -2231,6 +2241,161 @@ Result:
 
 Known external proof limits after this checkpoint:
 
+- The full live HTTPS credential-helper and SSH-agent smoke is executable, but still requires disposable writeable remotes configured through `AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL` and `AGENTSTUDIO_GIT_LIVE_SSH_REMOTE_URL`.
+- A real hosted `CLibGit2Local.xcframework.zip` URL is still required before claiming actual remote artifact download proof.
+
+## Sanitizer CI Runner Fix
+
+Date: 2026-06-12
+
+Status: local sanitizer runner and process-timeout fixes implemented; remote CI rerun pending after push.
+
+Remote CI failure:
+
+```bash
+gh run watch 27417839524 --repo ShravanSunder/agentstudio-git --exit-status
+```
+
+Exit code: 1
+
+Result:
+
+- GitHub `Check` run `27417839524` passed checkout, tooling install, and `Run package checks`.
+- `Run AddressSanitizer tests` started raw `swift test --sanitize address`, built the test bundle, then emitted no Swift Testing output after `Build complete!`.
+- The run was canceled to stop burning CI time; later gates did not execute.
+
+Local red evidence:
+
+```bash
+bash scripts/run-swift-test-filter.sh LibGit2PackagingScriptTests
+```
+
+Exit code: 1
+
+Result before the sanitizer runner fix:
+
+- `check workflow runs sanitizer and consumer gates` failed because the ASan/TSan workflow steps were not bounded with `timeout-minutes: 12`.
+- `test task runs named Swift Testing suites through no-zero filter` failed because sanitizer tasks still used raw `swift test --sanitize ...`.
+- `filter script preserves Swift test options` failed because `scripts/run-swift-test-filter.sh` accepted only one filter argument and could not forward sanitizer options.
+
+```bash
+mise run test-asan
+```
+
+Exit code: 1
+
+Result before `--disable-xctest`:
+
+- the filtered ASan runner failed before tests with `swiftpm-xctest-helper`.
+- dyld reported `libclang_rt.asan_osx_dynamic.dylib could not be loaded` and `Sanitizer load violates platform policy`.
+
+```bash
+mise run test-tsan
+```
+
+Exit code: 1
+
+Result before the process-timeout fix:
+
+- the full TSan gate reached `GitProcessRunnerTests`.
+- `runner terminates descendant processes after timeout` failed because the child PID was still running after the runner returned from a timeout.
+
+Fixes:
+
+- `.mise.toml` now routes `mise run test-asan` through `bash scripts/run-swift-test-suites.sh --sanitize address --disable-xctest`.
+- `.mise.toml` now routes `mise run test-tsan` through `bash scripts/run-swift-test-suites.sh --sanitize thread --disable-xctest`.
+- `scripts/run-swift-test-suites.sh` forwards Swift test options to every named suite filter.
+- `scripts/run-swift-test-filter.sh` accepts `[swift test options...] <filter>` and preserves the zero-test guard.
+- `.github/workflows/check.yml` gives ASan and TSan steps `timeout-minutes: 12`.
+- `GitProcessRunner` sends `SIGKILL` to the private process group after the TERM grace path on timeout, so descendants that ignore TERM cannot survive only because the parent exited.
+- `GitProcessRunnerTests` now makes the descendant-timeout fixture deterministic: the parent exits on TERM, the child ignores TERM/HUP, and the test waits for the exact child-PID exit state with a bounded timeout.
+
+Green proof:
+
+```bash
+bash scripts/run-swift-test-filter.sh LibGit2PackagingScriptTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 14 tests in 1 suite passed`.
+
+```bash
+bash scripts/run-swift-test-filter.sh --sanitize thread --disable-xctest GitProcessRunnerTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 6 tests in 1 suite passed`.
+- covered the TSan regression path for timeout process-group cleanup.
+
+```bash
+mise run check
+```
+
+Exit code: 0
+
+Result:
+
+- rebuilt and verified `Artifacts/CLibGit2Local.xcframework`.
+- `swift build` completed.
+- `mise run lint` passed with 0 SwiftLint violations in 54 files.
+- `mise run test` ran all 18 named Swift Testing suite filters.
+- total tests covered by the filtered suite runner: 87.
+- live auth test reported skipped because `AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_SMOKE` was not set.
+
+```bash
+mise run test-asan
+```
+
+Exit code: 0
+
+Result:
+
+- ran all 18 named Swift Testing suite filters with AddressSanitizer and `--disable-xctest`.
+- total tests covered by the filtered suite runner: 87.
+- live auth test reported skipped because `AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_SMOKE` was not set.
+
+```bash
+mise run test-tsan
+```
+
+Exit code: 0
+
+Result:
+
+- ran all 18 named Swift Testing suite filters with ThreadSanitizer and `--disable-xctest`.
+- total tests covered by the filtered suite runner: 87.
+- live auth test reported skipped because `AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_SMOKE` was not set.
+
+```bash
+bash scripts/verify-package-consumer.sh
+```
+
+Exit code: 0
+
+Result:
+
+- scratch umbrella consumer built and ran with `umbrella 1.9.4`.
+- scratch leaf consumer built and ran with `leaf 1.9.4`.
+
+```bash
+git diff --check
+```
+
+Exit code: 0
+
+Result:
+
+- no whitespace errors.
+
+Known external proof limits after this checkpoint:
+
+- The `Check` workflow must be rerun after the sanitizer runner and process-timeout fixes are pushed.
 - The full live HTTPS credential-helper and SSH-agent smoke is executable, but still requires disposable writeable remotes configured through `AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL` and `AGENTSTUDIO_GIT_LIVE_SSH_REMOTE_URL`.
 - A real hosted `CLibGit2Local.xcframework.zip` URL is still required before claiming actual remote artifact download proof.
 

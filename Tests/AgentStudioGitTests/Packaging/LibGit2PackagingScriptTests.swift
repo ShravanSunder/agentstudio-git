@@ -72,6 +72,14 @@ struct LibGit2PackagingScriptTests {
         #expect(contents.contains("brew install mise cmake swift-format swiftlint"))
         #expect(contents.contains("timeout-minutes: 12"))
         #expect(contents.contains("mise run check"))
+        #expect(
+            contents.contains(
+                "      - name: Run AddressSanitizer tests\n        timeout-minutes: 12\n        run: mise run test-asan"
+            ))
+        #expect(
+            contents.contains(
+                "      - name: Run ThreadSanitizer tests\n        timeout-minutes: 12\n        run: mise run test-tsan"
+            ))
         #expect(contents.contains("mise run test-asan"))
         #expect(contents.contains("mise run test-tsan"))
         #expect(contents.contains("bash scripts/verify-package-consumer.sh"))
@@ -85,7 +93,10 @@ struct LibGit2PackagingScriptTests {
         let scriptContents = try readFile("scripts/run-swift-test-suites.sh")
 
         #expect(miseContents.contains("bash scripts/run-swift-test-suites.sh"))
+        #expect(miseContents.contains("bash scripts/run-swift-test-suites.sh --sanitize address --disable-xctest"))
+        #expect(miseContents.contains("bash scripts/run-swift-test-suites.sh --sanitize thread --disable-xctest"))
         #expect(scriptContents.contains("scripts/run-swift-test-filter.sh"))
+        #expect(scriptContents.contains("\"${swift_test_arguments[@]}\""))
         #expect(scriptContents.contains("GitProcessRunnerTests"))
         #expect(scriptContents.contains("SystemGitRemoteClientTests"))
         #expect(scriptContents.contains("BridgeReviewSourceCompatibilityTests"))
@@ -106,6 +117,31 @@ struct LibGit2PackagingScriptTests {
 
         #expect(result.exitCode == 1)
         #expect(result.combinedOutput.contains("filtered Swift test gate executed zero tests: MissingTests"))
+    }
+
+    @Test("filter script preserves Swift test options")
+    func filterScriptPreservesSwiftTestOptions() throws {
+        let fakeSwift = try FakeSwiftTestExecutable(
+            stdout: "Test run with 1 test in 1 suite passed after 0.001 seconds.\n",
+            exitCode: 0
+        )
+
+        let result = try runSwiftTestFilter(
+            arguments: ["--sanitize", "address", "--disable-xctest", "GitProcessRunnerTests"],
+            fakeSwift: fakeSwift,
+            path: "\(fakeSwift.binDirectory.path):/usr/bin:/bin"
+        )
+
+        #expect(result.exitCode == 0)
+        #expect(
+            try fakeSwift.recordedArguments() == [
+                "test",
+                "--sanitize",
+                "address",
+                "--disable-xctest",
+                "--filter",
+                "GitProcessRunnerTests",
+            ])
     }
 
     @Test("Git process runner suite is serialized and bounded")
@@ -285,15 +321,24 @@ struct LibGit2PackagingScriptTests {
         fakeSwift: FakeSwiftTestExecutable,
         path: String
     ) throws -> CapturedScriptResult {
+        try runSwiftTestFilter(arguments: [filter], fakeSwift: fakeSwift, path: path)
+    }
+
+    private func runSwiftTestFilter(
+        arguments: [String],
+        fakeSwift: FakeSwiftTestExecutable,
+        path: String
+    ) throws -> CapturedScriptResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["bash", "scripts/run-swift-test-filter.sh", filter]
+        process.arguments = ["bash", "scripts/run-swift-test-filter.sh"] + arguments
         process.currentDirectoryURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
 
         var processEnvironment = ProcessInfo.processInfo.environment
         processEnvironment["PATH"] = path
         processEnvironment["AGENTSTUDIO_FAKE_SWIFT_OUTPUT"] = fakeSwift.output
         processEnvironment["AGENTSTUDIO_FAKE_SWIFT_EXIT"] = "\(fakeSwift.exitCode)"
+        processEnvironment["AGENTSTUDIO_FAKE_SWIFT_ARGUMENTS"] = fakeSwift.argumentsURL.path
         process.environment = processEnvironment
 
         let output = Pipe()
@@ -353,23 +398,39 @@ private struct FakeSwiftTestExecutable {
     private let fileManager = FileManager.default
     let root: URL
     let binDirectory: URL
+    let argumentsURL: URL
     let output: String
     let exitCode: Int32
 
     init(stdout: String, exitCode: Int32) throws {
         root = fileManager.temporaryDirectory.appending(path: "agentstudio-git-fake-swift-test-\(UUID().uuidString)")
         binDirectory = root.appending(path: "bin")
+        argumentsURL = root.appending(path: "arguments.txt")
         output = stdout
         self.exitCode = exitCode
         try fileManager.createDirectory(at: binDirectory, withIntermediateDirectories: true)
         let executableURL = binDirectory.appending(path: "swift")
         try """
         #!/bin/sh
+        {
+          for argument in "$@"; do
+            printf '%s\\n' "$argument"
+          done
+        } > "$AGENTSTUDIO_FAKE_SWIFT_ARGUMENTS"
         printf '%s' "$AGENTSTUDIO_FAKE_SWIFT_OUTPUT"
         exit "$AGENTSTUDIO_FAKE_SWIFT_EXIT"
         """
         .write(to: executableURL, atomically: true, encoding: .utf8)
         try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executableURL.path)
+    }
+
+    func recordedArguments() throws -> [String] {
+        guard fileManager.fileExists(atPath: argumentsURL.path) else {
+            return []
+        }
+        return try String(contentsOf: argumentsURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
     }
 }
 

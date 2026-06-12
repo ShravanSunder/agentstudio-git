@@ -23,9 +23,11 @@ jobs:
         run: mise run check
 
       - name: Run AddressSanitizer tests
+        timeout-minutes: 12
         run: mise run test-asan
 
       - name: Run ThreadSanitizer tests
+        timeout-minutes: 12
         run: mise run test-tsan
 
       - name: Verify downstream package consumer

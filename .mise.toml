@@ -29,11 +29,11 @@ run = "bash scripts/run-swift-test-suites.sh"
 
 [tasks.test-asan]
 description = "Run Swift wrapper tests with AddressSanitizer"
-run = "swift test --sanitize address"
+run = "bash scripts/run-swift-test-suites.sh --sanitize address --disable-xctest"
 
 [tasks.test-tsan]
 description = "Run Swift wrapper tests with ThreadSanitizer"
-run = "swift test --sanitize thread"
+run = "bash scripts/run-swift-test-suites.sh --sanitize thread --disable-xctest"
 
 [tasks.build-libgit2]
 description = "Build the pinned local-only libgit2 XCFramework"

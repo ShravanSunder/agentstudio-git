@@ -187,11 +187,11 @@ In `.mise.toml`:
 ```toml
 [tasks.test-asan]
 description = "Run Swift wrapper tests with AddressSanitizer"
-run = "swift test --sanitize address"
+run = "bash scripts/run-swift-test-suites.sh --sanitize address --disable-xctest"
 
 [tasks.test-tsan]
 description = "Run Swift wrapper tests with ThreadSanitizer"
-run = "swift test --sanitize thread"
+run = "bash scripts/run-swift-test-suites.sh --sanitize thread --disable-xctest"
 ```
 
 Do not claim these instrument a prebuilt libgit2 artifact unless Task 3 adds sanitizer-specific libgit2 builds.
@@ -526,8 +526,8 @@ scripts/run-swift-test-filter.sh LibGit2RuntimeTests
 scripts/run-swift-test-filter.sh LibGit2ErrorCaptureTests
 scripts/run-swift-test-filter.sh LibGit2RepositorySessionTests
 swift test
-swift test --sanitize address
-swift test --sanitize thread
+mise run test-asan
+mise run test-tsan
 ```
 
 Expected: Swift wrapper sanitizer lanes pass, or exact toolchain limitation is recorded. Do not claim native libgit2 instrumentation unless Task 3 built a sanitizer-specific artifact.
@@ -873,12 +873,12 @@ CI must run:
 
 ```bash
 mise run check
-swift test --sanitize address
-swift test --sanitize thread
+mise run test-asan
+mise run test-tsan
 bash scripts/verify-package-consumer.sh
 ```
 
-GitHub push run `27414489143` failed in `mise run check` before package build because `check.yml` used `macos-15`, whose default Xcode/Swift tools were 16.4 / 6.1. The package declares Swift tools 6.2, so CI and the artifact workflow now use `macos-26`, which GitHub marks generally available and whose current image carries Xcode 26.x / Swift 6.2-capable tooling. Follow-up run `27414830257` reached lint and failed because `swift-format` was not installed on the runner. Follow-up run `27415217419` built, linted, and compiled the test bundle, then hung inside monolithic `swift test` with no suite-level output until it was canceled after 21m46s. Follow-up run `27416665585` proved the suite-filter runner worked: the package-check step timed out after 12 minutes and the completed log identified `GitProcessRunnerTests` as the last started suite; the same log exposed that the filter helper depended on `rg`, which was not installed on GitHub's runner. CI now installs `mise`, `cmake`, `swift-format`, and `swiftlint`; the package-check step has a 12-minute timeout; `mise run test` runs each named Swift Testing suite through `scripts/run-swift-test-filter.sh`; the filter helper falls back to `grep` when `rg` is unavailable; and the POSIX process-runner test suite is serialized with shorter fake-process default timeouts. Packaging tests pin the workflow runner labels, tooling install, timeout, suite-filter test task, filter fallback, and process-runner test bounds.
+GitHub push run `27414489143` failed in `mise run check` before package build because `check.yml` used `macos-15`, whose default Xcode/Swift tools were 16.4 / 6.1. The package declares Swift tools 6.2, so CI and the artifact workflow now use `macos-26`, which GitHub marks generally available and whose current image carries Xcode 26.x / Swift 6.2-capable tooling. Follow-up run `27414830257` reached lint and failed because `swift-format` was not installed on the runner. Follow-up run `27415217419` built, linted, and compiled the test bundle, then hung inside monolithic `swift test` with no suite-level output until it was canceled after 21m46s. Follow-up run `27416665585` proved the suite-filter runner worked: the package-check step timed out after 12 minutes and the completed log identified `GitProcessRunnerTests` as the last started suite; the same log exposed that the filter helper depended on `rg`, which was not installed on GitHub's runner. Follow-up run `27417839524` passed the remote package-check step, then hung after raw ASan build output with no Swift Testing output. CI now installs `mise`, `cmake`, `swift-format`, and `swiftlint`; the package-check and sanitizer steps have 12-minute timeouts; `mise run test`, `mise run test-asan`, and `mise run test-tsan` run each named Swift Testing suite through `scripts/run-swift-test-filter.sh`; sanitizer tasks pass `--disable-xctest` to avoid the SwiftPM XCTest helper sanitizer load policy path; the filter helper falls back to `grep` when `rg` is unavailable; and the POSIX process-runner test suite is serialized with shorter fake-process default timeouts plus a regression test for descendants that ignore TERM. Packaging tests pin the workflow runner labels, tooling install, timeout, suite-filter test tasks, sanitizer option forwarding, filter fallback, and process-runner test bounds.
 
 - [x] **Step 2: Publish or simulate the distributable artifact path**
 
@@ -920,8 +920,8 @@ Create proof doc with:
 mise run format
 mise run lint
 mise run check
-swift test --sanitize address
-swift test --sanitize thread
+mise run test-asan
+mise run test-tsan
 bash scripts/verify-package-consumer.sh
 AGENTSTUDIO_GIT_AGENTSTUDIO_PATH=/path/to/agent-studio bash scripts/verify-agentstudio-compatibility.sh
 ```
@@ -972,8 +972,8 @@ swift test
 mise run format
 mise run lint
 mise run check
-swift test --sanitize address
-swift test --sanitize thread
+mise run test-asan
+mise run test-tsan
 bash scripts/verify-package-consumer.sh
 AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL=<https-hosted-CLibGit2Local.xcframework.zip> AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM=<swiftpm-checksum> bash scripts/verify-hosted-libgit2-artifact.sh
 AGENTSTUDIO_GIT_AGENTSTUDIO_PATH=/path/to/agent-studio bash scripts/verify-agentstudio-compatibility.sh

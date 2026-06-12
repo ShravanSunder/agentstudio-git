@@ -110,8 +110,9 @@ public struct GitProcessRunner: Sendable {
         }
 
         killpg(process.processGroupID, SIGTERM)
-        if waitGroup.wait(timeout: .now() + 1) == .timedOut {
-            killpg(process.processGroupID, SIGKILL)
+        let terminatedAfterGrace = waitGroup.wait(timeout: .now() + 1) != .timedOut
+        killpg(process.processGroupID, SIGKILL)
+        if !terminatedAfterGrace {
             waitGroup.wait()
         }
         return ProcessWaitResult(timedOut: true, exitCode: waitState.exitCode)

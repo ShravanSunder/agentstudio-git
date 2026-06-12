@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+swift_test_arguments=("$@")
 
 suites=(
   GitWireEnumSnapshotTests
@@ -26,5 +27,5 @@ suites=(
 
 for suite in "${suites[@]}"; do
   echo "--- swift test filter: ${suite} ---"
-  bash "$ROOT_DIR/scripts/run-swift-test-filter.sh" "$suite"
+  bash "$ROOT_DIR/scripts/run-swift-test-filter.sh" "${swift_test_arguments[@]}" "$suite"
 done
