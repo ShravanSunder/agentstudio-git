@@ -59,6 +59,8 @@ struct GitPublicContractTests {
             oldContentHash: "old-blob",
             newContentHash: "new-blob",
             contentHashAlgorithm: "git-blob-sha1",
+            oldMode: 0o100644,
+            newMode: 0o100755,
             additions: 7,
             deletions: 2,
             isBinary: false,
@@ -71,6 +73,8 @@ struct GitPublicContractTests {
         #expect(decodedFile == diffFile)
         #expect(decodedFile.fileId == "sha1:old/path.swift->new/path.swift")
         #expect(decodedFile.contentHashAlgorithm == "git-blob-sha1")
+        #expect(decodedFile.oldMode == 0o100644)
+        #expect(decodedFile.newMode == 0o100755)
     }
 
     @Test("URL request fields encode as strings")
@@ -86,5 +90,48 @@ struct GitPublicContractTests {
 
         #expect(dictionary["remoteURL"] as? String == "ssh://git@example.com/org/repo.git")
         #expect(dictionary["destinationPath"] as? String == "file:///tmp/checkout")
+    }
+
+    @Test("content requests target review endpoints and carry optional size limits")
+    func contentRequestsTargetReviewEndpointsAndCarryOptionalSizeLimits() throws {
+        let request = GitContentRequest(
+            repositoryPath: URL(fileURLWithPath: "/tmp/repo"),
+            target: .workingTree,
+            path: "Sources/App.swift",
+            maxSizeBytes: 1024
+        )
+
+        let data = try JSONEncoder().encode(request)
+        let decodedRequest = try JSONDecoder().decode(GitContentRequest.self, from: data)
+        let jsonObject = try JSONSerialization.jsonObject(with: data)
+        let dictionary = try #require(jsonObject as? [String: Any])
+        let target = try #require(dictionary["target"] as? [String: Any])
+
+        #expect(decodedRequest == request)
+        #expect(target["kind"] as? String == "workingTree")
+        #expect(target.keys.contains("identifier") == false)
+        #expect(dictionary["maxSizeBytes"] as? Int == 1024)
+        #expect(decodedRequest.target == .workingTree)
+        #expect(decodedRequest.maxSizeBytes == 1024)
+    }
+
+    @Test("oversized content errors carry path and limit facts")
+    func oversizedContentErrorsCarryPathAndLimitFacts() throws {
+        let error = GitDataPlaneError.contentTooLarge(
+            path: "large.bin",
+            sizeBytes: 2048,
+            maxSizeBytes: 1024
+        )
+
+        let data = try JSONEncoder().encode(error)
+        let decodedError = try JSONDecoder().decode(GitDataPlaneError.self, from: data)
+        let jsonObject = try JSONSerialization.jsonObject(with: data)
+        let dictionary = try #require(jsonObject as? [String: Any])
+        let payload = try #require(dictionary["contentTooLarge"] as? [String: Any])
+
+        #expect(decodedError == error)
+        #expect(payload["path"] as? String == "large.bin")
+        #expect(payload["sizeBytes"] as? Int == 2048)
+        #expect(payload["maxSizeBytes"] as? Int == 1024)
     }
 }

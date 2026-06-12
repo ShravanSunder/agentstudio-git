@@ -12,11 +12,11 @@ Plan:
 
 ## Current Scope
 
-Tasks 0-6: spec/tooling, public contracts, repository identity/runtime lanes, libgit2 artifact packaging, libgit2 runtime/session wrappers, safe worktree operations, and app enrichment status/branch/origin facts.
+Tasks 0-7: spec/tooling, public contracts, repository identity/runtime lanes, libgit2 artifact packaging, libgit2 runtime/session wrappers, safe worktree operations, app enrichment status/branch/origin facts, and Bridge review data operations.
 
 ## Coverage
 
-- Plan line count: 940; read in chunks 1-240, 241-480, 481-720, 721-940.
+- Plan line count: 949; read in chunks 1-240, 241-480, 481-720, 721-949.
 - Spec line count: 262; read 1-262.
 - Goal contract line count: 156; read 1-156.
 - Plan review line count: 125; read 1-125.
@@ -474,6 +474,206 @@ Result:
 - `swift-format lint` passed
 - `swiftlint` found 0 violations in 39 files
 - `swift test` passed with 49 tests in 13 suites
+
+## Task 7: Bridge Review Data Operations
+
+Status: implemented and verified.
+
+Files changed:
+
+- `Sources/AgentStudioGitContracts/GitDataPlaneError.swift`
+- `Sources/AgentStudioGitContracts/GitDiffContentContracts.swift`
+- `Sources/AgentStudioGitLocal/LibGit2AgentStudioGitLocalClient.swift`
+- `Sources/AgentStudioGitLocal/Review/LibGit2RevisionResolver.swift`
+- `Sources/AgentStudioGitLocal/Review/LibGit2TreeReader.swift`
+- `Sources/AgentStudioGitLocal/Review/LibGit2DiffReader.swift`
+- `Sources/AgentStudioGitLocal/Review/LibGit2ContentReader.swift`
+- `Sources/AgentStudioGitLocal/Review/LibGit2ReviewSupport.swift`
+- `Tests/AgentStudioGitTests/Contracts/GitPublicContractTests.swift`
+- `Tests/AgentStudioGitTests/Integration/GitReviewDataIntegrationTests.swift`
+- `Tests/AgentStudioGitTests/ConsumerCompatibility/BridgeReviewSourceCompatibilityTests.swift`
+- `docs/superpowers/plans/2026-06-10-agentstudio-git-libgit2-data-plane.md`
+- `docs/wip/implementation-proof/2026-06-11-agentstudio-git-sdk-proof.md`
+
+Research basis:
+
+- DeepWiki was asked for libgit2 revision, tree, blob, content, and diff API semantics before implementation.
+- Vendored `Artifacts/CLibGit2Local.xcframework/macos-arm64_x86_64/Headers/git2/blob.h`, `commit.h`, `object.h`, `tree.h`, `diff.h`, `patch.h`, `index.h`, and `oid.h` verified exact acquisition/free, lookup, diff, patch line-stat, index, and OID APIs.
+- Live AgentStudio Bridge seam read from `/Users/shravansunder/Documents/dev/project-dev/agent-studio.bridge-start/Sources/AgentStudio/Features/Bridge/Runtime/ReviewFoundation/BridgeReviewSourceProvider.swift`, `BridgeGitReviewSourceProvider.swift`, the matching ReviewFoundation model files, `BridgeContentStore.swift`, and `BridgeReviewPackageBuilder.swift`.
+
+Red evidence:
+
+```bash
+scripts/run-swift-test-filter.sh GitReviewDataIntegrationTests
+```
+
+Exit code: 1
+
+Result before implementation:
+
+- `Test run with 3 tests in 1 suite failed`
+- revision/tree failed with `unsupported(message: "revision resolution is implemented in Task 7")`
+- diff failed with `unsupported(message: "diff is implemented in Task 7")`
+- content failed with `unsupported(message: "content is implemented in Task 7")`
+
+Coverage tightening evidence:
+
+```bash
+scripts/run-swift-test-filter.sh GitReviewDataIntegrationTests
+```
+
+Exit code: 1
+
+Result after adding CRLF/filter and large-file metadata assertions:
+
+- compile failed because `try` was placed directly inside a `#expect` comparison
+- fixed by binding the filtered Git hash before the assertion; no implementation change was needed
+
+Review-fix red evidence:
+
+```bash
+scripts/run-swift-test-filter.sh GitPublicContractTests && scripts/run-swift-test-filter.sh GitReviewDataIntegrationTests && scripts/run-swift-test-filter.sh BridgeReviewSourceCompatibilityTests
+```
+
+Exit code: 1
+
+Result before review fixes:
+
+- compile failed because `GitDiffFile` did not carry `oldMode`/`newMode`
+- compile failed because `GitDataPlaneError` did not carry `pathEscapesRepository(path:)`
+- compile failed because the public content/diff initializers did not match the new path-escape and mode assertions
+- Bridge runtime harness syntax/shape errors surfaced while turning the typecheck-only proof into an executable handle-only content-load proof
+
+Implementation notes:
+
+- `LibGit2RevisionResolver` uses revparse plus peel-to-commit to resolve `HEAD`, named refs, and commit OIDs into `GitResolvedRevision`.
+- `LibGit2TreeReader` resolves commit trees and subtree paths, returning Git-shaped paths, OIDs, modes, tree/file flags, and blob sizes without importing Bridge types.
+- `LibGit2DiffReader` covers commit/head to commit/head, commit/head to index, index to working tree, and commit/head to working tree-with-index.
+- Diff options include untracked recursion, type changes, and binary data; rename detection runs through `git_diff_find_similar` with `GIT_DIFF_FIND_RENAMES`.
+- Line counts come from `git_patch_from_diff` and `git_patch_line_stats`; negative patch creation results are typed libgit2 failures instead of silent zero counts.
+- Diff file hashes are honest Git blob SHA-1 object IDs with `contentHashAlgorithm == "git-blob-sha1"`.
+- When libgit2 returns an invalid workdir-side diff ID, the reader computes the filtered working-tree blob hash with `git_repository_hashfile`, matching `git hash-object --path` without adding a blob object to the repository object database.
+- Diff file metadata now carries `oldMode` and `newMode` so executable-bit and type-change review surfaces do not have to infer modes from content.
+- `LibGit2ContentReader` supports commit/head, index, and working-tree targets and enforces `maxSizeBytes` with typed `contentTooLarge` errors.
+- Working-tree content reads reject absolute paths, `..` components, and symlink escapes with typed `pathEscapesRepository(path:)` errors before opening bytes.
+- `GitContentPayload` uses `sha256:<hex>` and `contentHashAlgorithm == "sha256"` because AgentStudio `BridgeContentStore` validates loaded bytes by SHA-256, while diff file old/new hashes remain Git blob IDs.
+- The shared review support helper opens repositories and pairs libgit2 object acquisitions with same-frame frees through `defer`.
+- `resolveCheckpointEndpoint` remains AgentStudio-owned composition. The package exposes git-backed payload values only; checkpoint metadata-to-git-endpoint resolution is intentionally outside this SDK.
+- The checked Bridge compatibility harness extracts the live app seam declarations and typechecks an `AgentStudioGitBridgeReviewAdapter` against built SDK modules. The harness covers `compareEndpoints`, `readTree`, `readReviewItemDescriptor`, `loadContent`, and a checkpoint resolver that throws because checkpoint composition remains app-owned.
+- The Bridge compatibility harness also compiles and runs a scratch executable using the live `BridgeContentStore`; `loadContent` parses only `BridgeContentLoadRequest.handle.resourceUrl`, proving content loading can be driven from the handle request rather than local path variables and preserving `.gitRef` provider identity.
+- The Bridge harness redirects child process output to temp files before `waitUntilExit()` and passes `-sanitize=address`/`-sanitize=thread` to scratch executable links when the built SDK object files are sanitizer-instrumented. This fixed the sanitizer proof deadlock/link failure without weakening the runtime content-load proof.
+- `mise run check` still shows the vendored libgit2 artifact has HTTPS and SSH transports disabled. Remote/auth correctness remains Task 8's system-git responsibility and must be proven with system git HTTPS/SSH behavior, not libgit2 transport assumptions.
+
+Accepted review corrections:
+
+- blocked repository path and symlink escapes for working-tree content reads
+- removed read-side object-database writes from filtered working-tree hash calculation
+- upgraded Bridge compatibility from typecheck-only to runtime `BridgeContentStore` handle-load proof
+- added public mode metadata and wire-shape coverage
+- preserved libgit2 patch creation failures instead of converting them to zero line counts
+
+Green proof:
+
+```bash
+scripts/run-swift-test-filter.sh GitPublicContractTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 5 tests in 1 suite passed`
+- covered public review-content request targets, optional `maxSizeBytes` wire shape, `GitDiffFile` mode fields, and `contentTooLarge` error facts
+
+```bash
+scripts/run-swift-test-filter.sh GitReviewDataIntegrationTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 4 tests in 1 suite passed`
+- covered revision resolution, tree reads, commit/index/worktree diffs, rename descriptors, delete descriptors, binary descriptors, old/new Git blob hashes, CRLF filtered workdir hashes compared against `git hash-object --path`, object-database loose-object non-mutation during workdir hash reads, executable mode changes, large-file size metadata, text content, binary content, index content, worktree content, size-limit errors, `..` path escapes, and symlink escapes
+
+```bash
+scripts/run-swift-test-filter.sh BridgeReviewSourceCompatibilityTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 2 tests in 1 suite passed`
+- typechecked the SDK-backed adapter against the checked-out AgentStudio Bridge ReviewFoundation seam
+- compiled and ran a scratch executable that uses the live `BridgeContentStore`, builds a `.gitRef` content handle, discards local path variables, loads from `BridgeContentLoadRequest.handle.resourceUrl`, and verifies recorded SDK content requests preserve `commit("abc123")`
+
+```bash
+swift test
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 57 tests in 15 suites passed`
+
+```bash
+swift test --sanitize address
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 57 tests in 15 suites passed`
+- sanitizer applies to Swift wrapper/test code; Task 3 did not build a sanitizer-specific libgit2 artifact
+
+```bash
+swift test --sanitize thread
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 57 tests in 15 suites passed`
+- sanitizer applies to Swift wrapper/test code; Task 3 did not build a sanitizer-specific libgit2 artifact
+
+```bash
+mise run format
+```
+
+Exit code: 0
+
+Result:
+
+- formatted Swift sources
+
+```bash
+mise run lint
+```
+
+Exit code: 0
+
+Result:
+
+- `swift-format lint` passed
+- `swiftlint` found 0 violations in 46 files
+
+```bash
+mise run check
+```
+
+Exit code: 0
+
+Result:
+
+- `verify-libgit2` rebuilt and verified `Artifacts/CLibGit2Local.xcframework`
+- `swift build` passed
+- `swift-format lint` passed
+- `swiftlint` found 0 violations in 46 files
+- `swift test` passed with 57 tests in 15 suites
 
 ## Task 4: libgit2 Runtime, Errors, And Sessions
 

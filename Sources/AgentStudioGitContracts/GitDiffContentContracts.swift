@@ -43,6 +43,8 @@ public struct GitDiffFile: Codable, Equatable, Hashable, Sendable {
     public let oldContentHash: String?
     public let newContentHash: String?
     public let contentHashAlgorithm: String
+    public let oldMode: Int32?
+    public let newMode: Int32?
     public let additions: Int
     public let deletions: Int
     public let isBinary: Bool
@@ -56,6 +58,8 @@ public struct GitDiffFile: Codable, Equatable, Hashable, Sendable {
         oldContentHash: String?,
         newContentHash: String?,
         contentHashAlgorithm: String,
+        oldMode: Int32?,
+        newMode: Int32?,
         additions: Int,
         deletions: Int,
         isBinary: Bool,
@@ -68,6 +72,8 @@ public struct GitDiffFile: Codable, Equatable, Hashable, Sendable {
         self.oldContentHash = oldContentHash
         self.newContentHash = newContentHash
         self.contentHashAlgorithm = contentHashAlgorithm
+        self.oldMode = oldMode
+        self.newMode = newMode
         self.additions = additions
         self.deletions = deletions
         self.isBinary = isBinary
@@ -155,13 +161,15 @@ public struct GitDiffSnapshot: Codable, Equatable, Hashable, Sendable {
 
 public struct GitContentRequest: Codable, Equatable, Hashable, Sendable {
     public let repositoryPath: URL
-    public let revision: GitRevisionTarget
+    public let target: GitDiffTarget
     public let path: String
+    public let maxSizeBytes: Int64?
 
-    public init(repositoryPath: URL, revision: GitRevisionTarget, path: String) {
+    public init(repositoryPath: URL, target: GitDiffTarget, path: String, maxSizeBytes: Int64? = nil) {
         self.repositoryPath = repositoryPath
-        self.revision = revision
+        self.target = target
         self.path = path
+        self.maxSizeBytes = maxSizeBytes
     }
 }
 

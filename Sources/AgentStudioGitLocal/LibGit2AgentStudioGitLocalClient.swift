@@ -119,19 +119,27 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
     public func resolveRevision(_ request: GitRevisionResolutionRequest) async throws(GitDataPlaneError)
         -> GitResolvedRevision
     {
-        throw .unsupported(message: "revision resolution is implemented in Task 7")
+        try mapSyncGitDataPlaneError {
+            try LibGit2RevisionResolver().resolve(request)
+        }
     }
 
     public func readTree(_ request: GitTreeReadRequest) async throws(GitDataPlaneError) -> GitTreeSnapshot {
-        throw .unsupported(message: "tree reads are implemented in Task 7")
+        try mapSyncGitDataPlaneError {
+            try LibGit2TreeReader().readTree(request)
+        }
     }
 
     public func diff(_ request: GitDiffRequest) async throws(GitDataPlaneError) -> GitDiffSnapshot {
-        throw .unsupported(message: "diff is implemented in Task 7")
+        try mapSyncGitDataPlaneError {
+            try LibGit2DiffReader().diff(request)
+        }
     }
 
     public func content(_ request: GitContentRequest) async throws(GitDataPlaneError) -> GitContentPayload {
-        throw .unsupported(message: "content is implemented in Task 7")
+        try mapSyncGitDataPlaneError {
+            try LibGit2ContentReader().content(request)
+        }
     }
 
     private func writer(for repositoryPath: URL) async throws(GitDataPlaneError) -> GitRepositoryWriterLane {

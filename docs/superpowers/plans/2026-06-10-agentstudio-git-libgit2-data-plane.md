@@ -685,14 +685,20 @@ git commit -m "feat: implement status and branch enrichment"
 ### Task 7: Bridge Review Data Operations
 
 **Files:**
+- Modify: `Sources/AgentStudioGitContracts/GitDataPlaneError.swift`
+- Modify: `Sources/AgentStudioGitContracts/GitDiffContentContracts.swift`
+- Modify: `Sources/AgentStudioGitLocal/LibGit2AgentStudioGitLocalClient.swift`
 - Create: `Sources/AgentStudioGitLocal/Review/LibGit2RevisionResolver.swift`
 - Create: `Sources/AgentStudioGitLocal/Review/LibGit2TreeReader.swift`
 - Create: `Sources/AgentStudioGitLocal/Review/LibGit2DiffReader.swift`
 - Create: `Sources/AgentStudioGitLocal/Review/LibGit2ContentReader.swift`
+- Create: `Sources/AgentStudioGitLocal/Review/LibGit2ReviewSupport.swift`
+- Modify: `Tests/AgentStudioGitTests/Contracts/GitPublicContractTests.swift`
 - Create: `Tests/AgentStudioGitTests/Integration/GitReviewDataIntegrationTests.swift`
 - Create: `Tests/AgentStudioGitTests/ConsumerCompatibility/BridgeReviewSourceCompatibilityTests.swift`
+- Modify: `docs/wip/implementation-proof/2026-06-11-agentstudio-git-sdk-proof.md`
 
-- [ ] **Step 1: Write review-data tests**
+- [x] **Step 1: Write review-data tests**
 
 Cover:
 - commit endpoint resolution
@@ -705,44 +711,47 @@ Cover:
 - binary content load
 - large file metadata
 - old/new content hashes
-- workdir-side filtered hash when libgit2 diff ID is not valid
+- workdir-side filtered hash when libgit2 diff ID is not valid, without writing read-side blobs to the object database
+- old/new file modes for executable-bit and type-change review surfaces
 - CRLF/filter fixture
 - rename descriptor with stable ID
 - deleted file descriptor
+- working-tree path escape and symlink escape refusal
 - content load from adapter handle index after local path values are discarded
 
-- [ ] **Step 2: Keep checkpoint composition out of this package**
+- [x] **Step 2: Keep checkpoint composition out of this package**
 
 Package proof covers git-backed endpoints only. `resolveCheckpointEndpoint` remains AgentStudio-owned composition: checkpoint metadata -> git endpoint -> package call.
 
-- [ ] **Step 3: Implement revision resolver and tree reader**
+- [x] **Step 3: Implement revision resolver and tree reader**
 
 Return Git-shaped revision/tree/blob identities. Do not import Bridge types.
 
-- [ ] **Step 4: Implement diff reader**
+- [x] **Step 4: Implement diff reader**
 
 Return changed-file descriptors with stable `fileId` or a documented derivation rule, previous path, mode, size, binary flag, line counts, blob hashes, and content locators. Language/mime values may be basic file metadata only; rich classification remains AgentStudio-owned.
 
-- [ ] **Step 5: Implement content reader**
+- [x] **Step 5: Implement content reader**
 
 Support blob reads and working-tree file reads. Enforce size limits through request options and typed errors.
 
-- [ ] **Step 6: Add actual Bridge adapter compile proof**
+- [x] **Step 6: Add actual Bridge adapter compile proof**
 
 Create an AgentStudio-side compile spike or checked harness that uses real Bridge types for `compareEndpoints`, `readTree`, `readReviewItemDescriptor`, and `loadContent`. The content test must build handles, discard local path variables, and load content from only `BridgeContentLoadRequest`.
 
-- [ ] **Step 7: Run tests**
+- [x] **Step 7: Run tests**
 
 ```bash
 scripts/run-swift-test-filter.sh GitReviewDataIntegrationTests
 scripts/run-swift-test-filter.sh BridgeReviewSourceCompatibilityTests
+scripts/run-swift-test-filter.sh GitPublicContractTests
 swift test
 ```
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
-git add Sources/AgentStudioGitLocal Tests/AgentStudioGitTests
+git add Sources/AgentStudioGitContracts Sources/AgentStudioGitLocal Tests/AgentStudioGitTests docs/superpowers/plans docs/wip/implementation-proof
 git commit -m "feat: implement Git review data operations"
 ```
 
