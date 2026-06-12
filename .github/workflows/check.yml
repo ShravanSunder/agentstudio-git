@@ -20,3 +20,12 @@ jobs:
 
       - name: Run package checks
         run: mise run check
+
+      - name: Run AddressSanitizer tests
+        run: mise run test-asan
+
+      - name: Run ThreadSanitizer tests
+        run: mise run test-tsan
+
+      - name: Verify downstream package consumer
+        run: bash scripts/verify-package-consumer.sh

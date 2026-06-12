@@ -840,7 +840,7 @@ git commit -m "feat: add system Git remote auth seam"
 - Create: `docs/guides/agentstudio-consumption.md`
 - Create: `docs/wip/implementation-proof/2026-06-11-agentstudio-git-sdk-proof.md`
 
-- [ ] **Step 1: Prove CI gates**
+- [x] **Step 1: Prove CI gates**
 
 CI must run:
 
@@ -851,7 +851,7 @@ swift test --sanitize thread
 bash scripts/verify-package-consumer.sh
 ```
 
-- [ ] **Step 2: Publish or simulate the distributable artifact path**
+- [x] **Step 2: Publish or simulate the distributable artifact path**
 
 Before AgentStudio consumption, prove the manifest strategy that downstream SwiftPM will use:
 - URL binary target with checksum, or
@@ -859,7 +859,7 @@ Before AgentStudio consumption, prove the manifest strategy that downstream Swif
 
 Local untracked artifacts are not an AgentStudio consumption strategy.
 
-- [ ] **Step 3: Add consumer guide**
+- [x] **Step 3: Add consumer guide**
 
 Document:
 - split products/targets
@@ -869,7 +869,7 @@ Document:
 - how AgentStudio imports the package
 - proof gates required before replacing shell parsing
 
-- [ ] **Step 4: Record proof**
+- [x] **Step 4: Record proof**
 
 Create proof doc with:
 - commit SHA
@@ -883,7 +883,7 @@ Create proof doc with:
 - remote live smoke status
 - known limitations
 
-- [ ] **Step 5: Run final validation**
+- [x] **Step 5: Run final validation**
 
 ```bash
 mise run format
@@ -894,7 +894,7 @@ swift test --sanitize thread
 bash scripts/verify-package-consumer.sh
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add .github Package.swift docs

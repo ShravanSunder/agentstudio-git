@@ -12,7 +12,7 @@ Plan:
 
 ## Current Scope
 
-Tasks 0-8: spec/tooling, public contracts, repository identity/runtime lanes, libgit2 artifact packaging, libgit2 runtime/session wrappers, safe worktree operations, app enrichment status/branch/origin facts, Bridge review data operations, and system Git remote/auth operations.
+Tasks 0-9: spec/tooling, public contracts, repository identity/runtime lanes, libgit2 artifact packaging, libgit2 runtime/session wrappers, safe worktree operations, app enrichment status/branch/origin facts, Bridge review data operations, system Git remote/auth operations, and CI/release consumer readiness.
 
 ## Coverage
 
@@ -20,6 +20,7 @@ Tasks 0-8: spec/tooling, public contracts, repository identity/runtime lanes, li
 - Spec line count: 262; read 1-262.
 - Goal contract line count: 156; read 1-156.
 - Plan review line count: 125; read 1-125.
+- AgentStudio consumption guide line count: 92; read 1-92.
 - Existing package scaffold read before edits.
 
 ## Red Evidence
@@ -851,6 +852,184 @@ Result:
 - `swift-format lint` passed
 - `swiftlint` found 0 violations in 53 files
 - `swift test` passed with 67 tests in 18 suites
+
+## Task 9: CI, Release Artifact, And Consumer Readiness
+
+Status: implemented and verified.
+
+Files changed:
+
+- `Package.swift`
+- `.github/workflows/check.yml`
+- `.mise.toml`
+- `scripts/verify-package-consumer.sh`
+- `Tests/AgentStudioGitTests/Packaging/LibGit2PackagingScriptTests.swift`
+- `docs/guides/agentstudio-consumption.md`
+- `docs/superpowers/plans/2026-06-10-agentstudio-git-libgit2-data-plane.md`
+- `docs/wip/implementation-proof/2026-06-11-agentstudio-git-sdk-proof.md`
+
+Research and observed platform basis:
+
+- Apple WWDC binary Swift package guidance says distributable binary targets use a URL plus checksum; path-based XCFramework references are for development and large XCFrameworks should not be committed to Git history.
+- SwiftPM rejected a local `file://` binary-target URL with `invalid URL scheme for binary target 'CLibGit2Local'; valid schemes are: 'https'`.
+- Therefore local downloader simulation cannot use `file://`; the package keeps local path mode for development and adds explicit HTTPS/checksum release-manifest mode.
+
+Red evidence:
+
+```bash
+scripts/run-swift-test-filter.sh LibGit2PackagingScriptTests
+```
+
+Exit code: 1
+
+Result before implementation:
+
+- `package supports local and distributable libgit2 binary targets` failed because `Package.swift` only exposed the local path binary target and had no release URL/checksum mode.
+- `consumer verification imports AgentStudioGitLocal without running repo mise tasks` failed because the consumer verifier did not evaluate release-manifest shape.
+- `check workflow runs sanitizer and consumer gates` failed because CI only ran `mise run check`.
+
+Implementation notes:
+
+- `Package.swift` now keeps local development mode through `Artifacts/CLibGit2Local.xcframework`.
+- Setting `AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL` and `AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM` switches the manifest to `.binaryTarget(name: "CLibGit2Local", url: binaryURL, checksum: binaryChecksum)`.
+- `.github/workflows/check.yml` now runs `mise run check`, `mise run test-asan`, `mise run test-tsan`, and `bash scripts/verify-package-consumer.sh`.
+- `.mise.toml` exposes `mise run verify-package-consumer`.
+- `scripts/verify-package-consumer.sh` still builds and runs a scratch downstream SwiftPM consumer importing `AgentStudioGitLocal`, and now also evaluates the release manifest with an HTTPS artifact URL plus the generated checksum.
+- `docs/guides/agentstudio-consumption.md` documents product selection, artifact modes, remote/auth policy, AgentStudio-owned boundaries, and required consumption proof gates.
+
+Artifact facts:
+
+- Task 9 implementation base commit: `65a694cf87a6b52119703590070d2a314464f853`
+- Pinned libgit2 commit: `f7164261c9bc0a7e0ebf767c584e5192810a8b24`
+- Generated artifact checksum: `33a995b26dafeaf0b73ef2d65371653c0e35042d55344fef4acea1b059c2740d`
+
+Green proof so far:
+
+```bash
+scripts/run-swift-test-filter.sh LibGit2PackagingScriptTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 5 tests in 1 suite passed`
+- covered local and distributable libgit2 binary target manifest shape, downstream consumer verifier shape, CI sanitizer/consumer gates, build-script settings, and third-party notice facts
+
+```bash
+bash scripts/verify-package-consumer.sh
+```
+
+Exit code: 0
+
+Result:
+
+- scratch downstream SwiftPM consumer built and ran
+- runtime output was `1.9.4`
+- release manifest evaluation included `https://artifact.invalid/CLibGit2Local.xcframework.zip`
+- release manifest evaluation included checksum `33a995b26dafeaf0b73ef2d65371653c0e35042d55344fef4acea1b059c2740d`
+
+```bash
+AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL="https://artifact.invalid/CLibGit2Local.xcframework.zip" AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM="$(cat Artifacts/CLibGit2Local.xcframework.zip.checksum)" swift package dump-package | rg 'artifact.invalid|checksum|CLibGit2Local'
+```
+
+Exit code: 0
+
+Result:
+
+- output contained `url` `https://artifact.invalid/CLibGit2Local.xcframework.zip`
+- output contained checksum `33a995b26dafeaf0b73ef2d65371653c0e35042d55344fef4acea1b059c2740d`
+
+Final validation:
+
+```bash
+mise run format
+```
+
+Exit code: 0
+
+Result:
+
+- formatted Swift sources
+
+```bash
+scripts/run-swift-test-filter.sh LibGit2PackagingScriptTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 5 tests in 1 suite passed`
+
+```bash
+swift test
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 68 tests in 18 suites passed`
+
+```bash
+swift test --sanitize address
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 68 tests in 18 suites passed`
+- sanitizer applies to Swift wrapper/test code; Task 3 did not build a sanitizer-specific libgit2 artifact
+
+```bash
+swift test --sanitize thread
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 68 tests in 18 suites passed`
+- sanitizer applies to Swift wrapper/test code; Task 3 did not build a sanitizer-specific libgit2 artifact
+
+```bash
+mise run lint
+```
+
+Exit code: 0
+
+Result:
+
+- `swift-format lint` passed
+- `swiftlint` found 0 violations in 53 files
+
+```bash
+mise run check
+```
+
+Exit code: 0
+
+Result:
+
+- `verify-libgit2` rebuilt and verified `Artifacts/CLibGit2Local.xcframework`
+- `swift build` passed
+- `swift-format lint` passed
+- `swiftlint` found 0 violations in 53 files
+- `swift test` passed with 68 tests in 18 suites
+
+```bash
+bash scripts/verify-package-consumer.sh
+```
+
+Exit code: 0
+
+Result:
+
+- scratch downstream SwiftPM consumer built and ran
+- runtime output was `1.9.4`
+- release manifest mode was evaluated with HTTPS URL plus checksum
 
 ## Task 4: libgit2 Runtime, Errors, And Sessions
 

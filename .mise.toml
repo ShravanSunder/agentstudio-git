@@ -44,6 +44,10 @@ description = "Verify the local libgit2 XCFramework"
 depends = ["build-libgit2"]
 run = "bash scripts/verify-libgit2-artifact.sh"
 
+[tasks.verify-package-consumer]
+description = "Verify downstream SwiftPM consumption and release manifest shape"
+run = "bash scripts/verify-package-consumer.sh"
+
 [tasks.check]
 description = "Run build, lint, and tests"
 run = """

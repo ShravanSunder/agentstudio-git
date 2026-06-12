@@ -4,6 +4,14 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRATCH_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentstudio-git-consumer.XXXXXX")"
 trap 'rm -rf "$SCRATCH_DIR"' EXIT
+ZIP_CHECKSUM_PATH="$ROOT_DIR/Artifacts/CLibGit2Local.xcframework.zip.checksum"
+RELEASE_ARTIFACT_URL="https://artifact.invalid/CLibGit2Local.xcframework.zip"
+
+if [ ! -f "$ZIP_CHECKSUM_PATH" ]; then
+  AGENTSTUDIO_GIT_CREATE_LIBGIT2_ZIP=1 bash "$ROOT_DIR/scripts/build-libgit2-xcframework.sh"
+fi
+
+libgit2_checksum="$(tr -d '[:space:]' <"$ZIP_CHECKSUM_PATH")"
 
 mkdir -p "$SCRATCH_DIR/Sources/Consumer"
 
@@ -43,3 +51,10 @@ mkdir -p "$SCRATCH_DIR/Sources/Consumer"
 
 swift build --package-path "$SCRATCH_DIR"
 swift run --package-path "$SCRATCH_DIR" consumer
+
+AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL="$RELEASE_ARTIFACT_URL" \
+  AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM="$libgit2_checksum" \
+  swift package dump-package --package-path "$ROOT_DIR" >"$SCRATCH_DIR/release-package.json"
+
+grep -q "$RELEASE_ARTIFACT_URL" "$SCRATCH_DIR/release-package.json"
+grep -q "$libgit2_checksum" "$SCRATCH_DIR/release-package.json"

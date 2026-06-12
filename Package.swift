@@ -1,6 +1,28 @@
 // swift-tools-version: 6.2
 import PackageDescription
 
+let libGit2BinaryTarget: Target
+if let binaryURL = Context.environment["AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL"],
+    !binaryURL.isEmpty
+{
+    guard let binaryChecksum = Context.environment["AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM"],
+        !binaryChecksum.isEmpty
+    else {
+        fatalError(
+            "AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM is required when AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL is set")
+    }
+    libGit2BinaryTarget = .binaryTarget(
+        name: "CLibGit2Local",
+        url: binaryURL,
+        checksum: binaryChecksum
+    )
+} else {
+    libGit2BinaryTarget = .binaryTarget(
+        name: "CLibGit2Local",
+        path: "Artifacts/CLibGit2Local.xcframework"
+    )
+}
+
 let package = Package(
     name: "agentstudio-git",
     platforms: [
@@ -57,10 +79,7 @@ let package = Package(
             ],
             path: "Sources/AgentStudioGit"
         ),
-        .binaryTarget(
-            name: "CLibGit2Local",
-            path: "Artifacts/CLibGit2Local.xcframework"
-        ),
+        libGit2BinaryTarget,
         .testTarget(
             name: "AgentStudioGitTests",
             dependencies: [
