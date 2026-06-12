@@ -2432,9 +2432,26 @@ Result:
 
 - no whitespace errors.
 
+Remote CI proof after the suite-runner fix:
+
+```bash
+gh run watch 27420453537 --repo ShravanSunder/agentstudio-git --exit-status
+```
+
+Exit code: 0
+
+Result:
+
+- GitHub `Check` run `27420453537` passed on commit `4ea84c4`.
+- `Run package checks` passed after rebuilding and verifying `Artifacts/CLibGit2Local.xcframework`, running `swift build`, `swift-format`, SwiftLint, and all filtered Swift Testing suites.
+- `Run AddressSanitizer tests` passed through the filtered suite runner.
+- `Run ThreadSanitizer tests` passed through the filtered suite runner.
+- `Verify downstream package consumer` passed; remote log printed `umbrella 1.9.4` and `leaf 1.9.4`.
+- `Report AgentStudio compatibility external gate` passed and printed that AgentStudio compatibility requires `AGENTSTUDIO_GIT_AGENTSTUDIO_PATH` and is not proven by this CI checkout.
+- `Verify AgentStudio compatibility` was skipped by workflow condition because the external AgentStudio checkout path was not configured.
+
 Known external proof limits after this checkpoint:
 
-- The `Check` workflow must be rerun after the sanitizer runner and process-timeout fixes are pushed.
 - The full live HTTPS credential-helper and SSH-agent smoke is executable, but still requires disposable writeable remotes configured through `AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL` and `AGENTSTUDIO_GIT_LIVE_SSH_REMOTE_URL`.
 - A real hosted `CLibGit2Local.xcframework.zip` URL is still required before claiming actual remote artifact download proof.
 
