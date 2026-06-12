@@ -105,11 +105,15 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
     public func status(for worktreePath: URL, options: GitStatusOptions) async throws(GitDataPlaneError)
         -> GitStatusSnapshot
     {
-        throw .unsupported(message: "status is implemented in Task 6")
+        try mapSyncGitDataPlaneError {
+            try LibGit2StatusReader().status(for: worktreePath, options: options)
+        }
     }
 
     public func branches(for repositoryPath: URL) async throws(GitDataPlaneError) -> [GitBranchSnapshot] {
-        throw .unsupported(message: "branches are implemented in Task 6")
+        try mapSyncGitDataPlaneError {
+            try LibGit2BranchReader().branches(for: repositoryPath)
+        }
     }
 
     public func resolveRevision(_ request: GitRevisionResolutionRequest) async throws(GitDataPlaneError)

@@ -14,7 +14,8 @@ struct GitPublicContractTests {
             originResolution: .resolved(
                 GitRemoteSnapshot(
                     name: "origin",
-                    url: URL(string: "https://github.com/example/repo.git")!
+                    url: URL(string: "https://github.com/example/repo.git")!,
+                    rawURL: "https://github.com/example/repo.git"
                 )
             ),
             summary: GitStatusSummary(

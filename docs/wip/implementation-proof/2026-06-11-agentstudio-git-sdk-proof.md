@@ -12,11 +12,11 @@ Plan:
 
 ## Current Scope
 
-Tasks 0-5: spec/tooling, public contracts, repository identity/runtime lanes, libgit2 artifact packaging, libgit2 runtime/session wrappers, and safe worktree operations.
+Tasks 0-6: spec/tooling, public contracts, repository identity/runtime lanes, libgit2 artifact packaging, libgit2 runtime/session wrappers, safe worktree operations, and app enrichment status/branch/origin facts.
 
 ## Coverage
 
-- Plan line count: 935; read in chunks 1-240, 241-480, 481-720, 721-935.
+- Plan line count: 940; read in chunks 1-240, 241-480, 481-720, 721-940.
 - Spec line count: 262; read 1-262.
 - Goal contract line count: 156; read 1-156.
 - Plan review line count: 125; read 1-125.
@@ -308,6 +308,172 @@ Result:
 - `swift-format lint` passed
 - `swiftlint` found 0 violations in 34 files
 - `swift test` passed with 37 tests in 11 suites
+
+## Task 6: App Enrichment Status, Branch, And Origin Facts
+
+Status: implemented and verified.
+
+Files changed:
+
+- `Package.swift`
+- `Sources/AgentStudioGitContracts/GitStatusContracts.swift`
+- `Sources/AgentStudioGitLocal/LibGit2AgentStudioGitLocalClient.swift`
+- `Sources/AgentStudioGitLocal/Status/GitIndexPathResolver.swift`
+- `Sources/AgentStudioGitLocal/Status/LibGit2BranchReader.swift`
+- `Sources/AgentStudioGitLocal/Status/LibGit2StatusReader.swift`
+- `Tests/AgentStudioGitTests/Contracts/GitPublicContractTests.swift`
+- `Tests/AgentStudioGitTests/Integration/GitStatusIntegrationTests.swift`
+- `Tests/AgentStudioGitTests/ConsumerCompatibility/GitWorkingTreeStatusCompatibilityTests.swift`
+- `docs/superpowers/plans/2026-06-10-agentstudio-git-libgit2-data-plane.md`
+- `docs/wip/implementation-proof/2026-06-11-agentstudio-git-sdk-proof.md`
+
+Research basis:
+
+- DeepWiki was asked for libgit2 status, branch, upstream, ahead/behind, origin, shortstat, and linked-worktree index semantics before implementation.
+- Vendored `Artifacts/CLibGit2Local.xcframework/macos-arm64_x86_64/Headers/git2/status.h` verified `git_status_list_new`, status flag families, rename options, `GIT_STATUS_OPT_NO_REFRESH`, and `GIT_STATUS_OPT_UPDATE_INDEX`.
+- Vendored `Artifacts/CLibGit2Local.xcframework/macos-arm64_x86_64/Headers/git2/diff.h` verified `git_diff_tree_to_workdir_with_index`, `git_diff_get_stats`, and `git_diff_stats_free` for `git diff --shortstat HEAD --` semantics.
+- Vendored `Artifacts/CLibGit2Local.xcframework/macos-arm64_x86_64/Headers/git2/branch.h`, `graph.h`, `remote.h`, and `index.h` verified branch iteration, upstream resolution, ahead/behind counts, origin lookup, and per-worktree index path APIs.
+- Live AgentStudio seam read from `/Users/shravansunder/Documents/dev/project-dev/agent-studio.bridge-start/Sources/AgentStudio/Core/RuntimeEventSystem/Git/GitWorkingTreeStatusProvider.swift` and `.../Contracts/PaneRuntimeEvent.swift`.
+
+Red evidence:
+
+```bash
+scripts/run-swift-test-filter.sh GitStatusIntegrationTests
+```
+
+Exit code: 1
+
+Result before implementation:
+
+- `Test run with 7 tests in 1 suite failed`
+- each test failed with `unsupported(message: "status is implemented in Task 6")` or `unsupported(message: "branches are implemented in Task 6")`
+
+```bash
+scripts/run-swift-test-filter.sh GitWorkingTreeStatusCompatibilityTests
+```
+
+Exit code: 1
+
+Result before implementation:
+
+- `Test run with 3 tests in 1 suite failed`
+- static SDK-to-AgentStudio mapping passed
+- live local-client compatibility provider returned nil because `status` was still unsupported
+
+Implementation notes:
+
+- `LibGit2StatusReader` uses `git_status_list_new` with `GIT_STATUS_OPT_RENAMES_HEAD_TO_INDEX`, `GIT_STATUS_OPT_RENAMES_INDEX_TO_WORKDIR`, and `GIT_STATUS_OPT_NO_REFRESH`; it never sets `GIT_STATUS_OPT_UPDATE_INDEX`.
+- Status entries map libgit2 index flags to `indexState`, worktree flags to `worktreeState`, and preserve untracked/ignored flags separately.
+- Staged deletes use the `head_to_index` old-path fallback, covering the libgit2 case where `new_file.path` is nil for a delete.
+- Shortstat uses `git_diff_tree_to_workdir_with_index` plus `git_diff_get_stats` so staged-plus-unstaged line counts match `git diff --shortstat HEAD --`.
+- `GitIndexPathResolver` resolves the actual libgit2 index path through `git_repository_index`/`git_index_path`; tests prove main and linked worktree status reads preserve index bytes and leave `index.lock` sentinels untouched.
+- `LibGit2BranchReader` lists local branches, resolves current branch, upstream name, ahead/behind counts, detached/unborn HEAD, origin present/absent, and unresolved origin states.
+- `GitRemoteSnapshot.rawURL` preserves the exact configured remote string so the app adapter keeps local path remotes as paths instead of changing them to `file://` URLs.
+- The compatibility test maps SDK snapshots into the live AgentStudio `GitWorkingTreeStatus` shape: app `changed` maps to SDK `unstagedFileCount`, app `staged` to SDK `stagedFileCount`, app `untracked` to SDK `untrackedFileCount`, app origin to `rawURL`, and missing upstream maps ahead/behind to nil rather than zero.
+- The checked-out AgentStudio adapter harness extracts the live app seam declarations and runs `swiftc -typecheck` against the already-built SDK modules and binary-artifact import paths. The harness intentionally avoids nested SwiftPM because the test runner already holds the package build lock.
+- A first wiring attempt stored status/branch readers on `LibGit2AgentStudioGitLocalClient` and caused a Swift runtime SIGBUS during client construction. The final client keeps the Task 5 stored shape and instantiates read-only status/branch readers at call sites; `GitWorktreeIntegrationTests` was rerun as the regression guard.
+
+Green proof:
+
+```bash
+scripts/run-swift-test-filter.sh GitWorktreeIntegrationTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 12 tests in 1 suite passed`
+- regression guard for client construction and existing worktree behavior after Task 6 wiring
+
+```bash
+scripts/run-swift-test-filter.sh GitStatusIntegrationTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 7 tests in 1 suite passed`
+- covered clean, modified, staged, staged-and-modified, untracked, ignored, deleted, renamed, binary, ahead, behind, diverged, no upstream, origin present, origin absent, unresolved origin with summary, detached HEAD, unborn HEAD, main index path, linked worktree index path, no index byte mutation, and lock sentinel preservation
+
+```bash
+scripts/run-swift-test-filter.sh GitWorkingTreeStatusCompatibilityTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 5 tests in 1 suite passed`
+- covered SDK-to-AgentStudio mapping, local path origin fidelity, nil-vs-zero upstream semantics, detached branchless sync-unknown semantics, live local-client adapter path against a real repository, and a checked-out AgentStudio adapter typecheck when the sibling checkout is present
+
+```bash
+swift test
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 49 tests in 13 suites passed`
+
+```bash
+swift test --sanitize address
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 49 tests in 13 suites passed`
+- sanitizer applies to Swift wrapper/test code; Task 3 did not build a sanitizer-specific libgit2 artifact
+
+```bash
+swift test --sanitize thread
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 49 tests in 13 suites passed`
+- sanitizer applies to Swift wrapper/test code; Task 3 did not build a sanitizer-specific libgit2 artifact
+
+```bash
+mise run format
+```
+
+Exit code: 0
+
+Result:
+
+- formatted Swift sources
+
+```bash
+mise run lint
+```
+
+Exit code: 0
+
+Result:
+
+- `swift-format lint` passed
+- `swiftlint` found 0 violations in 39 files
+
+```bash
+mise run check
+```
+
+Exit code: 0
+
+Result:
+
+- `verify-libgit2` rebuilt and verified `Artifacts/CLibGit2Local.xcframework`
+- `swift build` passed
+- `swift-format lint` passed
+- `swiftlint` found 0 violations in 39 files
+- `swift test` passed with 49 tests in 13 suites
 
 ## Task 4: libgit2 Runtime, Errors, And Sessions
 

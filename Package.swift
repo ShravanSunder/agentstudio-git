@@ -63,7 +63,10 @@ let package = Package(
         ),
         .testTarget(
             name: "AgentStudioGitTests",
-            dependencies: ["AgentStudioGit"],
+            dependencies: [
+                "AgentStudioGit",
+                "AgentStudioGitLocal",
+            ],
             path: "Tests/AgentStudioGitTests"
         ),
     ]

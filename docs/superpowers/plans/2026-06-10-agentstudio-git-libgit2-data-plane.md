@@ -617,13 +617,18 @@ git commit -m "feat: implement safe worktree operations"
 ### Task 6: App Enrichment Status, Branch, And Origin Facts
 
 **Files:**
+- Modify: `Package.swift`
+- Modify: `Sources/AgentStudioGitContracts/GitStatusContracts.swift`
+- Modify: `Sources/AgentStudioGitLocal/LibGit2AgentStudioGitLocalClient.swift`
 - Create: `Sources/AgentStudioGitLocal/Status/LibGit2StatusReader.swift`
 - Create: `Sources/AgentStudioGitLocal/Status/LibGit2BranchReader.swift`
 - Create: `Sources/AgentStudioGitLocal/Status/GitIndexPathResolver.swift`
+- Modify: `Tests/AgentStudioGitTests/Contracts/GitPublicContractTests.swift`
 - Create: `Tests/AgentStudioGitTests/Integration/GitStatusIntegrationTests.swift`
 - Create: `Tests/AgentStudioGitTests/ConsumerCompatibility/GitWorkingTreeStatusCompatibilityTests.swift`
+- Modify: `docs/wip/implementation-proof/2026-06-11-agentstudio-git-sdk-proof.md`
 
-- [ ] **Step 1: Write status tests**
+- [x] **Step 1: Write status tests**
 
 Cover:
 - clean
@@ -646,23 +651,23 @@ Cover:
 - unborn HEAD / empty repo
 - main and linked worktree index paths
 
-- [ ] **Step 2: Prove reads do not mutate index**
+- [x] **Step 2: Prove reads do not mutate index**
 
 Resolve the actual index path through libgit2/repository metadata for main and linked worktrees. Compare index bytes or content hash before and after status/diff-backed shortstat. Assert no existing lock file is removed or replaced.
 
-- [ ] **Step 3: Pin line-count semantics**
+- [x] **Step 3: Pin line-count semantics**
 
 Match current AgentStudio UI semantics: `git diff --shortstat HEAD --` equivalent, which means HEAD tree to workdir-with-index. Add a fixture with staged and unstaged edits to prove exact counts.
 
-- [ ] **Step 4: Implement status and branch readers**
+- [x] **Step 4: Implement status and branch readers**
 
 Map libgit2 status flags to two-axis status entries. Compute `GitStatusSummary`, `GitOriginResolution`, branch/head, upstream, ahead/behind, and origin facts.
 
-- [ ] **Step 5: Add actual adapter compile proof**
+- [x] **Step 5: Add actual adapter compile proof**
 
 Create a small AgentStudio-side compile spike or checked harness that implements the real `GitWorkingTreeStatusProvider` from SDK values. Mirror-only structs are not sufficient proof.
 
-- [ ] **Step 6: Run tests**
+- [x] **Step 6: Run tests**
 
 ```bash
 scripts/run-swift-test-filter.sh GitStatusIntegrationTests
@@ -670,7 +675,7 @@ scripts/run-swift-test-filter.sh GitWorkingTreeStatusCompatibilityTests
 swift test
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add Sources/AgentStudioGitLocal Tests/AgentStudioGitTests
