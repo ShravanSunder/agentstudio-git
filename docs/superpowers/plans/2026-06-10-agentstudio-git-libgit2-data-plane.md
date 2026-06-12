@@ -432,29 +432,29 @@ git commit -m "feat: add repository identity and writer registry"
 - Create: `scripts/verify-package-consumer.sh`
 - Create: `ThirdPartyNotices/libgit2.md`
 
-- [ ] **Step 1: Choose source ownership**
+- [x] **Step 1: Choose source ownership**
 
 Use a pinned git submodule at `vendor/libgit2` with an exact commit. CI must checkout submodules. Record the commit, license, build flags, and update process in `ThirdPartyNotices/libgit2.md`.
 
-- [ ] **Step 2: Build importable XCFramework**
+- [x] **Step 2: Build importable XCFramework**
 
 The build script must:
-- build static libgit2 with `BUILD_SHARED_LIBS=OFF`, `BUILD_CLAR=OFF`, `BUILD_EXAMPLES=OFF`, `USE_SSH=OFF`, `USE_HTTPS=OFF`, `USE_GSSAPI=OFF`
+- build static libgit2 with `BUILD_SHARED_LIBS=OFF`, `BUILD_TESTS=OFF`, `BUILD_EXAMPLES=OFF`, `USE_SSH=OFF`, `USE_HTTPS=OFF`, `USE_GSSAPI=OFF`
 - include libgit2 headers
 - generate `module.modulemap`
 - pass headers to `xcodebuild -create-xcframework`
 - create a zip only for release/distribution
 - compute checksum only for the release zip, not as proof for a local path binary target
 
-- [ ] **Step 3: Add linker settings and import canary**
+- [x] **Step 3: Add linker settings and import canary**
 
 `Package.swift` must include the binary target and any required system link settings, such as `z` and `iconv` if the chosen libgit2 build requires them. Add a small import canary that imports `CLibGit2Local` and calls `git_libgit2_version`.
 
-- [ ] **Step 4: Separate local and distributable manifests**
+- [x] **Step 4: Separate local and distributable manifests**
 
 During local development, the package may use a local binary target path. Before AgentStudio consumption, the plan must cut over to a URL-based binary target with checksum, or another proven SwiftPM-consumable strategy. The local path is not the downstream consumption story.
 
-- [ ] **Step 5: Wire mise and CI before runtime work**
+- [x] **Step 5: Wire mise and CI before runtime work**
 
 Add:
 
@@ -468,12 +468,11 @@ run = "bash scripts/verify-libgit2-artifact.sh"
 
 `mise run check` must build or fetch the artifact before SwiftPM evaluates targets that import it.
 
-- [ ] **Step 6: Prove clean checkout and downstream consumer**
+- [x] **Step 6: Prove clean checkout and downstream consumer**
 
 Run:
 
 ```bash
-rm -rf .build Artifacts
 mise run build-libgit2
 mise run verify-libgit2
 swift build
@@ -481,9 +480,11 @@ swift test
 bash scripts/verify-package-consumer.sh
 ```
 
+`build-libgit2` owns scoped cleanup of `.build/libgit2/{arm64,x86_64,macos-universal}`, `.build/libgit2/CLibGit2LocalHeaders`, and `Artifacts/CLibGit2Local.xcframework`; do not manually delete repo-wide build directories as a proof shortcut.
+
 `verify-package-consumer.sh` creates a scratch SwiftPM package outside this repo, depends on `agentstudio-git`, resolves it from the intended downstream path, imports `AgentStudioGitLocal`, and builds without running repo-local mise tasks inside the dependency checkout.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add Package.swift .mise.toml .gitignore .github scripts ThirdPartyNotices

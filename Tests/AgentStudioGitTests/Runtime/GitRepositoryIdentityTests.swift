@@ -85,11 +85,21 @@ private struct GitIdentityFixture {
                 "user.name=AgentStudio Test",
                 "-c",
                 "user.email=agentstudio@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "init.defaultBranch=main",
             ] + arguments
         process.currentDirectoryURL = repositoryPath
-        let output = Pipe()
+        process.environment = ProcessInfo.processInfo.environment.merging([
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_XDG": "/dev/null",
+            "GIT_TERMINAL_PROMPT": "0",
+        ]) { _, testValue in testValue }
         let error = Pipe()
-        process.standardOutput = output
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
         process.standardError = error
         try process.run()
         process.waitUntilExit()

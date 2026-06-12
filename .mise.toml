@@ -35,6 +35,22 @@ run = "swift test --sanitize address"
 description = "Run Swift wrapper tests with ThreadSanitizer"
 run = "swift test --sanitize thread"
 
+[tasks.build-libgit2]
+description = "Build the pinned local-only libgit2 XCFramework"
+run = "bash scripts/build-libgit2-xcframework.sh"
+
+[tasks.verify-libgit2]
+description = "Verify the local libgit2 XCFramework"
+depends = ["build-libgit2"]
+run = "bash scripts/verify-libgit2-artifact.sh"
+
 [tasks.check]
 description = "Run build, lint, and tests"
-depends = ["build", "lint", "test"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+mise run verify-libgit2
+mise run build
+mise run lint
+mise run test
+"""

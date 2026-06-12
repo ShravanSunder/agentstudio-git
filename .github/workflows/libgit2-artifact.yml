@@ -1,0 +1,30 @@
+name: libgit2 Artifact
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-libgit2-artifact:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install tooling
+        run: brew install mise cmake
+
+      - name: Build distributable libgit2 artifact
+        run: AGENTSTUDIO_GIT_CREATE_LIBGIT2_ZIP=1 mise run build-libgit2
+
+      - name: Verify libgit2 artifact
+        run: mise run verify-libgit2
+
+      - name: Upload libgit2 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CLibGit2Local.xcframework
+          path: |
+            Artifacts/CLibGit2Local.xcframework.zip
+            Artifacts/CLibGit2Local.xcframework.zip.checksum

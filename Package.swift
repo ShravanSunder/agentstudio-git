@@ -33,8 +33,15 @@ let package = Package(
         ),
         .target(
             name: "AgentStudioGitLocal",
-            dependencies: ["AgentStudioGitContracts"],
-            path: "Sources/AgentStudioGitLocal"
+            dependencies: [
+                "AgentStudioGitContracts",
+                "CLibGit2Local",
+            ],
+            path: "Sources/AgentStudioGitLocal",
+            linkerSettings: [
+                .linkedLibrary("z"),
+                .linkedLibrary("iconv"),
+            ]
         ),
         .target(
             name: "AgentStudioGitRemote",
@@ -49,6 +56,10 @@ let package = Package(
                 "AgentStudioGitRemote",
             ],
             path: "Sources/AgentStudioGit"
+        ),
+        .binaryTarget(
+            name: "CLibGit2Local",
+            path: "Artifacts/CLibGit2Local.xcframework"
         ),
         .testTarget(
             name: "AgentStudioGitTests",

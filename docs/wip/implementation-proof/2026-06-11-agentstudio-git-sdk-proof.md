@@ -12,7 +12,7 @@ Plan:
 
 ## Current Scope
 
-Task 0: reconcile spec, tooling, and proof helpers.
+Tasks 0-3: spec/tooling, public contracts, repository identity/runtime lanes, and libgit2 artifact packaging.
 
 ## Coverage
 
@@ -157,6 +157,199 @@ Exit code: 0
 Result:
 
 - no whitespace errors
+
+## Task 3: libgit2 Artifact Pipeline And Downstream Packaging
+
+Status: implemented and verified.
+
+Files changed:
+
+- `Package.swift`
+- `.mise.toml`
+- `.gitignore`
+- `.gitmodules`
+- `.github/workflows/check.yml`
+- `.github/workflows/libgit2-artifact.yml`
+- `vendor/libgit2`
+- `Sources/AgentStudioGitLocal/LibGit2ImportCanary.swift`
+- `Tests/AgentStudioGitTests/Packaging/LibGit2PackagingScriptTests.swift`
+- `Tests/AgentStudioGitTests/Runtime/GitRepositoryIdentityTests.swift`
+- `ThirdPartyNotices/libgit2.md`
+- `scripts/build-libgit2-xcframework.sh`
+- `scripts/verify-libgit2-artifact.sh`
+- `scripts/verify-package-consumer.sh`
+- `docs/superpowers/plans/2026-06-10-agentstudio-git-libgit2-data-plane.md`
+- `docs/wip/implementation-proof/2026-06-11-agentstudio-git-sdk-proof.md`
+
+Pinned source:
+
+- libgit2 tag: `v1.9.4`
+- libgit2 commit: `f7164261c9bc0a7e0ebf767c584e5192810a8b24`
+- license recorded: `GPL-2.0-only WITH GCC-exception-2.0`
+
+Red evidence:
+
+```bash
+scripts/run-swift-test-filter.sh LibGit2PackagingScriptTests
+```
+
+Exit code: 1
+
+Result before implementation:
+
+- failed because `scripts/build-libgit2-xcframework.sh`, `Sources/AgentStudioGitLocal/LibGit2ImportCanary.swift`, `scripts/verify-package-consumer.sh`, and `ThirdPartyNotices/libgit2.md` were missing
+
+```bash
+bash scripts/build-libgit2-xcframework.sh
+```
+
+Exit code: 1
+
+Result during implementation:
+
+- ambient `CMAKE_TOOLCHAIN_FILE` from vcpkg polluted CMake configuration; fixed by scrubbing ambient CMake/vcpkg launcher environment in the script
+- building target `libgit2` compiled objects but did not create `libgit2.a`; fixed by building upstream target `libgit2package`
+- `xcodebuild -create-xcframework` rejected an archive containing fat object members; fixed by building thin `arm64` and `x86_64` archives, then `lipo -create` into the universal archive
+
+```bash
+swift test
+```
+
+Exit code: 1
+
+Result during implementation:
+
+- temp Git identity fixtures inherited global commit signing and failed through the 1Password signing agent
+- full-suite parallel execution also exposed a Git subprocess deadlock when `git init` wrote default-branch advice to an undrained stdout pipe
+- fixed by isolating fixture Git config, disabling signing for fixture commits, setting `init.defaultBranch=main`, and routing fixture stdout/stdin to `/dev/null`
+
+```bash
+scripts/run-swift-test-filter.sh LibGit2PackagingScriptTests
+```
+
+Exit code: 1
+
+Result during implementation:
+
+- failed after adding a test expectation that `verify-package-consumer.sh` must run the consumer executable, not only build it
+- fixed by adding `swift run --package-path "$SCRATCH_DIR" consumer`
+
+Green proof:
+
+```bash
+bash scripts/build-libgit2-xcframework.sh
+```
+
+Exit code: 0
+
+Result:
+
+- built `Artifacts/CLibGit2Local.xcframework`
+- CMake feature summary showed `HTTPS`, `SSH`, and `GSSAPI` disabled
+
+```bash
+bash scripts/verify-libgit2-artifact.sh
+```
+
+Exit code: 0
+
+Result:
+
+- verified `Artifacts/CLibGit2Local.xcframework`
+- `lipo -info` reported `x86_64 arm64`
+
+```bash
+scripts/run-swift-test-filter.sh LibGit2PackagingScriptTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 4 tests in 1 suite passed`
+- covered build flags, thin-arch/lipo packaging, binary target/import canary, consumer script, and third-party notice
+
+```bash
+scripts/run-swift-test-filter.sh GitRepositoryIdentityTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 3 tests in 1 suite passed`
+- proved the fixture isolation fix did not break real temp repo/worktree identity coverage
+
+```bash
+swift build
+```
+
+Exit code: 0
+
+Result:
+
+- package built against the generated `CLibGit2Local` binary target
+
+```bash
+swift test
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 16 tests in 7 suites passed`
+
+```bash
+bash scripts/verify-package-consumer.sh
+```
+
+Exit code: 0
+
+Result:
+
+- scratch SwiftPM package outside this repo imported `AgentStudioGitLocal`
+- executable ran `LibGit2ImportCanary.version()`
+- output included `1.9.4`
+
+```bash
+mise run format
+```
+
+Exit code: 0
+
+Result:
+
+- formatted Swift sources
+
+```bash
+mise run check
+```
+
+Exit code: 0
+
+Result:
+
+- `verify-libgit2` rebuilt and verified `CLibGit2Local.xcframework`
+- `swift build` passed
+- `swift-format lint` passed
+- `swiftlint` found 0 violations in 22 files
+- `swift test` passed with 16 tests in 7 suites
+
+```bash
+git diff --check
+```
+
+Exit code: 0
+
+Result:
+
+- no whitespace errors
+
+Notes:
+
+- `build-libgit2` owns scoped cleanup of `.build/libgit2/{arm64,x86_64,macos-universal}`, `.build/libgit2/CLibGit2LocalHeaders`, and `Artifacts/CLibGit2Local.xcframework`.
+- The local binary target path is intentionally a Task 3 development shape. Task 9 must still decide the distributable URL/checksum strategy before AgentStudio consumes the package as a dependency.
 
 ## Task 2: Repository Identity And Writer Registry
 
