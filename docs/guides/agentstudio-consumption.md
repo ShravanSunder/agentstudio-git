@@ -26,6 +26,7 @@ Local development uses the generated XCFramework path:
 Release consumption uses an HTTPS binary target with a checksum:
 
 ```bash
+AGENTSTUDIO_GIT_ALLOW_LIBGIT2_BINARY_URL=1 \
 AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL="https://<release-host>/CLibGit2Local.xcframework.zip" \
 AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM="<swift-package-compute-checksum>" \
 swift package dump-package
@@ -43,10 +44,12 @@ Publish both:
 - `Artifacts/CLibGit2Local.xcframework.zip.checksum`
 
 SwiftPM requires HTTPS for URL binary targets. Local `file://` URL binary targets are rejected, so the package keeps a local path mode for development and an explicit HTTPS/checksum mode for release manifest proof.
+The manifest only enters URL-binary-target mode when `AGENTSTUDIO_GIT_ALLOW_LIBGIT2_BINARY_URL=1`; ambient URL/checksum variables alone are ignored so ordinary local builds cannot silently switch to a remote artifact.
 
 After publishing the release zip to a public HTTPS location, prove that SwiftPM can download and link the hosted artifact:
 
 ```bash
+AGENTSTUDIO_GIT_ALLOW_LIBGIT2_BINARY_URL=1 \
 AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL="https://<release-host>/CLibGit2Local.xcframework.zip" \
 AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM="<swift-package-checksum>" \
 bash scripts/verify-hosted-libgit2-artifact.sh
@@ -89,10 +92,10 @@ Run these gates before AgentStudio pins or updates this SDK:
 
 ```bash
 mise run check
-swift test --sanitize address
-swift test --sanitize thread
+mise run test-asan
+mise run test-tsan
 bash scripts/verify-package-consumer.sh
-AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL="https://<release-host>/CLibGit2Local.xcframework.zip" AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM="<swift-package-checksum>" bash scripts/verify-hosted-libgit2-artifact.sh
+AGENTSTUDIO_GIT_ALLOW_LIBGIT2_BINARY_URL=1 AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL="https://<release-host>/CLibGit2Local.xcframework.zip" AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM="<swift-package-checksum>" bash scripts/verify-hosted-libgit2-artifact.sh
 AGENTSTUDIO_GIT_AGENTSTUDIO_PATH=/path/to/agent-studio bash scripts/verify-agentstudio-compatibility.sh
 ```
 

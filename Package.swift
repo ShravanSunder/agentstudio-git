@@ -2,14 +2,17 @@
 import PackageDescription
 
 let libGit2BinaryTarget: Target
-if let binaryURL = Context.environment["AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL"],
+let hostedBinaryURLModeEnabled = Context.environment["AGENTSTUDIO_GIT_ALLOW_LIBGIT2_BINARY_URL"] == "1"
+if hostedBinaryURLModeEnabled,
+    let binaryURL = Context.environment["AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL"],
     !binaryURL.isEmpty
 {
     guard let binaryChecksum = Context.environment["AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM"],
         !binaryChecksum.isEmpty
     else {
         fatalError(
-            "AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM is required when AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL is set")
+            "AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM is required when AGENTSTUDIO_GIT_ALLOW_LIBGIT2_BINARY_URL=1 and AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL is set"
+        )
     }
     libGit2BinaryTarget = .binaryTarget(
         name: "CLibGit2Local",

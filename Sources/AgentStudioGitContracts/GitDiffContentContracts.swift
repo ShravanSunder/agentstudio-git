@@ -16,6 +16,52 @@ public struct GitDiffTarget: Codable, Equatable, Hashable, Sendable {
         self.identifier = identifier
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case kind
+        case identifier
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let kind = try container.decode(GitDiffTargetKind.self, forKey: .kind)
+        let identifier = try container.decodeIfPresent(String.self, forKey: .identifier)
+        try Self.validate(kind: kind, identifier: identifier, codingPath: decoder.codingPath)
+        self.kind = kind
+        self.identifier = identifier
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        try Self.validate(kind: kind, identifier: identifier, codingPath: encoder.codingPath)
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(kind, forKey: .kind)
+        try container.encodeIfPresent(identifier, forKey: .identifier)
+    }
+
+    private static func validate(
+        kind: GitDiffTargetKind,
+        identifier: String?,
+        codingPath: [CodingKey]
+    ) throws {
+        switch (kind, identifier) {
+        case (.commit, .some(let identifier)) where !identifier.isEmpty:
+            return
+        case (.commit, _):
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(
+                    codingPath: codingPath,
+                    debugDescription: "commit diff targets require a non-empty identifier"
+                ))
+        case (_, .none):
+            return
+        case (_, .some):
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(
+                    codingPath: codingPath,
+                    debugDescription: "\(kind.rawValue) diff targets must not carry an identifier"
+                ))
+        }
+    }
+
     public static let workingTree = Self(kind: .workingTree)
     public static let index = Self(kind: .index)
     public static let head = Self(kind: .head)

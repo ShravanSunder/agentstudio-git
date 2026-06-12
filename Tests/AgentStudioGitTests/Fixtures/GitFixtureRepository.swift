@@ -5,8 +5,12 @@ struct GitFixtureRepository {
     let repositoryPath: URL
     let git: GitProcess
 
-    static func makeRepository(prefix: String = "agentstudio-git-worktree") throws -> Self {
-        let root = FileManager.default.temporaryDirectory
+    static func makeRepository(
+        prefix: String = "agentstudio-git-worktree",
+        rootDirectory: URL = FileManager.default.temporaryDirectory
+    ) throws -> Self {
+        let root =
+            rootDirectory
             .appending(path: "\(prefix)-\(UUID().uuidString)")
         let repositoryPath = root.appending(path: "repo")
         try FileManager.default.createDirectory(at: repositoryPath, withIntermediateDirectories: true)

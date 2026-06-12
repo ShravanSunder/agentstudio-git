@@ -18,11 +18,29 @@ struct GitRedactionTests {
         #expect(
             failure.redactedArguments == [
                 "clone",
-                "https://<redacted>@example.com/org/repo.git",
+                "<redacted-https-remote>",
             ])
-        #expect(failure.redactedStderr.contains("https://<redacted>@example.com/org/repo.git"))
+        #expect(failure.redactedStderr.contains("<redacted-https-remote>"))
         #expect(!failure.redactedStderr.contains("secret-token"))
         #expect(!failure.redactedArguments.joined(separator: " ").contains("secret-token"))
+    }
+
+    @Test("remote process failures redact plain HTTPS remote values")
+    func remoteProcessFailuresRedactPlainHTTPSRemoteValues() {
+        let failure = GitRemoteProcessFailure.redacting(
+            executable: "git",
+            arguments: [
+                "clone",
+                "https://example.com/team/private-repo.git",
+            ],
+            exitCode: 128,
+            stderr: "fatal: could not read from https://example.com/team/private-repo.git"
+        )
+
+        let redactedOutput = ([failure.redactedStderr] + failure.redactedArguments).joined(separator: " ")
+        #expect(!redactedOutput.contains("example.com"))
+        #expect(!redactedOutput.contains("team/private-repo.git"))
+        #expect(redactedOutput.contains("<redacted-https-remote>"))
     }
 
     @Test("redaction removes SSH private key paths from process output")
@@ -61,5 +79,25 @@ struct GitRedactionTests {
         #expect(!redactedOutput.contains("team/smoke.git"))
         #expect(!redactedOutput.contains("git@"))
         #expect(redactedOutput.contains("<redacted-ssh-remote>"))
+    }
+
+    @Test("redaction removes HTTPS signed URL query values")
+    func redactionRemovesHTTPSSignedURLQueryValues() {
+        let failure = GitRemoteProcessFailure.redacting(
+            executable: "git",
+            arguments: [
+                "fetch",
+                "https://example.com/artifact.zip?X-Amz-Signature=abcdef123456&sig=shhhh&expires=999",
+            ],
+            exitCode: 128,
+            stderr:
+                "failed https://example.com/artifact.zip?X-Amz-Signature=abcdef123456&sig=shhhh&expires=999"
+        )
+
+        let redactedOutput = ([failure.redactedStderr] + failure.redactedArguments).joined(separator: " ")
+        #expect(!redactedOutput.contains("abcdef123456"))
+        #expect(!redactedOutput.contains("shhhh"))
+        #expect(!redactedOutput.contains("999"))
+        #expect(redactedOutput.contains("<redacted-https-remote>"))
     }
 }

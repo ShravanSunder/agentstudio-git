@@ -16,10 +16,7 @@ enum LibGit2ReviewSupport {
             git_repository_open_ext(&repository, pathPointer, 0, nil)
         }
         guard openResult >= 0, let repository else {
-            throw LibGit2ErrorCapture.failure(
-                code: openResult,
-                fallbackMessage: "failed to open repository at \(path.path)"
-            )
+            throw repositoryOpenFailure(code: openResult, path: path)
         }
         defer { git_repository_free(repository) }
 

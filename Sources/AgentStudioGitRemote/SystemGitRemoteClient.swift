@@ -8,6 +8,7 @@ public struct SystemGitRemoteClient: AgentStudioGitRemoteClient, Sendable {
         public let promptPolicy: GitRemotePromptPolicy
         public let allowedProtocols: [GitRemoteProtocol]
         public let operationTimeoutSeconds: Double
+        public let capturedOutputLimitBytes: Int64
         public let additionalEnvironment: [String: String]
 
         public init(
@@ -16,6 +17,7 @@ public struct SystemGitRemoteClient: AgentStudioGitRemoteClient, Sendable {
             promptPolicy: GitRemotePromptPolicy = .noninteractive,
             allowedProtocols: [GitRemoteProtocol] = [.https, .ssh],
             operationTimeoutSeconds: Double = 120,
+            capturedOutputLimitBytes: Int64 = 1_048_576,
             additionalEnvironment: [String: String] = [:]
         ) {
             self.executableURL = executableURL
@@ -23,6 +25,7 @@ public struct SystemGitRemoteClient: AgentStudioGitRemoteClient, Sendable {
             self.promptPolicy = promptPolicy
             self.allowedProtocols = allowedProtocols
             self.operationTimeoutSeconds = max(operationTimeoutSeconds, 0.001)
+            self.capturedOutputLimitBytes = max(capturedOutputLimitBytes, 1)
             self.additionalEnvironment = additionalEnvironment
         }
 
@@ -42,6 +45,9 @@ public struct SystemGitRemoteClient: AgentStudioGitRemoteClient, Sendable {
 
         func processEnvironment() -> [String: String] {
             var environment = inheritEnvironment ? ProcessInfo.processInfo.environment : [:]
+            if inheritEnvironment {
+                Self.removeUnsafeInheritedGitEnvironmentOverrides(from: &environment)
+            }
             environment.merge(additionalEnvironment) { _, newValue in newValue }
             for key in environment.keys where key.hasPrefix("GIT_TRACE") || key == "GIT_CURL_VERBOSE" {
                 environment.removeValue(forKey: key)
@@ -60,11 +66,42 @@ public struct SystemGitRemoteClient: AgentStudioGitRemoteClient, Sendable {
             return environment
         }
 
+        private static func removeUnsafeInheritedGitEnvironmentOverrides(from environment: inout [String: String]) {
+            for key in environment.keys where isUnsafeInheritedGitEnvironmentOverride(key) {
+                environment.removeValue(forKey: key)
+            }
+        }
+
+        private static func isUnsafeInheritedGitEnvironmentOverride(_ key: String) -> Bool {
+            if key.hasPrefix("GIT_CONFIG") {
+                return true
+            }
+            switch key {
+            case "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+                "GIT_COMMON_DIR",
+                "GIT_DIR",
+                "GIT_EXEC_PATH",
+                "GIT_INDEX_FILE",
+                "GIT_OBJECT_DIRECTORY",
+                "GIT_PROXY_COMMAND",
+                "GIT_SSL_NO_VERIFY",
+                "GIT_WORK_TREE":
+                return true
+            default:
+                return false
+            }
+        }
+
         private func sshBatchModeCommand(from command: String?) -> String {
             guard let command, !command.isEmpty else {
                 return "ssh -oBatchMode=yes"
             }
-            return "\(removingBatchModeOptions(from: command)) -oBatchMode=yes"
+            let sanitizedCommand = removingBatchModeOptions(from: command)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !sanitizedCommand.isEmpty else {
+                return "ssh -oBatchMode=yes"
+            }
+            return "\(sanitizedCommand) -oBatchMode=yes"
         }
 
         private func removingBatchModeOptions(from command: String) -> String {
@@ -76,8 +113,6 @@ public struct SystemGitRemoteClient: AgentStudioGitRemoteClient, Sendable {
             return patterns.reduce(command) { currentCommand, pattern in
                 replacingMatches(in: currentCommand, pattern: pattern, template: "$1")
             }
-            .split(separator: " ")
-            .joined(separator: " ")
         }
 
         private func replacingMatches(in value: String, pattern: String, template: String) -> String {

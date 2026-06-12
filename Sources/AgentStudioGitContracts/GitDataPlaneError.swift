@@ -10,10 +10,12 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
     case pathEscapesRepository(path: String)
     case processFailed(GitRemoteProcessFailure)
     case processTimedOut(GitRemoteProcessFailure)
+    case processCancelled(GitRemoteProcessFailure)
+    case processOutputTooLarge(stream: GitProcessOutputStream, sizeBytes: Int64, maxSizeBytes: Int64)
     case libgit2Failure(code: Int32, klass: Int32, message: String)
     case unsupported(message: String)
 
-    private enum CodingKeys: String, CodingKey {
+    private enum CodingKeys: String, CodingKey, CaseIterable {
         case repositoryNotFound
         case worktreeNotFound
         case locked
@@ -23,6 +25,8 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
         case pathEscapesRepository
         case processFailed
         case processTimedOut
+        case processCancelled
+        case processOutputTooLarge
         case libgit2Failure
         case unsupported
     }
@@ -34,12 +38,22 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
         case reason
         case sizeBytes
         case maxSizeBytes
+        case stream
         case code
         case klass
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let decodedCases = CodingKeys.allCases.filter { container.contains($0) }
+        guard decodedCases.count == 1 else {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "GitDataPlaneError payload must contain exactly one case"
+                )
+            )
+        }
         if container.contains(.repositoryNotFound) {
             let payload = try container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .repositoryNotFound)
             self = try .repositoryNotFound(path: payload.decode(URL.self, forKey: .path))
@@ -74,6 +88,15 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
             self = try .processFailed(container.decode(GitRemoteProcessFailure.self, forKey: .processFailed))
         } else if container.contains(.processTimedOut) {
             self = try .processTimedOut(container.decode(GitRemoteProcessFailure.self, forKey: .processTimedOut))
+        } else if container.contains(.processCancelled) {
+            self = try .processCancelled(container.decode(GitRemoteProcessFailure.self, forKey: .processCancelled))
+        } else if container.contains(.processOutputTooLarge) {
+            let payload = try container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .processOutputTooLarge)
+            self = try .processOutputTooLarge(
+                stream: payload.decode(GitProcessOutputStream.self, forKey: .stream),
+                sizeBytes: payload.decode(Int64.self, forKey: .sizeBytes),
+                maxSizeBytes: payload.decode(Int64.self, forKey: .maxSizeBytes)
+            )
         } else if container.contains(.libgit2Failure) {
             let payload = try container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .libgit2Failure)
             self = try .libgit2Failure(
@@ -123,6 +146,13 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
             try container.encode(failure, forKey: .processFailed)
         case .processTimedOut(let failure):
             try container.encode(failure, forKey: .processTimedOut)
+        case .processCancelled(let failure):
+            try container.encode(failure, forKey: .processCancelled)
+        case .processOutputTooLarge(let stream, let sizeBytes, let maxSizeBytes):
+            var payload = container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .processOutputTooLarge)
+            try payload.encode(stream, forKey: .stream)
+            try payload.encode(sizeBytes, forKey: .sizeBytes)
+            try payload.encode(maxSizeBytes, forKey: .maxSizeBytes)
         case .libgit2Failure(let code, let klass, let message):
             var payload = container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .libgit2Failure)
             try payload.encode(code, forKey: .code)
@@ -133,6 +163,11 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
             try payload.encode(message, forKey: .message)
         }
     }
+}
+
+public enum GitProcessOutputStream: String, Codable, CaseIterable, Sendable {
+    case stdout
+    case stderr
 }
 
 public enum GitWorktreePruneRefusalReason: String, Codable, CaseIterable, Sendable {

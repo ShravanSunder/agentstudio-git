@@ -29,9 +29,9 @@ public struct GitExecutableLocator: Sendable {
         }
 
         return GitExecutableInvocation(
-            executableURL: URL(fileURLWithPath: "/usr/bin/env"),
-            leadingArguments: ["git"],
-            displayName: "git"
+            executableURL: URL(fileURLWithPath: "/usr/bin/git"),
+            leadingArguments: [],
+            displayName: "/usr/bin/git"
         )
     }
 }

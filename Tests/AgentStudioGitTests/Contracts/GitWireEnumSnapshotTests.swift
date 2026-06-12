@@ -5,12 +5,41 @@ import Testing
 struct GitWireEnumSnapshotTests {
     @Test("wire enum raw values stay stable")
     func wireEnumRawValuesStayStable() {
-        #expect(GitStatusState.added.rawValue == "added")
-        #expect(GitStatusState.modified.rawValue == "modified")
-        #expect(GitStatusState.renamed.rawValue == "renamed")
-        #expect(GitDiffChangeKind.deleted.rawValue == "deleted")
-        #expect(GitDiffTargetKind.workingTree.rawValue == "workingTree")
-        #expect(GitRemotePromptPolicy.noninteractive.rawValue == "noninteractive")
-        #expect(GitWorktreePruneRefusalReason.liveWorktree.rawValue == "liveWorktree")
+        #expect(GitHeadKind.allCases.map(\.rawValue) == ["branch", "detached", "unborn"])
+        #expect(
+            GitStatusState.allCases.map(\.rawValue) == [
+                "added",
+                "deleted",
+                "modified",
+                "renamed",
+                "copied",
+                "typeChanged",
+                "unmerged",
+            ])
+        #expect(GitDiffTargetKind.allCases.map(\.rawValue) == ["commit", "head", "index", "workingTree"])
+        #expect(
+            GitDiffChangeKind.allCases.map(\.rawValue) == [
+                "added",
+                "copied",
+                "deleted",
+                "modified",
+                "renamed",
+                "typeChanged",
+                "unmerged",
+            ])
+        #expect(GitRemotePromptPolicy.allCases.map(\.rawValue) == ["noninteractive", "trustedInteractive"])
+        #expect(GitRemoteProtocol.allCases.map(\.rawValue) == ["file", "git", "http", "https", "ssh"])
+        #expect(GitProcessOutputStream.allCases.map(\.rawValue) == ["stdout", "stderr"])
+        #expect(GitWorktreePruneRefusalReason.allCases.map(\.rawValue) == ["liveWorktree"])
+        #expect(
+            GitWorktreeRemovalRefusalReason.allCases.map(\.rawValue) == [
+                "mainWorktree",
+                "dirtyTrackedChanges",
+                "stagedChanges",
+                "untrackedFiles",
+                "locked",
+                "ambiguousPath",
+                "pathMismatch",
+            ])
     }
 }

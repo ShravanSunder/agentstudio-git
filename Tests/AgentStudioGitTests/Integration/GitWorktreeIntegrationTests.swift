@@ -43,6 +43,36 @@ struct GitWorktreeIntegrationTests {
         #expect(Set(snapshots.map(\.id)).count == snapshots.count)
     }
 
+    @Test("/tmp worktree snapshots and repository identity share one writer lane")
+    func tmpWorktreeSnapshotsAndRepositoryIdentityShareOneWriterLane() async throws {
+        let tmpDirectory = URL(fileURLWithPath: "/tmp", isDirectory: true)
+        let fixture = try GitFixtureRepository.makeRepository(
+            prefix: "agentstudio-git-tmp-identity",
+            rootDirectory: tmpDirectory
+        )
+        defer { fixture.remove() }
+        let client = LibGit2AgentStudioGitLocalClient()
+        let registry = GitRepositoryWriterRegistry()
+
+        let privateRepositoryPath = URL(fileURLWithPath: "/private\(fixture.repositoryPath.path)", isDirectory: true)
+
+        let identity = try await client.repositoryIdentity(for: privateRepositoryPath)
+        let mainSnapshot = try #require(
+            try await client.worktrees(for: fixture.repositoryPath).first { $0.isMainWorktree })
+        let identityLane = await registry.writer(for: identity)
+        let snapshotLane = await registry.writer(
+            for: GitRepositoryIdentity(
+                id: mainSnapshot.repositoryID,
+                canonicalCommonDirectory: mainSnapshot.gitDirectory,
+                mainWorktreePath: mainSnapshot.canonicalPath
+            )
+        )
+
+        #expect(identity.id == mainSnapshot.repositoryID)
+        #expect(identity.canonicalCommonDirectory == mainSnapshot.gitDirectory)
+        #expect(identityLane.laneID == snapshotLane.laneID)
+    }
+
     @Test("create supports existing branch, new branch, detached, and checked-out branch refusal")
     func createSupportsBranchModesAndCheckedOutBranchRefusal() async throws {
         let fixture = try GitFixtureRepository.makeRepository()

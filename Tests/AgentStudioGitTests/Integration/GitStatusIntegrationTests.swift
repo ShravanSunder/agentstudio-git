@@ -189,6 +189,35 @@ struct GitStatusIntegrationTests {
         #expect(!encoded.contains("user:secret-token"))
     }
 
+    @Test("origin snapshots redact all HTTPS query values")
+    func originSnapshotsRedactAllHTTPSQueryValues() async throws {
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-status-origin-query-redaction")
+        defer { fixture.remove() }
+        let signedURL =
+            "https://example.com/org/repo.git?X-Amz-Signature=abcdef123456&X-Amz-Credential=credential789&expires=999999"
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        try fixture.git.run("remote", "add", "origin", signedURL)
+
+        let status = try await client.status(for: fixture.repositoryPath, options: GitStatusOptions())
+
+        guard case .resolved(let remote) = status.originResolution else {
+            Issue.record("expected resolved origin, got \(status.originResolution)")
+            return
+        }
+        let statusData = try JSONEncoder().encode(status)
+        let encoded = try #require(String(data: statusData, encoding: .utf8))
+        #expect(remote.rawURL.contains("X-Amz-Signature=<redacted>"))
+        #expect(remote.rawURL.contains("X-Amz-Credential=<redacted>"))
+        #expect(remote.rawURL.contains("expires=<redacted>"))
+        #expect(!remote.rawURL.contains("abcdef123456"))
+        #expect(!remote.rawURL.contains("credential789"))
+        #expect(!remote.url.absoluteString.contains("abcdef123456"))
+        #expect(!remote.url.absoluteString.contains("credential789"))
+        #expect(!encoded.contains("abcdef123456"))
+        #expect(!encoded.contains("credential789"))
+    }
+
     @Test("origin snapshots preserve SSH usernames")
     func originSnapshotsPreserveSSHUsernames() async throws {
         let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-status-origin-ssh")

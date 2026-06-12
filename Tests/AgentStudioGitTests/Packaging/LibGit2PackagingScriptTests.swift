@@ -32,6 +32,7 @@ struct LibGit2PackagingScriptTests {
         #expect(packageContents.contains(".binaryTarget("))
         #expect(packageContents.contains("name: \"CLibGit2Local\""))
         #expect(packageContents.contains("path: \"Artifacts/CLibGit2Local.xcframework\""))
+        #expect(packageContents.contains("AGENTSTUDIO_GIT_ALLOW_LIBGIT2_BINARY_URL"))
         #expect(packageContents.contains("AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL"))
         #expect(packageContents.contains("AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM"))
         #expect(packageContents.contains("url: binaryURL"))
@@ -57,11 +58,25 @@ struct LibGit2PackagingScriptTests {
         #expect(contents.contains("swift run --package-path"))
         #expect(contents.contains("env -u AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL"))
         #expect(contents.contains("-u AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM"))
+        #expect(contents.contains("-u AGENTSTUDIO_GIT_ALLOW_LIBGIT2_BINARY_URL"))
         #expect(contents.contains("AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL"))
         #expect(contents.contains("AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM"))
+        #expect(contents.contains("AGENTSTUDIO_GIT_ALLOW_LIBGIT2_BINARY_URL=1"))
         #expect(contents.contains("swift package dump-package"))
         #expect(contents.contains("CLibGit2Local.xcframework.zip.checksum"))
         #expect(!contents.contains("mise run"))
+    }
+
+    @Test("package gates hosted libgit2 binary URL behind explicit opt-in")
+    func packageGatesHostedLibGit2BinaryURLBehindExplicitOptIn() throws {
+        let packageContents = try readFile("Package.swift")
+
+        #expect(
+            packageContents.contains(
+                "Context.environment[\"AGENTSTUDIO_GIT_ALLOW_LIBGIT2_BINARY_URL\"] == \"1\""
+            ))
+        #expect(packageContents.contains("if hostedBinaryURLModeEnabled,"))
+        #expect(packageContents.contains("let binaryURL = Context.environment[\"AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL\"]"))
     }
 
     @Test("check workflow runs sanitizer and consumer gates")
@@ -91,6 +106,8 @@ struct LibGit2PackagingScriptTests {
     func testTaskRunsNamedSwiftTestingSuitesThroughNoZeroFilter() throws {
         let miseContents = try readFile(".mise.toml")
         let scriptContents = try readFile("scripts/run-swift-test-suites.sh")
+        let runnerSuites = suiteNamesListedByRunner(scriptContents)
+        let sourceSuites = try swiftTestingSuiteTypeNames()
 
         #expect(miseContents.contains("bash scripts/run-swift-test-suites.sh"))
         #expect(miseContents.contains("bash scripts/run-swift-test-suites.sh --sanitize address --disable-xctest"))
@@ -101,6 +118,7 @@ struct LibGit2PackagingScriptTests {
         #expect(scriptContents.contains("GitProcessRunnerTests"))
         #expect(scriptContents.contains("SystemGitRemoteClientTests"))
         #expect(scriptContents.contains("BridgeReviewSourceCompatibilityTests"))
+        #expect(runnerSuites == sourceSuites)
     }
 
     @Test("filter script falls back when ripgrep is unavailable")
@@ -150,7 +168,7 @@ struct LibGit2PackagingScriptTests {
         let contents = try readFile("Tests/AgentStudioGitTests/Remote/GitProcessRunnerTests.swift")
 
         #expect(contents.contains("@Suite(\"Git process runner\", .serialized)"))
-        #expect(contents.contains("operationTimeoutSeconds: Double = 2"))
+        #expect(contents.contains("operationTimeoutSeconds: Double = 10"))
     }
 
     @Test("artifact workflow runs on Swift 6.2 capable macOS image")
@@ -195,6 +213,7 @@ struct LibGit2PackagingScriptTests {
 
         #expect(scriptContents.contains("AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL"))
         #expect(scriptContents.contains("AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM"))
+        #expect(scriptContents.contains("AGENTSTUDIO_GIT_ALLOW_LIBGIT2_BINARY_URL=1"))
         #expect(scriptContents.contains("must be an https URL"))
         #expect(scriptContents.contains(".package(path:"))
         #expect(scriptContents.contains("import AgentStudioGitLocal"))
@@ -210,6 +229,10 @@ struct LibGit2PackagingScriptTests {
         #expect(miseContents.contains("bash scripts/verify-hosted-libgit2-artifact.sh"))
         #expect(guideContents.contains("verify-hosted-libgit2-artifact.sh"))
         #expect(guideContents.contains("AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL"))
+        #expect(guideContents.contains("mise run test-asan"))
+        #expect(guideContents.contains("mise run test-tsan"))
+        #expect(!guideContents.contains("swift test --sanitize address"))
+        #expect(!guideContents.contains("swift test --sanitize thread"))
     }
 
     @Test("hosted artifact verifier validates public inputs before SwiftPM")
@@ -241,6 +264,53 @@ struct LibGit2PackagingScriptTests {
         #expect(loopbackResult.exitCode == 2)
         #expect(try fakeSwift.recordedArguments().isEmpty)
 
+        let privateIPv6Result = try runHostedArtifactVerifier(
+            environment: [
+                "AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL": "https://[fd00::1]/CLibGit2Local.xcframework.zip",
+                "AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM": checksum,
+            ],
+            fakeSwift: fakeSwift
+        )
+
+        #expect(privateIPv6Result.exitCode == 2)
+        #expect(try fakeSwift.recordedArguments().isEmpty)
+
+        let mappedLoopbackIPv6Result = try runHostedArtifactVerifier(
+            environment: [
+                "AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL":
+                    "https://[::ffff:127.0.0.1]/CLibGit2Local.xcframework.zip",
+                "AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM": checksum,
+            ],
+            fakeSwift: fakeSwift
+        )
+
+        #expect(mappedLoopbackIPv6Result.exitCode == 2)
+        #expect(try fakeSwift.recordedArguments().isEmpty)
+
+        let hexMappedLoopbackIPv6Result = try runHostedArtifactVerifier(
+            environment: [
+                "AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL":
+                    "https://[::ffff:7f00:1]/CLibGit2Local.xcframework.zip",
+                "AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM": checksum,
+            ],
+            fakeSwift: fakeSwift
+        )
+
+        #expect(hexMappedLoopbackIPv6Result.exitCode == 2)
+        #expect(try fakeSwift.recordedArguments().isEmpty)
+
+        let hexMappedPrivateIPv6Result = try runHostedArtifactVerifier(
+            environment: [
+                "AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL":
+                    "https://[::ffff:c0a8:1]/CLibGit2Local.xcframework.zip",
+                "AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM": checksum,
+            ],
+            fakeSwift: fakeSwift
+        )
+
+        #expect(hexMappedPrivateIPv6Result.exitCode == 2)
+        #expect(try fakeSwift.recordedArguments().isEmpty)
+
         let checksumResult = try runHostedArtifactVerifier(
             environment: [
                 "AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL": "https://example.com/CLibGit2Local.xcframework.zip",
@@ -251,6 +321,51 @@ struct LibGit2PackagingScriptTests {
 
         #expect(checksumResult.exitCode == 2)
         #expect(try fakeSwift.recordedArguments().isEmpty)
+    }
+
+    @Test("hosted artifact verifier resolves non-allowlisted hostnames")
+    func hostedArtifactVerifierResolvesNonAllowlistedHostnames() throws {
+        let checksum = String(repeating: "a", count: 64)
+        let publicHostFakeSwift = try FakeSwiftExecutable()
+        let publicHostResult = try runHostedArtifactVerifier(
+            environment: [
+                "AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL":
+                    "https://fcdelivery.example.com/CLibGit2Local.xcframework.zip",
+                "AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM": checksum,
+            ],
+            fakeSwift: publicHostFakeSwift
+        )
+
+        #expect(publicHostResult.exitCode == 1)
+        #expect(try !publicHostFakeSwift.recordedArguments().isEmpty)
+
+        let knownPublicHostFakeSwift = try FakeSwiftExecutable()
+        let knownPublicHostResult = try runHostedArtifactVerifier(
+            environment: [
+                "AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL":
+                    "https://raw.githubusercontent.com/example/agentstudio-git-artifacts/CLibGit2Local.xcframework.zip",
+                "AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM": checksum,
+                "AGENTSTUDIO_GIT_TEST_RESOLVED_ARTIFACT_ADDRESSES": "127.0.0.1",
+            ],
+            fakeSwift: knownPublicHostFakeSwift
+        )
+
+        #expect(knownPublicHostResult.exitCode == 1)
+        #expect(try !knownPublicHostFakeSwift.recordedArguments().isEmpty)
+
+        let privateHostFakeSwift = try FakeSwiftExecutable()
+        let privateResolvedHostnameResult = try runHostedArtifactVerifier(
+            environment: [
+                "AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL":
+                    "https://public-looking.example.com/CLibGit2Local.xcframework.zip",
+                "AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM": checksum,
+                "AGENTSTUDIO_GIT_TEST_RESOLVED_ARTIFACT_ADDRESSES": "127.0.0.1",
+            ],
+            fakeSwift: privateHostFakeSwift
+        )
+
+        #expect(privateResolvedHostnameResult.exitCode == 2)
+        #expect(try privateHostFakeSwift.recordedArguments().isEmpty)
     }
 
     @Test("hosted artifact verifier isolates cache and redacts SwiftPM output")
@@ -286,6 +401,51 @@ struct LibGit2PackagingScriptTests {
         try String(contentsOf: URL(fileURLWithPath: path), encoding: .utf8)
     }
 
+    private func suiteNamesListedByRunner(_ scriptContents: String) -> Set<String> {
+        guard let startRange = scriptContents.range(of: "suites=("),
+            let endRange = scriptContents[startRange.upperBound...].range(of: ")")
+        else {
+            return []
+        }
+        return Set(
+            scriptContents[startRange.upperBound..<endRange.lowerBound]
+                .split(separator: "\n")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty && !$0.hasPrefix("#") }
+        )
+    }
+
+    private func swiftTestingSuiteTypeNames() throws -> Set<String> {
+        let testRoot = URL(fileURLWithPath: "Tests/AgentStudioGitTests")
+        let fileManager = FileManager.default
+        guard
+            let enumerator = fileManager.enumerator(
+                at: testRoot,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            )
+        else {
+            return []
+        }
+
+        var suiteNames: Set<String> = []
+        let expression = try NSRegularExpression(
+            pattern: #"@Suite[^\n]*\n\s*struct\s+([A-Za-z_][A-Za-z0-9_]*)"#,
+            options: []
+        )
+        for case let fileURL as URL in enumerator where fileURL.pathExtension == "swift" {
+            let contents = try String(contentsOf: fileURL, encoding: .utf8)
+            let range = NSRange(contents.startIndex..<contents.endIndex, in: contents)
+            for match in expression.matches(in: contents, range: range) {
+                guard let nameRange = Range(match.range(at: 1), in: contents) else {
+                    continue
+                }
+                suiteNames.insert(String(contents[nameRange]))
+            }
+        }
+        return suiteNames
+    }
+
     private func runHostedArtifactVerifier(
         environment: [String: String],
         fakeSwift: FakeSwiftExecutable
@@ -297,6 +457,10 @@ struct LibGit2PackagingScriptTests {
 
         var processEnvironment = ProcessInfo.processInfo.environment
         processEnvironment.merge(environment) { _, testValue in testValue }
+        processEnvironment["AGENTSTUDIO_GIT_TESTING"] = "1"
+        if processEnvironment["AGENTSTUDIO_GIT_TEST_RESOLVED_ARTIFACT_ADDRESSES"] == nil {
+            processEnvironment["AGENTSTUDIO_GIT_TEST_RESOLVED_ARTIFACT_ADDRESSES"] = "93.184.216.34"
+        }
         processEnvironment["PATH"] =
             "\(fakeSwift.binDirectory.path):\(ProcessInfo.processInfo.environment["PATH"] ?? "")"
         processEnvironment["AGENTSTUDIO_FAKE_SWIFT_ARGUMENTS"] = fakeSwift.argumentsURL.path
