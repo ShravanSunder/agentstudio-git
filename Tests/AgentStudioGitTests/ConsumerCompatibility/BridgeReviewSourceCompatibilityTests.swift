@@ -18,11 +18,16 @@ private struct BridgeReviewSourceAdapterCompileHarness {
     private let fileManager = FileManager.default
 
     func typecheck() throws {
-        let packageRoot = agentStudioGitPackageRoot()
-        let agentStudioRoot = siblingAgentStudioRoot()
+        let packageRoot = AgentStudioCompatibilityHarnessSupport.agentStudioGitPackageRoot()
+        guard let agentStudioRoot = AgentStudioCompatibilityHarnessSupport.agentStudioRoot() else {
+            AgentStudioCompatibilityHarnessSupport.recordMissingAgentStudioSeam(
+                "missing checked-out AgentStudio Bridge seam")
+            return
+        }
         let requiredSources = appSources(agentStudioRoot: agentStudioRoot)
         guard requiredSources.allSatisfy({ fileManager.fileExists(atPath: $0.path) }) else {
-            Issue.record("missing checked-out AgentStudio Bridge seam at \(agentStudioRoot.path)")
+            AgentStudioCompatibilityHarnessSupport.recordMissingAgentStudioSeam(
+                "missing checked-out AgentStudio Bridge seam at \(agentStudioRoot.path)")
             return
         }
 
@@ -379,11 +384,16 @@ private struct BridgeReviewSourceAdapterCompileHarness {
     }
 
     func runContentLoadingExecutable() throws {
-        let packageRoot = agentStudioGitPackageRoot()
-        let agentStudioRoot = siblingAgentStudioRoot()
+        let packageRoot = AgentStudioCompatibilityHarnessSupport.agentStudioGitPackageRoot()
+        guard let agentStudioRoot = AgentStudioCompatibilityHarnessSupport.agentStudioRoot() else {
+            AgentStudioCompatibilityHarnessSupport.recordMissingAgentStudioSeam(
+                "missing checked-out AgentStudio Bridge seam")
+            return
+        }
         let requiredSources = appSources(agentStudioRoot: agentStudioRoot)
         guard requiredSources.allSatisfy({ fileManager.fileExists(atPath: $0.path) }) else {
-            Issue.record("missing checked-out AgentStudio Bridge seam at \(agentStudioRoot.path)")
+            AgentStudioCompatibilityHarnessSupport.recordMissingAgentStudioSeam(
+                "missing checked-out AgentStudio Bridge seam at \(agentStudioRoot.path)")
             return
         }
 
@@ -558,13 +568,10 @@ private struct BridgeReviewSourceAdapterCompileHarness {
     }
 
     private func moduleSearchPath(packageRoot: URL) throws -> URL {
-        let moduleSearchPath = packageRoot.appending(path: ".build/arm64-apple-macosx/debug/Modules")
-        guard fileManager.fileExists(atPath: moduleSearchPath.appending(path: "AgentStudioGit.swiftmodule").path),
-            fileManager.fileExists(atPath: moduleSearchPath.appending(path: "AgentStudioGitContracts.swiftmodule").path)
-        else {
-            throw BridgeReviewCompatibilityHarnessError.missingBuiltModule(moduleSearchPath.path)
-        }
-        return moduleSearchPath
+        try AgentStudioCompatibilityHarnessSupport.moduleSearchPath(
+            packageRoot: packageRoot,
+            requiredModules: ["AgentStudioGit", "AgentStudioGitContracts"]
+        )
     }
 
     private func runSwiftTypecheck(harnessFile: URL, moduleSearchPath: URL, packageRoot: URL) throws {
@@ -729,22 +736,7 @@ private struct BridgeReviewSourceAdapterCompileHarness {
     }
 }
 
-private func siblingAgentStudioRoot() -> URL {
-    agentStudioGitPackageRoot()
-        .deletingLastPathComponent()
-        .appending(path: "agent-studio.bridge-start")
-}
-
-private func agentStudioGitPackageRoot() -> URL {
-    URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-}
-
 private enum BridgeReviewCompatibilityHarnessError: Error {
-    case missingBuiltModule(String)
     case typecheckFailed(Int32)
     case executableCompileFailed(Int32)
     case executableRunFailed(Int32)

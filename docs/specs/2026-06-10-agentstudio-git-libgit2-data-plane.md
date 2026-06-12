@@ -74,9 +74,11 @@ Local operations do not use Git or GitHub authentication. libgit2 reads local `.
 
 Remote operations such as clone, fetch, push, and remote reference discovery use the user's existing system `git` binary through a trusted process policy. That preserves credential helpers, SSH agent behavior, certificates, Git config, and enterprise setup that libgit2 credential callbacks would not automatically inherit.
 
-Default remote operations are noninteractive and set prompt policy explicitly. Interactive prompting is trusted opt-in for a caller that owns UI or TTY behavior.
+System Git executable selection, inherited environment policy, prompt policy, protocol allowlist, and timeout are trusted client configuration. They are not public per-request fields.
 
-Public values and errors must not expose credential-bearing URLs, raw argv, raw stderr, tokens, private key paths, or sensitive environment values.
+Default remote operations are noninteractive and set prompt policy explicitly. Noninteractive mode disables Git/SSH askpass helpers and enables SSH batch mode. Interactive prompting is trusted opt-in for a caller that owns UI or TTY behavior.
+
+Public values and errors must not expose credential-bearing URLs, raw argv, raw stderr, tokens, private key paths, or sensitive environment values. Public remote snapshots redact credential-bearing configured remotes before values are encoded or returned to AgentStudio. System Git processes fail with a typed timeout error when they exceed the configured operation timeout.
 
 ## Locking And Concurrency
 
@@ -223,7 +225,7 @@ Unit tests:
 - enum raw-value snapshots
 - invalid/unknown discriminator decoding
 - typed error mapping
-- redaction of credential-bearing URLs, argv, stderr, and sensitive environment values
+- redaction of credential-bearing URLs, argv, stderr, private key paths, public origin snapshots, and sensitive environment values
 - path canonicalization
 - two-axis status states such as staged+modified
 
@@ -242,7 +244,7 @@ C interop tests:
 
 Remote/auth tests:
 
-- fake system-Git tests cover clone, fetch, push, remote reference discovery, command construction, environment policy, prompt policy, protocol restrictions, parser output, and redaction
+- fake system-Git tests cover clone, fetch, push, remote reference discovery, command construction, environment policy, prompt policy, timeout behavior, protocol restrictions, parser output, and redaction
 - opt-in live smoke records whether HTTPS and SSH auth paths were exercised against the user's configured environment
 
 Do not add wall-clock sleeps. Wait for exact filesystem/process state when necessary.

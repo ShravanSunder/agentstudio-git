@@ -1568,3 +1568,267 @@ Exit code: 0
 Result:
 
 - no whitespace errors
+
+## Post-Review Hardening: Redaction, Timeout, And Consumer Proof
+
+Date: 2026-06-12
+
+Status: implemented and verified.
+
+Review findings addressed:
+
+- public origin/status snapshots leaked credential-bearing `origin` URLs
+- process failure redaction did not cover SSH private-key paths
+- remote subprocesses had no configured timeout
+- noninteractive system-Git mode still allowed Git/SSH askpass helpers
+- compatibility harnesses were pinned to one sibling checkout name and one build triple
+- downstream consumer proof imported only `AgentStudioGitLocal`
+
+Files changed:
+
+- `Sources/AgentStudioGitContracts/GitDataPlaneError.swift`
+- `Sources/AgentStudioGitContracts/GitRedaction.swift`
+- `Sources/AgentStudioGitLocal/Status/LibGit2BranchReader.swift`
+- `Sources/AgentStudioGitRemote/GitProcessRunner.swift`
+- `Sources/AgentStudioGitRemote/SystemGitRemoteClient.swift`
+- `Tests/AgentStudioGitTests/ConsumerCompatibility/AgentStudioCompatibilityHarnessSupport.swift`
+- `Tests/AgentStudioGitTests/ConsumerCompatibility/BridgeReviewSourceCompatibilityTests.swift`
+- `Tests/AgentStudioGitTests/ConsumerCompatibility/GitWorkingTreeStatusCompatibilityTests.swift`
+- `Tests/AgentStudioGitTests/Contracts/GitRedactionTests.swift`
+- `Tests/AgentStudioGitTests/Integration/GitStatusIntegrationTests.swift`
+- `Tests/AgentStudioGitTests/Packaging/LibGit2PackagingScriptTests.swift`
+- `Tests/AgentStudioGitTests/Remote/GitProcessRunnerTests.swift`
+- `scripts/verify-package-consumer.sh`
+- `docs/specs/2026-06-10-agentstudio-git-libgit2-data-plane.md`
+- `docs/superpowers/plans/2026-06-10-agentstudio-git-libgit2-data-plane.md`
+- `docs/guides/agentstudio-consumption.md`
+- `docs/wip/implementation-proof/2026-06-11-agentstudio-git-sdk-proof.md`
+
+Red evidence:
+
+```bash
+bash scripts/run-swift-test-filter.sh GitRedactionTests
+```
+
+Exit code: 1
+
+Result before implementation:
+
+- `redaction removes SSH private key paths from process output` failed with 5 issues
+- output still contained `/Users/alice/.ssh`, `company_deploy_key`, `id_work`, and `id_rsa`
+
+```bash
+bash scripts/run-swift-test-filter.sh GitStatusIntegrationTests
+```
+
+Exit code: 1
+
+Result before implementation:
+
+- `origin snapshots redact credential-bearing remote URLs` failed with 4 issues
+- `remote.rawURL`, `remote.url`, and encoded JSON still contained `https://user:secret-token@example.com/org/repo.git`
+
+```bash
+bash scripts/run-swift-test-filter.sh GitProcessRunnerTests
+```
+
+Exit code: 1
+
+Result before implementation:
+
+- compile failed because `GitDataPlaneError.processTimedOut` and `SystemGitRemoteClient.Configuration.operationTimeoutSeconds` did not exist
+
+```bash
+bash scripts/run-swift-test-filter.sh LibGit2PackagingScriptTests
+```
+
+Exit code: 1
+
+Result before script expansion:
+
+- `consumer verification imports public SDK products without running repo mise tasks` failed with 5 issues
+- verifier did not import `AgentStudioGitContracts` or `AgentStudioGitRemote`
+- verifier did not declare product dependencies on `AgentStudioGit`, `AgentStudioGitContracts`, or `AgentStudioGitRemote`
+
+Implementation notes:
+
+- `GitRedaction` now redacts credential-bearing URL userinfo, token-like query values, and `~/.ssh` or absolute `.ssh` private-key paths.
+- `LibGit2BranchReader.originResolution` returns a credential-stripped Foundation `URL` and a redacted `rawURL`; encoded public status snapshots no longer carry credential-bearing origin strings.
+- `GitDataPlaneError` now has `processTimedOut(GitRemoteProcessFailure)` so remote subprocess timeout is a typed public error.
+- `SystemGitRemoteClient.Configuration` now owns `operationTimeoutSeconds` as trusted configuration.
+- Noninteractive system-Git mode now strips `GIT_ASKPASS`, `SSH_ASKPASS`, and `SSH_ASKPASS_REQUIRE`, adds `core.askPass=`, sets `GIT_TERMINAL_PROMPT=0`, and ensures `GIT_SSH_COMMAND` includes `-oBatchMode=yes`.
+- `GitProcessRunner` installs the process termination handler before launch, enforces the configured timeout, terminates then kills hung processes, and reports timeout failures through the same redacted process-failure value.
+- The AgentStudio compatibility harness now discovers the checked-out app through `AGENTSTUDIO_GIT_AGENTSTUDIO_PATH` or known sibling names, uses `swift build --show-bin-path` instead of a hardcoded arm64 build path, and only fails missing app seams when `AGENTSTUDIO_GIT_REQUIRE_AGENTSTUDIO_COMPATIBILITY=1` or an explicit app path is configured.
+- `scripts/verify-package-consumer.sh` now imports all public products: `AgentStudioGit`, `AgentStudioGitContracts`, `AgentStudioGitLocal`, and `AgentStudioGitRemote`.
+
+Green proof:
+
+```bash
+bash scripts/run-swift-test-filter.sh GitRedactionTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 2 tests in 1 suite passed`
+
+```bash
+bash scripts/run-swift-test-filter.sh GitStatusIntegrationTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 8 tests in 1 suite passed`
+- credentialed-origin status snapshot redaction case passed
+
+```bash
+bash scripts/run-swift-test-filter.sh GitProcessRunnerTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 4 tests in 1 suite passed`
+- hung fake-git process timed out in 0.224 seconds
+
+```bash
+bash scripts/run-swift-test-filter.sh SystemGitRemoteClientTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 5 tests in 1 suite passed`
+
+```bash
+bash scripts/run-swift-test-filter.sh LibGit2PackagingScriptTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 5 tests in 1 suite passed`
+
+```bash
+bash scripts/run-swift-test-filter.sh CompatibilityTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 7 tests in 2 suites passed`
+- normal mode found the sibling AgentStudio checkout and proved both compatibility harnesses
+
+```bash
+AGENTSTUDIO_GIT_REQUIRE_AGENTSTUDIO_COMPATIBILITY=1 bash scripts/run-swift-test-filter.sh CompatibilityTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 7 tests in 2 suites passed`
+- required AgentStudio compatibility mode proved the checked-out AgentStudio status and Bridge seams were present and compatible
+
+```bash
+bash scripts/verify-package-consumer.sh
+```
+
+Exit code: 0
+
+Result:
+
+- scratch downstream SwiftPM consumer built and ran
+- runtime output was `1.9.4 SystemGitRemoteClient true noninteractive https unsupported(message: "consumer smoke")`
+
+Final validation:
+
+```bash
+swift test
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 71 tests in 18 suites passed`
+
+```bash
+mise run format
+```
+
+Exit code: 0
+
+Result:
+
+- formatted Swift sources
+
+```bash
+mise run lint
+```
+
+Exit code: 0
+
+Result:
+
+- `swift-format lint` passed
+- `swiftlint` found 0 violations in 54 files
+
+```bash
+mise run check
+```
+
+Exit code: 0
+
+Result:
+
+- `verify-libgit2` rebuilt and verified `Artifacts/CLibGit2Local.xcframework`
+- `swift build` passed
+- `swift-format lint` passed
+- `swiftlint` found 0 violations in 54 files
+- `swift test` passed with 71 tests in 18 suites
+
+```bash
+AGENTSTUDIO_GIT_LIVE_REMOTE_SMOKE=1 AGENTSTUDIO_GIT_LIVE_REMOTE_URL="$(git remote get-url origin)" bash scripts/run-swift-test-filter.sh SystemGitRemoteClientTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 5 tests in 1 suite passed`
+- live HTTPS `ls-remote --symref` succeeded against the configured origin through `SystemGitRemoteClient`
+
+```bash
+mise run test-asan
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 71 tests in 18 suites passed`
+- sanitizer applies to Swift wrapper/test code; native libgit2 was not rebuilt with sanitizer flags
+
+```bash
+mise run test-tsan
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 71 tests in 18 suites passed`
+- sanitizer applies to Swift wrapper/test code; native libgit2 was not rebuilt with sanitizer flags
+
+Known external proof limits after this checkpoint:
+
+- Authenticated HTTPS credential-helper and SSH-agent live smokes have not been exercised in this checkout because no private/authenticated smoke remotes were configured.
+- The release manifest HTTPS/checksum mode is evaluated, but an actual remote artifact download still requires a real hosted `CLibGit2Local.xcframework.zip` URL.

@@ -7,6 +7,7 @@ public struct SystemGitRemoteClient: AgentStudioGitRemoteClient, Sendable {
         public let inheritEnvironment: Bool
         public let promptPolicy: GitRemotePromptPolicy
         public let allowedProtocols: [GitRemoteProtocol]
+        public let operationTimeoutSeconds: Double
         public let additionalEnvironment: [String: String]
 
         public init(
@@ -14,17 +15,22 @@ public struct SystemGitRemoteClient: AgentStudioGitRemoteClient, Sendable {
             inheritEnvironment: Bool = true,
             promptPolicy: GitRemotePromptPolicy = .noninteractive,
             allowedProtocols: [GitRemoteProtocol] = [.https, .ssh],
+            operationTimeoutSeconds: Double = 120,
             additionalEnvironment: [String: String] = [:]
         ) {
             self.executableURL = executableURL
             self.inheritEnvironment = inheritEnvironment
             self.promptPolicy = promptPolicy
             self.allowedProtocols = allowedProtocols
+            self.operationTimeoutSeconds = max(operationTimeoutSeconds, 0.001)
             self.additionalEnvironment = additionalEnvironment
         }
 
         func protocolConfigArguments() -> [String] {
             var arguments = ["-c", "protocol.allow=never"]
+            if promptPolicy == .noninteractive {
+                arguments.append(contentsOf: ["-c", "core.askPass="])
+            }
             for allowedProtocol in allowedProtocols {
                 arguments.append(contentsOf: [
                     "-c",
@@ -41,8 +47,27 @@ public struct SystemGitRemoteClient: AgentStudioGitRemoteClient, Sendable {
                 environment.removeValue(forKey: key)
             }
             environment["LC_ALL"] = "C"
-            environment["GIT_TERMINAL_PROMPT"] = promptPolicy == .trustedInteractive ? "1" : "0"
+            switch promptPolicy {
+            case .noninteractive:
+                environment["GIT_TERMINAL_PROMPT"] = "0"
+                environment.removeValue(forKey: "GIT_ASKPASS")
+                environment.removeValue(forKey: "SSH_ASKPASS")
+                environment.removeValue(forKey: "SSH_ASKPASS_REQUIRE")
+                environment["GIT_SSH_COMMAND"] = sshBatchModeCommand(from: environment["GIT_SSH_COMMAND"])
+            case .trustedInteractive:
+                environment["GIT_TERMINAL_PROMPT"] = "1"
+            }
             return environment
+        }
+
+        private func sshBatchModeCommand(from command: String?) -> String {
+            guard let command, !command.isEmpty else {
+                return "ssh -oBatchMode=yes"
+            }
+            guard !command.contains("BatchMode") else {
+                return command
+            }
+            return "\(command) -oBatchMode=yes"
         }
     }
 

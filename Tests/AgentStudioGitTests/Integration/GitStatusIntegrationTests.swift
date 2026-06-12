@@ -166,6 +166,29 @@ struct GitStatusIntegrationTests {
         #expect(noUpstream.summary.behindCount == 0)
     }
 
+    @Test("origin snapshots redact credential-bearing remote URLs")
+    func originSnapshotsRedactCredentialBearingRemoteURLs() async throws {
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-status-origin-redaction")
+        defer { fixture.remove() }
+        let credentialedURL = "https://user:secret-token@example.com/org/repo.git"
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        try fixture.git.run("remote", "add", "origin", credentialedURL)
+
+        let status = try await client.status(for: fixture.repositoryPath, options: GitStatusOptions())
+
+        guard case .resolved(let remote) = status.originResolution else {
+            Issue.record("expected resolved origin, got \(status.originResolution)")
+            return
+        }
+        let statusData = try JSONEncoder().encode(status)
+        let encoded = try #require(String(data: statusData, encoding: .utf8))
+        #expect(remote.rawURL == "https://<redacted>@example.com/org/repo.git")
+        #expect(remote.url.absoluteString == "https://example.com/org/repo.git")
+        #expect(!encoded.contains("secret-token"))
+        #expect(!encoded.contains("user:secret-token"))
+    }
+
     @Test("detached unborn and unresolved origin states still return summaries")
     func detachedUnbornAndUnresolvedOriginStatesStillReturnSummaries() async throws {
         let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-status-head")

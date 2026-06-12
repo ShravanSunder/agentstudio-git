@@ -42,12 +42,18 @@ struct LibGit2PackagingScriptTests {
         #expect(canaryContents.contains("git_libgit2_version"))
     }
 
-    @Test("consumer verification imports AgentStudioGitLocal without running repo mise tasks")
-    func consumerVerificationImportsLocalProductWithoutRunningRepoMiseTasks() throws {
+    @Test("consumer verification imports public SDK products without running repo mise tasks")
+    func consumerVerificationImportsPublicSDKProductsWithoutRunningRepoMiseTasks() throws {
         let contents = try readFile("scripts/verify-package-consumer.sh")
 
+        #expect(contents.contains("import AgentStudioGit"))
+        #expect(contents.contains("import AgentStudioGitContracts"))
         #expect(contents.contains("import AgentStudioGitLocal"))
+        #expect(contents.contains("import AgentStudioGitRemote"))
+        #expect(contents.contains(".product(name: \"AgentStudioGit\""))
+        #expect(contents.contains(".product(name: \"AgentStudioGitContracts\""))
         #expect(contents.contains(".package(path:"))
+        #expect(contents.contains(".product(name: \"AgentStudioGitRemote\""))
         #expect(contents.contains("swift run --package-path"))
         #expect(contents.contains("AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL"))
         #expect(contents.contains("AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM"))

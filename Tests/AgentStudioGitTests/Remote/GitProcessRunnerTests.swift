@@ -10,8 +10,12 @@ struct GitProcessRunnerTests {
         let configuration = fakeGit.configuration(
             inheritEnvironment: false,
             additionalEnvironment: [
+                "GIT_ASKPASS": "/tmp/agentstudio-askpass",
                 "GIT_TRACE": "1",
                 "GIT_CURL_VERBOSE": "1",
+                "GIT_SSH_COMMAND": "ssh -F /tmp/agentstudio-ssh-config",
+                "SSH_ASKPASS": "/tmp/agentstudio-ssh-askpass",
+                "SSH_ASKPASS_REQUIRE": "force",
                 "AGENTSTUDIO_FAKE_GIT_STDOUT": "ok\n",
             ]
         )
@@ -23,8 +27,15 @@ struct GitProcessRunnerTests {
         let environment = try fakeGit.recordedEnvironment()
         #expect(environment["GIT_TERMINAL_PROMPT"] == "0")
         #expect(environment["LC_ALL"] == "C")
+        #expect(environment["GIT_ASKPASS"] == nil)
         #expect(environment["GIT_TRACE"] == nil)
         #expect(environment["GIT_CURL_VERBOSE"] == nil)
+        #expect(environment["SSH_ASKPASS"] == nil)
+        #expect(environment["SSH_ASKPASS_REQUIRE"] == nil)
+        #expect(environment["GIT_SSH_COMMAND"]?.contains("-oBatchMode=yes") == true)
+        #expect(environment["GIT_SSH_COMMAND"]?.contains("/tmp/agentstudio-ssh-config") == true)
+        let invocation = try #require(fakeGit.recordedInvocations().first)
+        #expect(invocation.contains("core.askPass="))
     }
 
     @Test("runner allows trusted interactive prompt opt-in")
@@ -64,6 +75,29 @@ struct GitProcessRunnerTests {
             #expect(!failure.redactedStderr.contains("secret-token"))
         }
     }
+
+    @Test("runner terminates processes that exceed the configured timeout")
+    func runnerTerminatesProcessesThatExceedTheConfiguredTimeout() async throws {
+        let fakeGit = try FakeGitExecutable()
+        let configuration = fakeGit.configuration(
+            operationTimeoutSeconds: 0.1,
+            additionalEnvironment: [
+                "AGENTSTUDIO_FAKE_GIT_SLEEP_SECONDS": "5"
+            ])
+        let runner = GitProcessRunner(configuration: configuration)
+
+        do {
+            _ = try await runner.run(arguments: ["fetch", "origin"])
+            Issue.record("sleeping fake git unexpectedly succeeded")
+        } catch let error {
+            guard case .processTimedOut(let failure) = error else {
+                Issue.record("expected process timeout, got \(error)")
+                return
+            }
+            #expect(failure.redactedArguments.suffix(2) == ["fetch", "origin"])
+            #expect(failure.redactedStderr.contains("timed out after 0.1 seconds"))
+        }
+    }
 }
 
 struct FakeGitExecutable {
@@ -89,6 +123,9 @@ struct FakeGitExecutable {
           echo END
         } >> "$AGENTSTUDIO_FAKE_GIT_ARGUMENTS"
         env | sort > "$AGENTSTUDIO_FAKE_GIT_ENVIRONMENT"
+        if [ -n "${AGENTSTUDIO_FAKE_GIT_SLEEP_SECONDS:-}" ]; then
+          sleep "$AGENTSTUDIO_FAKE_GIT_SLEEP_SECONDS"
+        fi
         if [ -n "${AGENTSTUDIO_FAKE_GIT_STDOUT:-}" ]; then
           printf '%s' "$AGENTSTUDIO_FAKE_GIT_STDOUT"
         fi
@@ -105,6 +142,7 @@ struct FakeGitExecutable {
         promptPolicy: GitRemotePromptPolicy = .noninteractive,
         inheritEnvironment: Bool = false,
         allowedProtocols: [GitRemoteProtocol] = [.https, .ssh],
+        operationTimeoutSeconds: Double = 30,
         additionalEnvironment: [String: String] = [:]
     ) -> SystemGitRemoteClient.Configuration {
         var environment = additionalEnvironment
@@ -115,6 +153,7 @@ struct FakeGitExecutable {
             inheritEnvironment: inheritEnvironment,
             promptPolicy: promptPolicy,
             allowedProtocols: allowedProtocols,
+            operationTimeoutSeconds: operationTimeoutSeconds,
             additionalEnvironment: environment
         )
     }

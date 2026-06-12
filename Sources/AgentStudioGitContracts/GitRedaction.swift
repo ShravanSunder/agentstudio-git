@@ -12,6 +12,11 @@ public enum GitRedaction {
             pattern: #"(?i)(token|access_token|password|passwd|secret)=([^&\s]+)"#,
             template: "$1=<redacted>"
         )
+        redactedValue = replacingMatches(
+            in: redactedValue,
+            pattern: #"(?i)(?:~|/[^:\s'"]*)/\.ssh/[^:\s'"]+"#,
+            template: "<redacted-private-key-path>"
+        )
         return redactedValue
     }
 

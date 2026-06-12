@@ -57,7 +57,12 @@ struct LibGit2BranchReader: Sendable {
         }
 
         let remoteName = git_remote_name(remote).map { String(cString: $0) } ?? "origin"
-        return .resolved(GitRemoteSnapshot(name: remoteName, url: remoteURL(from: rawURL), rawURL: rawURL))
+        return .resolved(
+            GitRemoteSnapshot(
+                name: remoteName,
+                url: publicRemoteURL(from: rawURL),
+                rawURL: GitRedaction.redact(rawURL)
+            ))
     }
 
     private func branches(repository: OpaquePointer) throws -> [GitBranchSnapshot] {
@@ -174,6 +179,19 @@ struct LibGit2BranchReader: Sendable {
             return url
         }
         return URL(fileURLWithPath: rawURL)
+    }
+
+    private func publicRemoteURL(from rawURL: String) -> URL {
+        guard var components = URLComponents(string: rawURL) else {
+            return remoteURL(from: GitRedaction.redact(rawURL))
+        }
+
+        components.user = nil
+        components.password = nil
+        guard let credentialStrippedURL = components.url else {
+            return remoteURL(from: GitRedaction.redact(rawURL))
+        }
+        return remoteURL(from: GitRedaction.redact(credentialStrippedURL.absoluteString))
     }
 
     private func withRepository<ReturnValue>(

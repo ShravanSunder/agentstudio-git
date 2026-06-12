@@ -154,8 +154,12 @@ private struct AgentStudioStatusAdapterCompileHarness {
     private let fileManager = FileManager.default
 
     func typecheck() throws {
-        let packageRoot = agentStudioGitPackageRoot()
-        let agentStudioRoot = siblingAgentStudioRoot()
+        let packageRoot = AgentStudioCompatibilityHarnessSupport.agentStudioGitPackageRoot()
+        guard let agentStudioRoot = AgentStudioCompatibilityHarnessSupport.agentStudioRoot() else {
+            AgentStudioCompatibilityHarnessSupport.recordMissingAgentStudioSeam(
+                "missing checked-out AgentStudio seam")
+            return
+        }
         let providerSource = agentStudioRoot.appending(
             path: "Sources/AgentStudio/Core/RuntimeEventSystem/Git/GitWorkingTreeStatusProvider.swift")
         let eventSource = agentStudioRoot.appending(
@@ -163,7 +167,8 @@ private struct AgentStudioStatusAdapterCompileHarness {
         guard fileManager.fileExists(atPath: providerSource.path),
             fileManager.fileExists(atPath: eventSource.path)
         else {
-            Issue.record("missing checked-out AgentStudio seam at \(agentStudioRoot.path)")
+            AgentStudioCompatibilityHarnessSupport.recordMissingAgentStudioSeam(
+                "missing checked-out AgentStudio seam at \(agentStudioRoot.path)")
             return
         }
 
@@ -274,13 +279,10 @@ private struct AgentStudioStatusAdapterCompileHarness {
     }
 
     private func moduleSearchPath(packageRoot: URL) throws -> URL {
-        let moduleSearchPath = packageRoot.appending(path: ".build/arm64-apple-macosx/debug/Modules")
-        guard fileManager.fileExists(atPath: moduleSearchPath.appending(path: "AgentStudioGit.swiftmodule").path),
-            fileManager.fileExists(atPath: moduleSearchPath.appending(path: "AgentStudioGitContracts.swiftmodule").path)
-        else {
-            throw AgentStudioCompatibilityHarnessError.missingBuiltModule(moduleSearchPath.path)
-        }
-        return moduleSearchPath
+        try AgentStudioCompatibilityHarnessSupport.moduleSearchPath(
+            packageRoot: packageRoot,
+            requiredModules: ["AgentStudioGit", "AgentStudioGitContracts"]
+        )
     }
 
     private func runSwiftTypecheck(harnessFile: URL, moduleSearchPath: URL, packageRoot: URL) throws {
@@ -462,27 +464,7 @@ private struct StubLocalClient: AgentStudioGitLocalClient {
     }
 }
 
-private func agentStudioGitWorkingTreeStatusProviderSource() -> URL {
-    siblingAgentStudioRoot()
-        .appending(path: "Sources/AgentStudio/Core/RuntimeEventSystem/Git/GitWorkingTreeStatusProvider.swift")
-}
-
-private func siblingAgentStudioRoot() -> URL {
-    agentStudioGitPackageRoot()
-        .deletingLastPathComponent()
-        .appending(path: "agent-studio.bridge-start")
-}
-
-private func agentStudioGitPackageRoot() -> URL {
-    URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-}
-
 private enum AgentStudioCompatibilityHarnessError: Error {
     case missingMarker(String)
-    case missingBuiltModule(String)
     case typecheckFailed(Int32)
 }

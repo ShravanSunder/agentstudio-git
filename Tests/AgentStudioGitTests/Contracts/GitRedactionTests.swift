@@ -24,4 +24,21 @@ struct GitRedactionTests {
         #expect(!failure.redactedStderr.contains("secret-token"))
         #expect(!failure.redactedArguments.joined(separator: " ").contains("secret-token"))
     }
+
+    @Test("redaction removes SSH private key paths from process output")
+    func redactionRemovesSSHPrivateKeyPathsFromProcessOutput() {
+        let stderr = """
+            Warning: Identity file /Users/alice/.ssh/company_deploy_key not accessible.
+            no such identity: /Users/alice/.ssh/id_work: No such file or directory
+            ssh -i /Users/alice/.ssh/id_rsa git@example.com
+            """
+
+        let redacted = GitRedaction.redact(stderr)
+
+        #expect(!redacted.contains("/Users/alice/.ssh"))
+        #expect(!redacted.contains("company_deploy_key"))
+        #expect(!redacted.contains("id_work"))
+        #expect(!redacted.contains("id_rsa"))
+        #expect(redacted.contains("<redacted-private-key-path>"))
+    }
 }

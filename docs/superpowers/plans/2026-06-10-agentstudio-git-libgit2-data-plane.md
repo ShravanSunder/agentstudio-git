@@ -93,22 +93,24 @@ Untrusted inputs:
 Trust boundaries / auth assumptions:
 - Local libgit2 operations read local repo data and do not require credentials.
 - Remote/auth operations use system Git so the user's existing credential helpers, SSH agent, Git config, certificates, and enterprise setup remain authoritative.
-- System Git executable selection, inherited environment policy, prompt policy, and protocol allowlist are trusted client configuration. They are not public per-request fields.
-- Default remote operations are noninteractive. Interactive prompting is a trusted opt-in policy for a caller that owns UI/TTY behavior.
+- System Git executable selection, inherited environment policy, prompt policy, protocol allowlist, and timeout are trusted client configuration. They are not public per-request fields.
+- Default remote operations are noninteractive. Noninteractive mode disables Git/SSH askpass helpers and enables SSH batch mode. Interactive prompting is a trusted opt-in policy for a caller that owns UI/TTY behavior.
 
 Security invariants:
 - Public values never contain credential-bearing URLs, tokens, raw argv with secrets, raw stderr with secrets, or private key paths.
+- Public origin/remote snapshots are redacted before they are encoded or returned to AgentStudio.
+- System Git processes fail with a typed timeout error when they exceed the configured operation timeout.
 - Do not auto-delete Git lock files.
 - Do not remove a worktree working directory unless the request targets a validated worktree ID/path and explicitly allows the relevant destructive behavior.
 - Read-only status/diff/content operations must not write the actual index for either main or linked worktrees.
 - All libgit2 error details are copied on the failing thread before any `await`.
 
 Required proof:
-- Unit tests for URL/argv/stderr redaction.
+- Unit tests for URL/argv/stderr/private-key-path redaction and public origin snapshot redaction.
 - Unit tests for typed error mapping and public Codable payloads.
 - Integration tests for lock failures, dirty-worktree refusal, force removal, stale prune, linked worktree index paths, and read-only index hash stability.
-- Fake system-Git tests for command construction, environment policy, prompt policy, protocol restrictions, `remoteReferences`, parser output, and redaction.
-- Clean consumer proof that a downstream package can resolve and build the distributable artifact path.
+- Fake system-Git tests for command construction, environment policy, prompt policy, timeout behavior, protocol restrictions, `remoteReferences`, parser output, and redaction.
+- Clean consumer proof that a downstream package can resolve and build the public SDK products through the local development path and evaluate the distributable artifact manifest path.
 
 ## Public Shape
 
@@ -482,7 +484,7 @@ bash scripts/verify-package-consumer.sh
 
 `build-libgit2` owns scoped cleanup of `.build/libgit2/{arm64,x86_64,macos-universal}`, `.build/libgit2/CLibGit2LocalHeaders`, and `Artifacts/CLibGit2Local.xcframework`; do not manually delete repo-wide build directories as a proof shortcut.
 
-`verify-package-consumer.sh` creates a scratch SwiftPM package outside this repo, depends on `agentstudio-git`, resolves it from the intended downstream path, imports `AgentStudioGitLocal`, and builds without running repo-local mise tasks inside the dependency checkout.
+`verify-package-consumer.sh` creates a scratch SwiftPM package outside this repo, depends on `agentstudio-git`, resolves it from the intended downstream path, imports all public products (`AgentStudioGit`, `AgentStudioGitContracts`, `AgentStudioGitLocal`, and `AgentStudioGitRemote`), and builds without running repo-local mise tasks inside the dependency checkout. It also evaluates the HTTPS/checksum release-manifest mode; a real hosted artifact URL is required before claiming a network download proof.
 
 - [x] **Step 7: Commit**
 
@@ -791,9 +793,12 @@ Cover:
 - default env inheritance
 - scrubbed test env
 - prompt suppression
+- disabled askpass helpers in noninteractive mode
+- SSH batch mode in noninteractive mode
 - interactive opt-in
+- timeout behavior
 - protocol restrictions
-- redacted argv/stderr for credential-bearing URLs
+- redacted argv/stderr for credential-bearing URLs and SSH private-key paths
 - parser tests for normal refs, symrefs, peeled tags, malformed lines, and failures
 
 - [x] **Step 3: Implement executable locator**
@@ -802,7 +807,7 @@ Resolve from trusted configuration or normal user path. Do not accept arbitrary 
 
 - [x] **Step 4: Implement process runner**
 
-Use `Process` argument arrays, never shell string concatenation. Validate or delimit untrusted ref/remote/path values so option-shaped inputs cannot be interpreted as flags where Git supports separators. Capture stdout/stderr. Redact before constructing public errors.
+Use `Process` argument arrays, never shell string concatenation. Validate or delimit untrusted ref/remote/path values so option-shaped inputs cannot be interpreted as flags where Git supports separators. Capture stdout/stderr. Enforce the configured operation timeout. Redact before constructing public errors.
 
 - [x] **Step 5: Implement remote client**
 

@@ -1,4 +1,5 @@
 import AgentStudioGitContracts
+import Darwin
 import Foundation
 
 public struct GitProcessResult: Equatable, Sendable {
@@ -50,14 +51,28 @@ public struct GitProcessRunner: Sendable {
             process.standardInput = FileHandle.nullDevice
             process.standardOutput = stdoutWriter
             process.standardError = stderrWriter
+            let terminationGroup = DispatchGroup()
+            terminationGroup.enter()
+            process.terminationHandler = { _ in
+                terminationGroup.leave()
+            }
             try process.run()
-            process.waitUntilExit()
+            let timedOut = waitForProcessExit(process, terminationGroup: terminationGroup)
 
             stdoutWriter.closeFile()
             stderrWriter.closeFile()
 
             let stdout = try String(contentsOf: stdoutURL, encoding: .utf8)
             let stderr = try String(contentsOf: stderrURL, encoding: .utf8)
+            guard !timedOut else {
+                throw GitDataPlaneError.processTimedOut(
+                    GitRemoteProcessFailure.redacting(
+                        executable: invocation.displayName,
+                        arguments: processArguments,
+                        exitCode: process.terminationStatus,
+                        stderr: timeoutStderr(stderr)
+                    ))
+            }
             guard process.terminationStatus == 0 else {
                 throw GitDataPlaneError.processFailed(
                     GitRemoteProcessFailure.redacting(
@@ -80,5 +95,29 @@ public struct GitProcessRunner: Sendable {
                     stderr: String(describing: error)
                 ))
         }
+    }
+
+    private func waitForProcessExit(_ process: Process, terminationGroup: DispatchGroup) -> Bool {
+        let waitResult = terminationGroup.wait(
+            timeout: .now() + configuration.operationTimeoutSeconds
+        )
+        guard waitResult == .timedOut else {
+            return false
+        }
+
+        process.terminate()
+        if terminationGroup.wait(timeout: .now() + 1) == .timedOut {
+            kill(process.processIdentifier, SIGKILL)
+            terminationGroup.wait()
+        }
+        return true
+    }
+
+    private func timeoutStderr(_ stderr: String) -> String {
+        let timeoutMessage = "git process timed out after \(configuration.operationTimeoutSeconds) seconds"
+        guard !stderr.isEmpty else {
+            return timeoutMessage
+        }
+        return "\(stderr)\n\(timeoutMessage)"
     }
 }

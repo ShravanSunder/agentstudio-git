@@ -9,6 +9,7 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
     case contentTooLarge(path: String, sizeBytes: Int64, maxSizeBytes: Int64)
     case pathEscapesRepository(path: String)
     case processFailed(GitRemoteProcessFailure)
+    case processTimedOut(GitRemoteProcessFailure)
     case libgit2Failure(code: Int32, klass: Int32, message: String)
     case unsupported(message: String)
 }

@@ -34,7 +34,10 @@ mkdir -p "$SCRATCH_DIR/Sources/Consumer"
   printf '%s\n' '        .executableTarget('
   printf '%s\n' '            name: "Consumer",'
   printf '%s\n' '            dependencies: ['
+  printf '%s\n' '                .product(name: "AgentStudioGit", package: "agentstudio-git"),'
+  printf '%s\n' '                .product(name: "AgentStudioGitContracts", package: "agentstudio-git"),'
   printf '%s\n' '                .product(name: "AgentStudioGitLocal", package: "agentstudio-git"),'
+  printf '%s\n' '                .product(name: "AgentStudioGitRemote", package: "agentstudio-git"),'
   printf '%s\n' '            ]'
   printf '%s\n' '        ),'
   printf '%s\n' '    ]'
@@ -42,11 +45,19 @@ mkdir -p "$SCRATCH_DIR/Sources/Consumer"
 } >"$SCRATCH_DIR/Package.swift"
 
 {
+  printf '%s\n' 'import AgentStudioGit'
+  printf '%s\n' 'import AgentStudioGitContracts'
   printf '%s\n' 'import AgentStudioGitLocal'
+  printf '%s\n' 'import AgentStudioGitRemote'
   printf '%s\n' ''
   printf '%s\n' 'let version = LibGit2ImportCanary.version()'
+  printf '%s\n' 'let remoteClient = SystemGitRemoteClient(configuration: .init(inheritEnvironment: false))'
+  printf '%s\n' 'let statusOptions = GitStatusOptions()'
+  printf '%s\n' 'let promptPolicy = GitRemotePromptPolicy.noninteractive'
+  printf '%s\n' 'let remoteProtocol = GitRemoteProtocol.https'
+  printf '%s\n' 'let unsupported = GitDataPlaneError.unsupported(message: "consumer smoke")'
   printf '%s\n' 'precondition(version.major == 1)'
-  printf '%s\n' 'print("\(version.major).\(version.minor).\(version.revision)")'
+  printf '%s\n' 'print("\(version.major).\(version.minor).\(version.revision) \(type(of: remoteClient)) \(statusOptions.includeUntracked) \(promptPolicy.rawValue) \(remoteProtocol.rawValue) \(unsupported)")'
 } >"$SCRATCH_DIR/Sources/Consumer/main.swift"
 
 swift build --package-path "$SCRATCH_DIR"

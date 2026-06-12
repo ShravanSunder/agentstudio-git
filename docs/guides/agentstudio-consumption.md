@@ -52,9 +52,10 @@ Remote/auth work is intentionally system-Git-backed. The SDK does not store cred
 - inherited environment policy
 - prompt policy
 - protocol allowlist
+- operation timeout
 - additional trusted environment values
 
-Defaults inherit the user's environment, strip Git tracing variables, set `LC_ALL=C`, suppress terminal prompts with `GIT_TERMINAL_PROMPT=0`, and allow HTTPS plus SSH. Interactive prompting is a trusted opt-in for a caller that owns UI or terminal behavior.
+Defaults inherit the user's environment, strip Git tracing variables, set `LC_ALL=C`, suppress terminal prompts with `GIT_TERMINAL_PROMPT=0`, disable Git/SSH askpass helpers, enable SSH batch mode, enforce the configured timeout, and allow HTTPS plus SSH. Interactive prompting is a trusted opt-in for a caller that owns UI or terminal behavior.
 
 ## AgentStudio Adapter Boundary
 
@@ -82,6 +83,8 @@ swift test --sanitize address
 swift test --sanitize thread
 bash scripts/verify-package-consumer.sh
 ```
+
+The consumer verifier builds a scratch SwiftPM package that imports all public products: `AgentStudioGit`, `AgentStudioGitContracts`, `AgentStudioGitLocal`, and `AgentStudioGitRemote`. It also evaluates the HTTPS/checksum release-manifest mode. A real hosted artifact URL is still required before claiming an actual remote artifact download proof.
 
 For live remote/auth proof, run:
 
