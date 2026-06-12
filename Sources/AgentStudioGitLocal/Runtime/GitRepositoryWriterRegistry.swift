@@ -2,6 +2,8 @@ import AgentStudioGitContracts
 import Foundation
 
 public actor GitRepositoryWriterRegistry {
+    public static let shared = GitRepositoryWriterRegistry()
+
     private var writerByRepositoryID: [GitRepositoryID: GitRepositoryWriterLane] = [:]
 
     public init() {}
@@ -25,9 +27,15 @@ public actor GitRepositoryWriterLane {
     public nonisolated let repositoryID: GitRepositoryID
     public nonisolated let canonicalCommonDirectory: URL
 
-    public init(repositoryID: GitRepositoryID, canonicalCommonDirectory: URL) {
+    init(repositoryID: GitRepositoryID, canonicalCommonDirectory: URL) {
         self.laneID = UUID()
         self.repositoryID = repositoryID
         self.canonicalCommonDirectory = canonicalCommonDirectory
+    }
+
+    func run<ReturnValue: Sendable>(
+        _ operation: @Sendable () throws -> ReturnValue
+    ) rethrows -> ReturnValue {
+        try operation()
     }
 }

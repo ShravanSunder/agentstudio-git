@@ -41,4 +41,18 @@ struct GitRepositoryWriterRegistryTests {
         #expect(firstLane.repositoryID == firstIdentity.id)
         #expect(secondLane.repositoryID == secondIdentity.id)
     }
+
+    @Test("shared registry reuses lanes across default clients")
+    func sharedRegistryReusesLanesAcrossDefaultClients() async {
+        let identity = GitRepositoryIdentity(
+            id: GitRepositoryID(rawValue: "repo-shared"),
+            canonicalCommonDirectory: URL(fileURLWithPath: "/tmp/repo-shared/.git"),
+            mainWorktreePath: URL(fileURLWithPath: "/tmp/repo-shared")
+        )
+
+        let firstLane = await GitRepositoryWriterRegistry.shared.writer(for: identity)
+        let secondLane = await GitRepositoryWriterRegistry.shared.writer(for: identity)
+
+        #expect(firstLane.laneID == secondLane.laneID)
+    }
 }

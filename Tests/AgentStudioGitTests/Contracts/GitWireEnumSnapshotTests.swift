@@ -11,5 +11,6 @@ struct GitWireEnumSnapshotTests {
         #expect(GitDiffChangeKind.deleted.rawValue == "deleted")
         #expect(GitDiffTargetKind.workingTree.rawValue == "workingTree")
         #expect(GitRemotePromptPolicy.noninteractive.rawValue == "noninteractive")
+        #expect(GitWorktreePruneRefusalReason.liveWorktree.rawValue == "liveWorktree")
     }
 }

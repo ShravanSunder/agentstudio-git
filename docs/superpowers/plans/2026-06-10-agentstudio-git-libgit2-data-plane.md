@@ -540,18 +540,22 @@ git commit -m "feat: add libgit2 runtime wrappers"
 ### Task 5: Fast Worktree Operations
 
 **Files:**
+- Modify: `Sources/AgentStudioGitContracts/GitDataPlaneError.swift`
+- Modify: `Sources/AgentStudioGitLocal/Runtime/GitRepositoryWriterRegistry.swift`
 - Create: `Sources/AgentStudioGitLocal/Worktrees/LibGit2WorktreeReader.swift`
 - Create: `Sources/AgentStudioGitLocal/Worktrees/LibGit2WorktreeWriter.swift`
 - Create: `Sources/AgentStudioGitLocal/LibGit2AgentStudioGitLocalClient.swift`
+- Modify: `Tests/AgentStudioGitTests/Contracts/GitWireEnumSnapshotTests.swift`
 - Create: `Tests/AgentStudioGitTests/Fixtures/GitFixtureRepository.swift`
 - Create: `Tests/AgentStudioGitTests/Fixtures/GitProcess.swift`
 - Create: `Tests/AgentStudioGitTests/Integration/GitWorktreeIntegrationTests.swift`
+- Modify: `Tests/AgentStudioGitTests/Runtime/GitRepositoryWriterRegistryTests.swift`
 
-- [ ] **Step 1: Add deterministic fixture helpers**
+- [x] **Step 1: Add deterministic fixture helpers**
 
 `GitProcess` is test-only. It uses scrubbed config, captures stdout/stderr, pins locale where parsing matters, and includes output in failures.
 
-- [ ] **Step 2: Write worktree tests**
+- [x] **Step 2: Write worktree tests**
 
 Cover:
 - main worktree listed with synthetic display name
@@ -566,6 +570,11 @@ Cover:
 - lock with reason
 - unlock
 - stale metadata prune without touching a live worktree
+- linked-path listing resolves the real main worktree once
+- failed new-branch create rolls back branch metadata
+- locked stale metadata returns typed locked refusal
+- malformed `.git` files are not reported as missing repositories
+- default clients use a shared process-wide writer registry
 - main worktree removal refused
 - clean linked worktree removal
 - dirty tracked removal refused without force
@@ -576,29 +585,29 @@ Cover:
 - symlink escape/path mismatch refused
 - permission-denied partial failure returns typed recovery outcome
 
-- [ ] **Step 3: Implement reader**
+- [x] **Step 3: Implement reader**
 
 Use libgit2 list/lookup/open/validate/lock APIs. Preserve display name separately from stable ID.
 
-- [ ] **Step 4: Implement create**
+- [x] **Step 4: Implement create**
 
 Compose branch/ref operations and worktree add inside the writer lane:
 - existing branch
 - new branch from revision
 - detached from revision
 
-- [ ] **Step 5: Implement stale prune and remove separately**
+- [x] **Step 5: Implement stale prune and remove separately**
 
 Stale prune uses libgit2 prunable checks and does not delete a live worktree. Remove validates the target ID/path, checks dirty state unless force is set, refuses main worktree, and only then uses the required libgit2 prune flags for working-tree deletion.
 
-- [ ] **Step 6: Run tests**
+- [x] **Step 6: Run tests**
 
 ```bash
 scripts/run-swift-test-filter.sh GitWorktreeIntegrationTests
 swift test
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add Sources/AgentStudioGitLocal Tests/AgentStudioGitTests

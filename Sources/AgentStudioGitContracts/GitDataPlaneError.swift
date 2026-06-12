@@ -4,10 +4,15 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
     case repositoryNotFound(path: URL)
     case worktreeNotFound(id: GitWorktreeID)
     case locked(message: String)
+    case worktreeNotPrunable(id: GitWorktreeID, reason: GitWorktreePruneRefusalReason)
     case unsafeWorktreeRemoval(reason: GitWorktreeRemovalRefusalReason)
     case processFailed(GitRemoteProcessFailure)
     case libgit2Failure(code: Int32, klass: Int32, message: String)
     case unsupported(message: String)
+}
+
+public enum GitWorktreePruneRefusalReason: String, Codable, CaseIterable, Sendable {
+    case liveWorktree
 }
 
 public enum GitWorktreeRemovalRefusalReason: String, Codable, CaseIterable, Sendable {

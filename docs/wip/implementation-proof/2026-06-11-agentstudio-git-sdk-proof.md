@@ -12,12 +12,12 @@ Plan:
 
 ## Current Scope
 
-Tasks 0-4: spec/tooling, public contracts, repository identity/runtime lanes, libgit2 artifact packaging, and libgit2 runtime/session wrappers.
+Tasks 0-5: spec/tooling, public contracts, repository identity/runtime lanes, libgit2 artifact packaging, libgit2 runtime/session wrappers, and safe worktree operations.
 
 ## Coverage
 
-- Plan line count: 925; read in chunks 1-240, 241-480, 481-720, 721-925.
-- Spec line count: 201; read 1-201.
+- Plan line count: 935; read in chunks 1-240, 241-480, 481-720, 721-935.
+- Spec line count: 262; read 1-262.
 - Goal contract line count: 156; read 1-156.
 - Plan review line count: 125; read 1-125.
 - Existing package scaffold read before edits.
@@ -157,6 +157,157 @@ Exit code: 0
 Result:
 
 - no whitespace errors
+
+## Task 5: Fast Worktree Operations
+
+Status: implemented and verified.
+
+Files changed:
+
+- `Sources/AgentStudioGitLocal/LibGit2AgentStudioGitLocalClient.swift`
+- `Sources/AgentStudioGitContracts/GitDataPlaneError.swift`
+- `Sources/AgentStudioGitLocal/Runtime/GitRepositoryWriterRegistry.swift`
+- `Sources/AgentStudioGitLocal/Worktrees/LibGit2WorktreeReader.swift`
+- `Sources/AgentStudioGitLocal/Worktrees/LibGit2WorktreeWriter.swift`
+- `Tests/AgentStudioGitTests/Contracts/GitWireEnumSnapshotTests.swift`
+- `Tests/AgentStudioGitTests/Fixtures/GitFixtureRepository.swift`
+- `Tests/AgentStudioGitTests/Fixtures/GitProcess.swift`
+- `Tests/AgentStudioGitTests/Integration/GitWorktreeIntegrationTests.swift`
+- `Tests/AgentStudioGitTests/Runtime/GitRepositoryWriterRegistryTests.swift`
+- `docs/superpowers/plans/2026-06-10-agentstudio-git-libgit2-data-plane.md`
+- `docs/wip/implementation-proof/2026-06-11-agentstudio-git-sdk-proof.md`
+
+Research basis:
+
+- DeepWiki was asked for libgit2 worktree API semantics before implementation.
+- Vendored `vendor/libgit2/include/git2/worktree.h` verified exact `git_worktree_list`, `lookup`, `open_from_repository`, `validate`, `add`, `lock`, `unlock`, `is_locked`, `is_prunable`, and `prune` contracts.
+- Vendored `vendor/libgit2/include/git2/status.h` verified staged, worktree, and untracked status flags for removal safety checks.
+
+Red evidence:
+
+```bash
+scripts/run-swift-test-filter.sh GitWorktreeIntegrationTests
+```
+
+Exit code: 1
+
+Result before implementation:
+
+- compile failed because `LibGit2AgentStudioGitLocalClient` did not exist
+
+Review red evidence:
+
+```bash
+scripts/run-swift-test-filter.sh GitWorktreeIntegrationTests
+```
+
+Exit code: 1
+
+Result before review fixes:
+
+- compile failed because `GitWorktreePruneRefusalReason` and `GitDataPlaneError.worktreeNotPrunable` did not exist
+- compile failed because `GitRepositoryWriterRegistry.shared` did not exist
+
+Implementation notes:
+
+- `GitProcess` and `GitFixtureRepository` are test-only fixture helpers with scrubbed Git config, disabled signing, locale pinning, captured stdout/stderr, and real temp repositories.
+- `LibGit2AgentStudioGitLocalClient` is the public SDK surface; low-level worktree reader/writer mutators are internal implementation details.
+- `GitRepositoryWriterRegistry.shared` is the default process-wide writer registry, keyed by canonical repository identity.
+- `LibGit2WorktreeReader` resolves linked-path inputs back to the real main worktree before listing; linked worktree names are display names, not stable IDs.
+- `LibGit2WorktreeWriter` creates worktrees from existing branches, new branches from revisions, and detached revisions through libgit2.
+- New-branch create uses best-effort rollback for created branch/worktree metadata if later add/detach/validation fails.
+- Stale prune uses `git_worktree_is_prunable` and metadata-only `git_worktree_prune`, returning typed `worktreeNotPrunable` for live worktrees and `locked` for locked stale metadata.
+- Remove validates ID/path, refuses main/locked/dirty/staged/untracked worktrees without force, and returns partial failure when working-directory deletion is denied after metadata removal.
+- macOS `/private/var` and `/var` path spellings are normalized for stale worktree metadata matching.
+- Malformed `.git` files and non-not-found libgit2 open failures are preserved as typed failures instead of being collapsed into `repositoryNotFound`.
+
+Review corrections:
+
+- accepted P1 writer-lane bypass: default clients now use the shared writer registry and low-level mutators are no longer public.
+- accepted P1 create non-transactionality: failed new-branch create rolls back branch metadata and any created worktree metadata best-effort.
+- accepted P1 linked-path identity bug: listing from a linked worktree path returns exactly one real main snapshot and no duplicated linked snapshot.
+- accepted P2 locked stale metadata bug: prune reports `.locked(message:)` with normalized lock reason.
+- accepted P2 error taxonomy bug: malformed `.git` files are not reported as missing repositories.
+
+Green proof:
+
+```bash
+scripts/run-swift-test-filter.sh GitWorktreeIntegrationTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 12 tests in 1 suite passed`
+- covered main listing, linked listing, linked worktree named `main`, linked-path listing canonicalization, existing branch create, new branch create, failed create rollback, detached create, checked-out branch refusal, validation, lock/unlock, stale prune, locked stale prune, malformed `.git` error mapping, main removal refusal, clean removal, dirty/staged/untracked refusal, force dirty removal, locked removal refusal, path mismatch refusal, and permission-denied partial failure
+
+```bash
+swift test
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 37 tests in 11 suites passed`
+
+```bash
+swift test --sanitize address
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 37 tests in 11 suites passed`
+- sanitizer applies to Swift wrapper/test code; Task 3 did not build a sanitizer-specific libgit2 artifact
+
+```bash
+swift test --sanitize thread
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 37 tests in 11 suites passed`
+- sanitizer applies to Swift wrapper/test code; Task 3 did not build a sanitizer-specific libgit2 artifact
+
+```bash
+mise run format
+```
+
+Exit code: 0
+
+Result:
+
+- formatted Swift sources
+
+```bash
+mise run lint
+```
+
+Exit code: 0
+
+Result:
+
+- `swift-format lint` passed
+- `swiftlint` found 0 violations in 34 files
+
+```bash
+mise run check
+```
+
+Exit code: 0
+
+Result:
+
+- `verify-libgit2` rebuilt and verified `Artifacts/CLibGit2Local.xcframework`
+- `swift build` passed
+- `swift-format lint` passed
+- `swiftlint` found 0 violations in 34 files
+- `swift test` passed with 37 tests in 11 suites
 
 ## Task 4: libgit2 Runtime, Errors, And Sessions
 
