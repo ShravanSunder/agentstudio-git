@@ -157,3 +157,124 @@ Exit code: 0
 Result:
 
 - no whitespace errors
+
+## Task 1: Public Contract Cutover
+
+Status: implemented and verified.
+
+Files changed:
+
+- `Package.swift`
+- `Sources/AgentStudioGit/AgentStudioGit.swift`
+- `Sources/AgentStudioGitContracts/AgentStudioGitSDK.swift`
+- `Sources/AgentStudioGitContracts/GitDataPlaneError.swift`
+- `Sources/AgentStudioGitContracts/GitRepositoryIdentity.swift`
+- `Sources/AgentStudioGitContracts/GitWorktreeContracts.swift`
+- `Sources/AgentStudioGitContracts/GitStatusContracts.swift`
+- `Sources/AgentStudioGitContracts/GitDiffContentContracts.swift`
+- `Sources/AgentStudioGitContracts/GitRemoteContracts.swift`
+- `Sources/AgentStudioGitContracts/GitRedaction.swift`
+- `Sources/AgentStudioGitLocal/AgentStudioGitLocal.swift`
+- `Sources/AgentStudioGitRemote/AgentStudioGitRemote.swift`
+- `Tests/AgentStudioGitTests/Contracts/GitPublicContractTests.swift`
+- `Tests/AgentStudioGitTests/Contracts/GitWireEnumSnapshotTests.swift`
+- `Tests/AgentStudioGitTests/Contracts/GitInvalidDecodeTests.swift`
+- `Tests/AgentStudioGitTests/Contracts/GitRedactionTests.swift`
+
+Red evidence:
+
+```bash
+scripts/run-swift-test-filter.sh GitPublicContractTests
+```
+
+Exit code: 1
+
+Result before implementation:
+
+- compile failed because `GitRemoteProcessFailure`, `GitStatusState`, `GitDiffFile`, `GitHeadSnapshot`, `GitRemoteSnapshot`, `GitStatusSummary`, `GitStatusEntry`, and `GitCloneRequest` did not exist
+- existing `GitStatusSnapshot` initializer still used the old local-only shape
+
+Green proof:
+
+```bash
+scripts/run-swift-test-filter.sh GitPublicContractTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 3 tests in 1 suite passed`
+
+```bash
+scripts/run-swift-test-filter.sh GitWireEnumSnapshotTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 1 test in 1 suite passed`
+
+```bash
+scripts/run-swift-test-filter.sh GitInvalidDecodeTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 2 tests in 1 suite passed`
+
+```bash
+scripts/run-swift-test-filter.sh GitRedactionTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 1 test in 1 suite passed`
+
+```bash
+swift test
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 7 tests in 4 suites passed`
+
+```bash
+mise run format
+```
+
+Exit code: 0
+
+Result:
+
+- formatted Swift sources
+
+```bash
+mise run check
+```
+
+Exit code: 0
+
+Result:
+
+- `swift build` passed
+- `swift-format lint` passed
+- `swiftlint` found 0 violations
+- `swift test` passed with 7 tests in 4 suites
+
+```bash
+git diff --check
+```
+
+Exit code: 0
+
+Result:
+
+- no whitespace errors

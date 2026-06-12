@@ -268,11 +268,11 @@ git commit -m "docs: define AgentStudio Git SDK boundary"
 - Create: `Tests/AgentStudioGitTests/Contracts/GitInvalidDecodeTests.swift`
 - Create: `Tests/AgentStudioGitTests/Contracts/GitRedactionTests.swift`
 
-- [ ] **Step 1: Split products and targets**
+- [x] **Step 1: Split products and targets**
 
 `Package.swift` must expose `AgentStudioGitContracts`, `AgentStudioGitLocal`, `AgentStudioGitRemote`, and `AgentStudioGit`. `AgentStudioGitLocal` and `AgentStudioGitRemote` can be stub targets until later tasks, but the package graph must compile.
 
-- [ ] **Step 2: Write failing contract tests**
+- [x] **Step 2: Write failing contract tests**
 
 Tests must cover:
 - `GitStatusSnapshot` with tri-state `originResolution`
@@ -282,7 +282,7 @@ Tests must cover:
 - invalid decode behavior
 - URL fields encode as Swift `URL` strings and are not promised as raw POSIX paths across non-Swift boundaries
 
-- [ ] **Step 3: Define SDK protocols**
+- [x] **Step 3: Define SDK protocols**
 
 Define:
 
@@ -312,7 +312,7 @@ public protocol AgentStudioGitRemoteClient: Sendable {
 }
 ```
 
-- [ ] **Step 4: Define worktree create/remove modes**
+- [x] **Step 4: Define worktree create/remove modes**
 
 `GitCreateWorktreeRequest` must use an explicit mode:
 
@@ -330,7 +330,7 @@ public enum GitWorktreeCreateMode: Codable, Equatable, Hashable, Sendable {
 
 Default behavior refuses dirty tracked changes, staged changes, untracked files, locked worktrees, main worktree, and ambiguous paths.
 
-- [ ] **Step 5: Define status origin tri-state**
+- [x] **Step 5: Define status origin tri-state**
 
 `GitStatusSnapshot` must include:
 
@@ -342,11 +342,11 @@ public enum GitOriginResolution: Codable, Equatable, Hashable, Sendable {
 }
 ```
 
-- [ ] **Step 6: Define content locators and hashes honestly**
+- [x] **Step 6: Define content locators and hashes honestly**
 
 `GitDiffFile` must include either a stable `fileId` or an explicit deterministic derivation rule. `contentHashAlgorithm` must use an honest label such as `git-blob-sha1`. If a workdir-side object ID is absent, the implementation must explicitly hash the filtered content before exposing `newContentHash`.
 
-- [ ] **Step 7: Define redacted error values**
+- [x] **Step 7: Define redacted error values**
 
 Public process failures expose redacted fields only:
 
@@ -359,7 +359,7 @@ public struct GitRemoteProcessFailure: Codable, Equatable, Sendable {
 }
 ```
 
-- [ ] **Step 8: Run tests**
+- [x] **Step 8: Run tests**
 
 Run:
 
@@ -370,7 +370,7 @@ swift test
 
 Expected: filtered gate executes non-zero tests, and full suite passes.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add Package.swift Sources Tests scripts
