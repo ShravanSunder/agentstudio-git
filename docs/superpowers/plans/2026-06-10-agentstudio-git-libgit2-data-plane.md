@@ -501,23 +501,23 @@ git commit -m "build: add libgit2 artifact pipeline"
 - Create: `Tests/AgentStudioGitTests/LibGit2/LibGit2ErrorCaptureTests.swift`
 - Create: `Tests/AgentStudioGitTests/LibGit2/LibGit2RepositorySessionTests.swift`
 
-- [ ] **Step 1: Write runtime tests**
+- [x] **Step 1: Write runtime tests**
 
 Tests cover init-once-per-process behavior, same-frame error copying, repository-open failure mapping, and pointer release on early throws. Lifecycle tests are serialized so they do not race other Swift Testing suites.
 
-- [ ] **Step 2: Implement runtime manager**
+- [x] **Step 2: Implement runtime manager**
 
 `LibGit2Runtime` is process-scoped. Do not shutdown libgit2 while any operation can still hold libgit2 objects.
 
-- [ ] **Step 3: Implement error capture**
+- [x] **Step 3: Implement error capture**
 
 Copy `git_error_last()` fields synchronously in the failing call frame before any `await`.
 
-- [ ] **Step 4: Implement session owner**
+- [x] **Step 4: Implement session owner**
 
 `git_repository*`, `git_index*`, `git_diff*`, `git_worktree*`, and related pointers do not cross actor or task boundaries. Acquisitions pair with `defer` frees in the same synchronous frame.
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 ```bash
 scripts/run-swift-test-filter.sh LibGit2RuntimeTests
@@ -530,7 +530,7 @@ swift test --sanitize thread
 
 Expected: Swift wrapper sanitizer lanes pass, or exact toolchain limitation is recorded. Do not claim native libgit2 instrumentation unless Task 3 built a sanitizer-specific artifact.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add Sources/AgentStudioGitLocal/LibGit2 Tests/AgentStudioGitTests/LibGit2

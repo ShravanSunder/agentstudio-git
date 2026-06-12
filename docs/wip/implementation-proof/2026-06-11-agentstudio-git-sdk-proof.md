@@ -12,7 +12,7 @@ Plan:
 
 ## Current Scope
 
-Tasks 0-3: spec/tooling, public contracts, repository identity/runtime lanes, and libgit2 artifact packaging.
+Tasks 0-4: spec/tooling, public contracts, repository identity/runtime lanes, libgit2 artifact packaging, and libgit2 runtime/session wrappers.
 
 ## Coverage
 
@@ -147,6 +147,144 @@ Result:
 - `swift-format lint` passed
 - `swiftlint` found 0 violations
 - `swift test` passed with 2 tests in 1 suite
+
+```bash
+git diff --check
+```
+
+Exit code: 0
+
+Result:
+
+- no whitespace errors
+
+## Task 4: libgit2 Runtime, Errors, And Sessions
+
+Status: implemented and verified.
+
+Files changed:
+
+- `Sources/AgentStudioGitLocal/LibGit2/LibGit2Runtime.swift`
+- `Sources/AgentStudioGitLocal/LibGit2/LibGit2ErrorCapture.swift`
+- `Sources/AgentStudioGitLocal/LibGit2/LibGit2RepositorySession.swift`
+- `Tests/AgentStudioGitTests/LibGit2/LibGit2RuntimeTests.swift`
+- `Tests/AgentStudioGitTests/LibGit2/LibGit2ErrorCaptureTests.swift`
+- `Tests/AgentStudioGitTests/LibGit2/LibGit2RepositorySessionTests.swift`
+- `docs/superpowers/plans/2026-06-10-agentstudio-git-libgit2-data-plane.md`
+- `docs/wip/implementation-proof/2026-06-11-agentstudio-git-sdk-proof.md`
+
+Red evidence:
+
+```bash
+scripts/run-swift-test-filter.sh LibGit2RuntimeTests
+```
+
+Exit code: 1
+
+Result before implementation:
+
+- compile failed because `LibGit2Runtime`, `LibGit2ErrorCapture`, and `LibGit2RepositorySession` did not exist
+
+Review corrections:
+
+- removed public test-hook initializers so the process-scoped runtime cannot be replaced by package consumers
+- serialized libgit2 lifecycle suites to avoid Swift Testing parallelism changing global libgit2 state
+- made init failure mapping deterministic instead of reading stale `git_error_last()` details
+- made missing required repository paths throw a typed failure instead of falling back to `/`
+- added bare repository path coverage
+- removed brittle assertions about libgit2 error class/message text
+- kept raw repository handles private to the same synchronous frame and covered `git_repository_free` on a throw path
+
+Green proof:
+
+```bash
+scripts/run-swift-test-filter.sh LibGit2RuntimeTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 2 tests in 1 suite passed`
+- covered injected runtime init-once behavior and deterministic typed init-failure mapping
+
+```bash
+scripts/run-swift-test-filter.sh LibGit2ErrorCaptureTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 2 tests in 1 suite passed`
+- covered injected same-frame error copying and nil-error fallback behavior
+
+```bash
+scripts/run-swift-test-filter.sh LibGit2RepositorySessionTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 4 tests in 1 suite passed`
+- covered working-tree path extraction, bare repository paths, typed open-failure mapping, and `git_repository_free` on required-path failure
+
+```bash
+swift test
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 24 tests in 10 suites passed`
+
+```bash
+swift test --sanitize address
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 24 tests in 10 suites passed`
+- sanitizer applies to Swift wrapper/test code; Task 3 did not build a sanitizer-specific libgit2 artifact
+
+```bash
+swift test --sanitize thread
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 24 tests in 10 suites passed`
+- sanitizer applies to Swift wrapper/test code; Task 3 did not build a sanitizer-specific libgit2 artifact
+
+```bash
+mise run format
+```
+
+Exit code: 0
+
+Result:
+
+- formatted Swift sources
+
+```bash
+mise run check
+```
+
+Exit code: 0
+
+Result:
+
+- `verify-libgit2` rebuilt and verified `Artifacts/CLibGit2Local.xcframework`
+- `swift build` passed
+- `swift-format lint` passed
+- `swiftlint` found 0 violations in 28 files
+- `swift test` passed with 24 tests in 10 suites
 
 ```bash
 git diff --check
