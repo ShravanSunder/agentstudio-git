@@ -820,6 +820,13 @@ Use parseable output where available:
 
 Add `AGENTSTUDIO_GIT_LIVE_REMOTE_SMOKE=1`. The final proof artifact must record whether the smoke was run or skipped. Default CI does not require real credentials.
 
+For full live auth proof, `scripts/verify-live-remote-auth.sh` requires:
+
+- `AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL`
+- `AGENTSTUDIO_GIT_LIVE_SSH_REMOTE_URL`
+
+Each URL must point at a disposable repository where the current system Git configuration can clone, fetch, push, and delete temporary refs under `refs/heads/agentstudio-git-live-smoke/`. This gate proves HTTPS credential-helper and SSH-agent behavior; it is not run by default CI.
+
 - [x] **Step 7: Run tests**
 
 ```bash
@@ -827,6 +834,7 @@ scripts/run-swift-test-filter.sh SystemGitRemoteClientTests
 scripts/run-swift-test-filter.sh GitProcessRunnerTests
 scripts/run-swift-test-filter.sh GitRemoteOutputParserTests
 swift test
+AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL=<https-writeable-remote> AGENTSTUDIO_GIT_LIVE_SSH_REMOTE_URL=<ssh-writeable-remote> bash scripts/verify-live-remote-auth.sh
 ```
 
 - [x] **Step 8: Commit**
@@ -900,6 +908,7 @@ swift test --sanitize address
 swift test --sanitize thread
 bash scripts/verify-package-consumer.sh
 AGENTSTUDIO_GIT_AGENTSTUDIO_PATH=/path/to/agent-studio bash scripts/verify-agentstudio-compatibility.sh
+AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL=<https-writeable-remote> AGENTSTUDIO_GIT_LIVE_SSH_REMOTE_URL=<ssh-writeable-remote> bash scripts/verify-live-remote-auth.sh
 ```
 
 - [x] **Step 6: Commit**

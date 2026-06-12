@@ -52,6 +52,10 @@ run = "bash scripts/verify-package-consumer.sh"
 description = "Verify compatibility against an explicit AgentStudio checkout"
 run = "bash scripts/verify-agentstudio-compatibility.sh"
 
+[tasks.verify-live-remote-auth]
+description = "Verify live HTTPS credential-helper and SSH-agent remote/auth behavior"
+run = "bash scripts/verify-live-remote-auth.sh"
+
 [tasks.check]
 description = "Run build, lint, and tests"
 run = """

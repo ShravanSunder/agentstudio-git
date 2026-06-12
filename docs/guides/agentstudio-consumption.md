@@ -96,3 +96,13 @@ AGENTSTUDIO_GIT_LIVE_REMOTE_SMOKE=1 \
 AGENTSTUDIO_GIT_LIVE_REMOTE_URL="<https-or-ssh-remote>" \
 scripts/run-swift-test-filter.sh SystemGitRemoteClientTests
 ```
+
+That lightweight smoke proves remote reference discovery. The full live auth gate requires both HTTPS and SSH writeable disposable remotes:
+
+```bash
+AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL="<https-writeable-remote>" \
+AGENTSTUDIO_GIT_LIVE_SSH_REMOTE_URL="<ssh-writeable-remote>" \
+bash scripts/verify-live-remote-auth.sh
+```
+
+The full gate uses `SystemGitRemoteClient` for clone, fetch, push, and remote reference discovery. It creates and deletes temporary refs under `refs/heads/agentstudio-git-live-smoke/`; use a disposable smoke repository, not an important application repo.

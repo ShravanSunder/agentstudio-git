@@ -122,4 +122,60 @@ struct SystemGitRemoteClientTests {
 
         #expect(!references.isEmpty)
     }
+
+    @Test("live authenticated remote smoke covers clone fetch push and remote refs")
+    func liveAuthenticatedRemoteSmokeCoversCloneFetchPushAndRemoteRefs() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_SMOKE"] == "1" else {
+            return
+        }
+        guard let remoteURL = environment["AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_URL"], !remoteURL.isEmpty else {
+            Issue.record("AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_URL is required when live remote auth smoke is enabled")
+            return
+        }
+
+        let label = environment["AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_LABEL"] ?? "remote"
+        let client = SystemGitRemoteClient(configuration: .init(operationTimeoutSeconds: 180))
+        let smokeID = UUID().uuidString.lowercased()
+        let refName = "refs/heads/agentstudio-git-live-smoke/\(label)-\(smokeID)"
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appending(path: "agentstudio-git-live-remote-auth-\(smokeID)")
+        let checkoutPath = tempRoot.appending(path: "checkout")
+        var pushedRef = false
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        do {
+            _ = try await client.clone(
+                GitCloneRequest(remoteURL: remoteURL, destinationPath: checkoutPath, checkoutBranch: nil))
+            let git = GitProcess(repositoryPath: checkoutPath)
+            try git.run("config", "user.name", "AgentStudio Git Live Smoke")
+            try git.run("config", "user.email", "agentstudio-git-live-smoke@example.invalid")
+            let markerPath = "agentstudio-git-live-smoke-\(smokeID).txt"
+            try "live auth smoke \(label) \(smokeID)\n".write(
+                to: checkoutPath.appending(path: markerPath),
+                atomically: true,
+                encoding: .utf8
+            )
+            try git.run("add", markerPath)
+            try git.run("commit", "-m", "agentstudio-git live auth smoke \(label)")
+
+            _ = try await client.push(
+                GitPushRequest(repositoryPath: checkoutPath, remoteName: "origin", refspec: "HEAD:\(refName)"))
+            pushedRef = true
+            _ = try await client.fetch(GitFetchRequest(repositoryPath: checkoutPath, remoteName: "origin"))
+            let references = try await client.remoteReferences(GitRemoteReferencesRequest(remoteURL: remoteURL))
+
+            #expect(references.contains { $0.name == refName })
+        } catch {
+            if pushedRef {
+                _ = try? await client.push(
+                    GitPushRequest(repositoryPath: checkoutPath, remoteName: "origin", refspec: ":\(refName)"))
+            }
+            throw error
+        }
+
+        _ = try await client.push(
+            GitPushRequest(repositoryPath: checkoutPath, remoteName: "origin", refspec: ":\(refName)"))
+    }
 }

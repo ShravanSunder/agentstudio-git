@@ -2090,3 +2090,146 @@ Result:
 Validation-order note:
 
 - An initial parallel run of `verify-agentstudio-compatibility.sh` and the live remote smoke failed while `mise run check` was actively rebuilding `Artifacts/CLibGit2Local.xcframework`; SwiftPM saw the local binary target mid-replacement. Both gates were rerun after `mise run check` completed and passed.
+
+## Live Remote/Auth Harness
+
+Date: 2026-06-12
+
+Status: implemented; execution requires external disposable HTTPS and SSH writeable remotes.
+
+Files changed:
+
+- `.mise.toml`
+- `Tests/AgentStudioGitTests/Packaging/LibGit2PackagingScriptTests.swift`
+- `Tests/AgentStudioGitTests/Remote/SystemGitRemoteClientTests.swift`
+- `scripts/verify-live-remote-auth.sh`
+- `docs/specs/2026-06-10-agentstudio-git-libgit2-data-plane.md`
+- `docs/superpowers/plans/2026-06-10-agentstudio-git-libgit2-data-plane.md`
+- `docs/guides/agentstudio-consumption.md`
+- `docs/wip/implementation-proof/2026-06-11-agentstudio-git-sdk-proof.md`
+
+Red evidence:
+
+```bash
+bash scripts/run-swift-test-filter.sh LibGit2PackagingScriptTests
+```
+
+Exit code: 1
+
+Result before implementation:
+
+- `Test run with 6 tests in 1 suite failed`
+- `live remote auth verifier requires HTTPS and SSH smoke remotes` failed because `scripts/verify-live-remote-auth.sh` did not exist
+
+Redaction hardening red evidence:
+
+```bash
+bash scripts/run-swift-test-filter.sh LibGit2PackagingScriptTests
+```
+
+Exit code: 1
+
+Result before hardening:
+
+- `live remote auth verifier requires HTTPS and SSH smoke remotes` failed because `scripts/verify-live-remote-auth.sh` still contained `remote: $remote_url`
+- the verifier did not yet contain the `value not printed` redaction marker
+
+Implementation notes:
+
+- `scripts/verify-live-remote-auth.sh` requires `AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL` and `AGENTSTUDIO_GIT_LIVE_SSH_REMOTE_URL`.
+- The verifier prints only the remote lane label; it does not echo raw configured remote URLs because HTTPS URLs can contain credentials.
+- The Swift live auth test is opt-in through `AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_SMOKE=1`.
+- For each configured remote, the test uses `SystemGitRemoteClient` for clone, fetch, push, and remote reference discovery.
+- The test writes to a temporary branch ref under `refs/heads/agentstudio-git-live-smoke/` and deletes that ref after proof.
+
+Green proof:
+
+```bash
+bash scripts/run-swift-test-filter.sh LibGit2PackagingScriptTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 6 tests in 1 suite passed`
+
+```bash
+bash scripts/run-swift-test-filter.sh SystemGitRemoteClientTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 6 tests in 1 suite passed`
+- live auth test skipped because `AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_SMOKE` was not set
+
+```bash
+bash scripts/verify-live-remote-auth.sh
+```
+
+Exit code: 2
+
+Result:
+
+- verifier reported `AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL is required for the live HTTPS credential-helper remote/auth gate`
+
+```bash
+mise run format
+```
+
+Exit code: 0
+
+Result:
+
+- formatted Swift sources
+
+```bash
+mise run lint
+```
+
+Exit code: 0
+
+Result:
+
+- `swift-format lint` passed
+- SwiftLint found 0 violations in 54 files
+
+```bash
+swift test
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 78 tests in 18 suites passed`
+
+```bash
+mise run check
+```
+
+Exit code: 0
+
+Result:
+
+- rebuilt and verified `Artifacts/CLibGit2Local.xcframework`
+- `swift build` completed
+- `mise run lint` passed with 0 SwiftLint violations in 54 files
+- `mise run test` passed with `Test run with 78 tests in 18 suites passed`
+
+```bash
+git diff --check
+```
+
+Exit code: 0
+
+Result:
+
+- no whitespace errors
+
+Known external proof limits after this checkpoint:
+
+- The full live HTTPS credential-helper and SSH-agent smoke is executable, but still requires disposable writeable remotes configured through `AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL` and `AGENTSTUDIO_GIT_LIVE_SSH_REMOTE_URL`.
+- A real hosted `CLibGit2Local.xcframework.zip` URL is still required before claiming actual remote artifact download proof.

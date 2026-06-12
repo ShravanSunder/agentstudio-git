@@ -76,6 +76,23 @@ struct LibGit2PackagingScriptTests {
         #expect(contents.contains("bash scripts/verify-agentstudio-compatibility.sh"))
     }
 
+    @Test("live remote auth verifier requires HTTPS and SSH smoke remotes")
+    func liveRemoteAuthVerifierRequiresHTTPSAndSSHSmokeRemotes() throws {
+        let scriptContents = try readFile("scripts/verify-live-remote-auth.sh")
+        let miseContents = try readFile(".mise.toml")
+
+        #expect(scriptContents.contains("AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL"))
+        #expect(scriptContents.contains("AGENTSTUDIO_GIT_LIVE_SSH_REMOTE_URL"))
+        #expect(scriptContents.contains("AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_SMOKE=1"))
+        #expect(scriptContents.contains("AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_LABEL"))
+        #expect(scriptContents.contains("SystemGitRemoteClientTests"))
+        #expect(scriptContents.contains("agentstudio-git-live-smoke"))
+        #expect(scriptContents.contains("value not printed"))
+        #expect(!scriptContents.contains("remote: $remote_url"))
+        #expect(miseContents.contains("[tasks.verify-live-remote-auth]"))
+        #expect(miseContents.contains("bash scripts/verify-live-remote-auth.sh"))
+    }
+
     @Test("third-party notice records pinned libgit2 tag and license")
     func thirdPartyNoticeRecordsPinnedLibGit2TagAndLicense() throws {
         let contents = try readFile("ThirdPartyNotices/libgit2.md")
