@@ -189,6 +189,44 @@ struct GitStatusIntegrationTests {
         #expect(!encoded.contains("user:secret-token"))
     }
 
+    @Test("origin snapshots preserve SSH usernames")
+    func originSnapshotsPreserveSSHUsernames() async throws {
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-status-origin-ssh")
+        defer { fixture.remove() }
+        let sshURL = "ssh://git@example.com/org/repo.git"
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        try fixture.git.run("remote", "add", "origin", sshURL)
+
+        let status = try await client.status(for: fixture.repositoryPath, options: GitStatusOptions())
+
+        guard case .resolved(let remote) = status.originResolution else {
+            Issue.record("expected resolved origin, got \(status.originResolution)")
+            return
+        }
+        #expect(remote.rawURL == sshURL)
+        #expect(remote.url.absoluteString == sshURL)
+    }
+
+    @Test("origin snapshots preserve local paths under dot ssh directories")
+    func originSnapshotsPreserveLocalPathsUnderDotSSHDirectories() async throws {
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-status-origin-dot-ssh")
+        defer { fixture.remove() }
+        let localRemotePath = fixture.root.appending(path: ".ssh/repo.git")
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        try fixture.git.run("remote", "add", "origin", localRemotePath.path)
+
+        let status = try await client.status(for: fixture.repositoryPath, options: GitStatusOptions())
+
+        guard case .resolved(let remote) = status.originResolution else {
+            Issue.record("expected resolved origin, got \(status.originResolution)")
+            return
+        }
+        #expect(remote.rawURL == localRemotePath.path)
+        #expect(samePath(remote.url, localRemotePath))
+    }
+
     @Test("detached unborn and unresolved origin states still return summaries")
     func detachedUnbornAndUnresolvedOriginStatesStillReturnSummaries() async throws {
         let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-status-head")

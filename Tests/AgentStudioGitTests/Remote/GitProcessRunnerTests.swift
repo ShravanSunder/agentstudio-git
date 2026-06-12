@@ -1,4 +1,5 @@
 import AgentStudioGit
+import Darwin
 import Foundation
 import Testing
 
@@ -36,6 +37,26 @@ struct GitProcessRunnerTests {
         #expect(environment["GIT_SSH_COMMAND"]?.contains("/tmp/agentstudio-ssh-config") == true)
         let invocation = try #require(fakeGit.recordedInvocations().first)
         #expect(invocation.contains("core.askPass="))
+    }
+
+    @Test("runner overrides inherited SSH BatchMode no in noninteractive mode")
+    func runnerOverridesInheritedSSHBatchModeNoInNoninteractiveMode() async throws {
+        let fakeGit = try FakeGitExecutable()
+        let configuration = fakeGit.configuration(
+            inheritEnvironment: false,
+            additionalEnvironment: [
+                "GIT_SSH_COMMAND": "ssh -F /tmp/agentstudio-ssh-config -oBatchMode=no"
+            ]
+        )
+        let runner = GitProcessRunner(configuration: configuration)
+
+        _ = try await runner.run(arguments: ["status"])
+
+        let environment = try fakeGit.recordedEnvironment()
+        let sshCommand = try #require(environment["GIT_SSH_COMMAND"])
+        #expect(!sshCommand.contains("BatchMode=no"))
+        #expect(sshCommand.contains("-oBatchMode=yes"))
+        #expect(sshCommand.contains("/tmp/agentstudio-ssh-config"))
     }
 
     @Test("runner allows trusted interactive prompt opt-in")
@@ -98,6 +119,35 @@ struct GitProcessRunnerTests {
             #expect(failure.redactedStderr.contains("timed out after 0.1 seconds"))
         }
     }
+
+    @Test("runner terminates descendant processes after timeout")
+    func runnerTerminatesDescendantProcessesAfterTimeout() async throws {
+        let fakeGit = try FakeGitExecutable()
+        let childPIDURL = fakeGit.root.appending(path: "child.pid")
+        let configuration = fakeGit.configuration(
+            operationTimeoutSeconds: 1,
+            additionalEnvironment: [
+                "AGENTSTUDIO_FAKE_GIT_CHILD_PID": childPIDURL.path,
+                "AGENTSTUDIO_FAKE_GIT_CHILD_SLEEP_SECONDS": "30",
+            ])
+        let runner = GitProcessRunner(configuration: configuration)
+
+        do {
+            _ = try await runner.run(arguments: ["fetch", "origin"])
+            Issue.record("descendant fake git unexpectedly succeeded")
+        } catch let error {
+            guard case .processTimedOut = error else {
+                Issue.record("expected process timeout, got \(error)")
+                return
+            }
+        }
+
+        let pidText = try String(contentsOf: childPIDURL, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let childPID = try #require(pid_t(pidText))
+        defer { kill(childPID, SIGKILL) }
+        #expect(!processIsRunning(childPID))
+    }
 }
 
 struct FakeGitExecutable {
@@ -123,6 +173,12 @@ struct FakeGitExecutable {
           echo END
         } >> "$AGENTSTUDIO_FAKE_GIT_ARGUMENTS"
         env | sort > "$AGENTSTUDIO_FAKE_GIT_ENVIRONMENT"
+        if [ -n "${AGENTSTUDIO_FAKE_GIT_CHILD_PID:-}" ]; then
+          (trap '' TERM HUP; sleep "${AGENTSTUDIO_FAKE_GIT_CHILD_SLEEP_SECONDS:-30}") &
+          child_pid="$!"
+          printf '%s\\n' "$child_pid" > "$AGENTSTUDIO_FAKE_GIT_CHILD_PID"
+          wait "$child_pid"
+        fi
         if [ -n "${AGENTSTUDIO_FAKE_GIT_SLEEP_SECONDS:-}" ]; then
           sleep "$AGENTSTUDIO_FAKE_GIT_SLEEP_SECONDS"
         fi
@@ -192,4 +248,8 @@ struct FakeGitExecutable {
                 return (String(parts[0]), String(parts[1]))
             })
     }
+}
+
+private func processIsRunning(_ pid: pid_t) -> Bool {
+    kill(pid, 0) == 0 || errno == EPERM
 }

@@ -61,7 +61,7 @@ struct LibGit2BranchReader: Sendable {
             GitRemoteSnapshot(
                 name: remoteName,
                 url: publicRemoteURL(from: rawURL),
-                rawURL: GitRedaction.redact(rawURL)
+                rawURL: originRawURLForWire(from: rawURL)
             ))
     }
 
@@ -182,16 +182,55 @@ struct LibGit2BranchReader: Sendable {
     }
 
     private func publicRemoteURL(from rawURL: String) -> URL {
-        guard var components = URLComponents(string: rawURL) else {
-            return remoteURL(from: GitRedaction.redact(rawURL))
+        guard var components = URLComponents(string: rawURL),
+            let scheme = components.scheme?.lowercased(),
+            ["http", "https"].contains(scheme)
+        else {
+            return remoteURL(from: rawURL)
         }
 
         components.user = nil
         components.password = nil
         guard let credentialStrippedURL = components.url else {
-            return remoteURL(from: GitRedaction.redact(rawURL))
+            return remoteURL(from: originRawURLForWire(from: rawURL))
         }
-        return remoteURL(from: GitRedaction.redact(credentialStrippedURL.absoluteString))
+        return remoteURL(from: redactingSensitiveURLQueryValues(in: credentialStrippedURL.absoluteString))
+    }
+
+    private func originRawURLForWire(from rawURL: String) -> String {
+        guard let scheme = URLComponents(string: rawURL)?.scheme?.lowercased(),
+            ["http", "https"].contains(scheme)
+        else {
+            return redactingSensitiveURLQueryValues(in: rawURL)
+        }
+
+        let credentialRedactedURL = replacingMatches(
+            in: rawURL,
+            pattern: #"(?i)\b(https?://)[^/\s@]+@"#,
+            template: "$1<redacted>@"
+        )
+        return redactingSensitiveURLQueryValues(in: credentialRedactedURL)
+    }
+
+    private func redactingSensitiveURLQueryValues(in value: String) -> String {
+        replacingMatches(
+            in: value,
+            pattern: #"(?i)(token|access_token|password|passwd|secret)=([^&\s]+)"#,
+            template: "$1=<redacted>"
+        )
+    }
+
+    private func replacingMatches(in value: String, pattern: String, template: String) -> String {
+        guard let expression = try? NSRegularExpression(pattern: pattern) else {
+            return value
+        }
+        let range = NSRange(value.startIndex..<value.endIndex, in: value)
+        return expression.stringByReplacingMatches(
+            in: value,
+            options: [],
+            range: range,
+            withTemplate: template
+        )
     }
 
     private func withRepository<ReturnValue>(

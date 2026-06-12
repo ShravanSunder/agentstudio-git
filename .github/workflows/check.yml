@@ -29,3 +29,11 @@ jobs:
 
       - name: Verify downstream package consumer
         run: bash scripts/verify-package-consumer.sh
+
+      - name: Report AgentStudio compatibility external gate
+        if: ${{ env.AGENTSTUDIO_GIT_AGENTSTUDIO_PATH == '' }}
+        run: echo "AgentStudio compatibility requires AGENTSTUDIO_GIT_AGENTSTUDIO_PATH and is not proven by this CI checkout."
+
+      - name: Verify AgentStudio compatibility
+        if: ${{ env.AGENTSTUDIO_GIT_AGENTSTUDIO_PATH != '' }}
+        run: bash scripts/verify-agentstudio-compatibility.sh

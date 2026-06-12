@@ -55,7 +55,7 @@ Remote/auth work is intentionally system-Git-backed. The SDK does not store cred
 - operation timeout
 - additional trusted environment values
 
-Defaults inherit the user's environment, strip Git tracing variables, set `LC_ALL=C`, suppress terminal prompts with `GIT_TERMINAL_PROMPT=0`, disable Git/SSH askpass helpers, enable SSH batch mode, enforce the configured timeout, and allow HTTPS plus SSH. Interactive prompting is a trusted opt-in for a caller that owns UI or terminal behavior.
+Defaults inherit the user's environment, strip Git tracing variables, set `LC_ALL=C`, suppress terminal prompts with `GIT_TERMINAL_PROMPT=0`, disable Git/SSH askpass helpers, normalize SSH batch mode to `-oBatchMode=yes`, enforce the configured timeout, and allow HTTPS plus SSH. Timeout cleanup kills the spawned process group so Git SSH/helper descendants are covered. Interactive prompting is a trusted opt-in for a caller that owns UI or terminal behavior.
 
 ## AgentStudio Adapter Boundary
 
@@ -82,9 +82,12 @@ mise run check
 swift test --sanitize address
 swift test --sanitize thread
 bash scripts/verify-package-consumer.sh
+AGENTSTUDIO_GIT_AGENTSTUDIO_PATH=/path/to/agent-studio bash scripts/verify-agentstudio-compatibility.sh
 ```
 
-The consumer verifier builds a scratch SwiftPM package that imports all public products: `AgentStudioGit`, `AgentStudioGitContracts`, `AgentStudioGitLocal`, and `AgentStudioGitRemote`. It also evaluates the HTTPS/checksum release-manifest mode. A real hosted artifact URL is still required before claiming an actual remote artifact download proof.
+The consumer verifier builds a scratch SwiftPM package with two consumers: one imports only the `AgentStudioGit` umbrella product, and one imports all public leaf products: `AgentStudioGitContracts`, `AgentStudioGitLocal`, and `AgentStudioGitRemote`. It clears ambient release-artifact environment variables during local-path proof, then evaluates the HTTPS/checksum release-manifest mode. A real hosted artifact URL is still required before claiming an actual remote artifact download proof.
+
+The AgentStudio compatibility verifier requires `AGENTSTUDIO_GIT_AGENTSTUDIO_PATH` because this repository cannot prove the app seams from an isolated checkout.
 
 For live remote/auth proof, run:
 

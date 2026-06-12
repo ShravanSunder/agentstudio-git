@@ -484,7 +484,7 @@ bash scripts/verify-package-consumer.sh
 
 `build-libgit2` owns scoped cleanup of `.build/libgit2/{arm64,x86_64,macos-universal}`, `.build/libgit2/CLibGit2LocalHeaders`, and `Artifacts/CLibGit2Local.xcframework`; do not manually delete repo-wide build directories as a proof shortcut.
 
-`verify-package-consumer.sh` creates a scratch SwiftPM package outside this repo, depends on `agentstudio-git`, resolves it from the intended downstream path, imports all public products (`AgentStudioGit`, `AgentStudioGitContracts`, `AgentStudioGitLocal`, and `AgentStudioGitRemote`), and builds without running repo-local mise tasks inside the dependency checkout. It also evaluates the HTTPS/checksum release-manifest mode; a real hosted artifact URL is required before claiming a network download proof.
+`verify-package-consumer.sh` creates a scratch SwiftPM package outside this repo, depends on `agentstudio-git`, resolves it from the intended downstream path, proves an umbrella-only `import AgentStudioGit` consumer, imports all public leaf products (`AgentStudioGitContracts`, `AgentStudioGitLocal`, and `AgentStudioGitRemote`) in a second consumer, and builds without running repo-local mise tasks inside the dependency checkout. The local build/run phase clears ambient `AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL` and `AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM` so local path proof cannot accidentally switch to release URL mode. It also evaluates the HTTPS/checksum release-manifest mode; a real hosted artifact URL is required before claiming a network download proof.
 
 - [x] **Step 7: Commit**
 
@@ -888,6 +888,8 @@ Create proof doc with:
 - remote live smoke status
 - known limitations
 
+`verify-agentstudio-compatibility.sh` is an explicit external gate because a plain `agentstudio-git` checkout does not contain AgentStudio. Default CI may report this gate as not configured, but must not claim AgentStudio compatibility unless `AGENTSTUDIO_GIT_AGENTSTUDIO_PATH` points at a real checkout and required compatibility mode passes.
+
 - [x] **Step 5: Run final validation**
 
 ```bash
@@ -897,6 +899,7 @@ mise run check
 swift test --sanitize address
 swift test --sanitize thread
 bash scripts/verify-package-consumer.sh
+AGENTSTUDIO_GIT_AGENTSTUDIO_PATH=/path/to/agent-studio bash scripts/verify-agentstudio-compatibility.sh
 ```
 
 - [x] **Step 6: Commit**
@@ -930,6 +933,7 @@ mise run check
 swift test --sanitize address
 swift test --sanitize thread
 bash scripts/verify-package-consumer.sh
+AGENTSTUDIO_GIT_AGENTSTUDIO_PATH=/path/to/agent-studio bash scripts/verify-agentstudio-compatibility.sh
 ```
 
 Expected:

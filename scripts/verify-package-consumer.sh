@@ -13,7 +13,8 @@ fi
 
 libgit2_checksum="$(tr -d '[:space:]' <"$ZIP_CHECKSUM_PATH")"
 
-mkdir -p "$SCRATCH_DIR/Sources/Consumer"
+mkdir -p "$SCRATCH_DIR/Sources/UmbrellaConsumer"
+mkdir -p "$SCRATCH_DIR/Sources/LeafConsumer"
 
 {
   printf '%s\n' '// swift-tools-version: 6.2'
@@ -25,14 +26,21 @@ mkdir -p "$SCRATCH_DIR/Sources/Consumer"
   printf '%s\n' '        .macOS(.v14),'
   printf '%s\n' '    ],'
   printf '%s\n' '    products: ['
-  printf '%s\n' '        .executable(name: "consumer", targets: ["Consumer"]),'
+  printf '%s\n' '        .executable(name: "umbrella-consumer", targets: ["UmbrellaConsumer"]),'
+  printf '%s\n' '        .executable(name: "leaf-consumer", targets: ["LeafConsumer"]),'
   printf '%s\n' '    ],'
   printf '%s\n' '    dependencies: ['
   printf '        .package(path: "%s"),\n' "$ROOT_DIR"
   printf '%s\n' '    ],'
   printf '%s\n' '    targets: ['
   printf '%s\n' '        .executableTarget('
-  printf '%s\n' '            name: "Consumer",'
+  printf '%s\n' '            name: "UmbrellaConsumer",'
+  printf '%s\n' '            dependencies: ['
+  printf '%s\n' '                .product(name: "AgentStudioGit", package: "agentstudio-git"),'
+  printf '%s\n' '            ]'
+  printf '%s\n' '        ),'
+  printf '%s\n' '        .executableTarget('
+  printf '%s\n' '            name: "LeafConsumer",'
   printf '%s\n' '            dependencies: ['
   printf '%s\n' '                .product(name: "AgentStudioGit", package: "agentstudio-git"),'
   printf '%s\n' '                .product(name: "AgentStudioGitContracts", package: "agentstudio-git"),'
@@ -43,6 +51,19 @@ mkdir -p "$SCRATCH_DIR/Sources/Consumer"
   printf '%s\n' '    ]'
   printf '%s\n' ')'
 } >"$SCRATCH_DIR/Package.swift"
+
+{
+  printf '%s\n' 'import AgentStudioGit'
+  printf '%s\n' ''
+  printf '%s\n' 'let version = LibGit2ImportCanary.version()'
+  printf '%s\n' 'let remoteClient = SystemGitRemoteClient(configuration: .init(inheritEnvironment: false))'
+  printf '%s\n' 'let statusOptions = GitStatusOptions()'
+  printf '%s\n' 'let promptPolicy = GitRemotePromptPolicy.noninteractive'
+  printf '%s\n' 'let remoteProtocol = GitRemoteProtocol.https'
+  printf '%s\n' 'let unsupported = GitDataPlaneError.unsupported(message: "consumer smoke")'
+  printf '%s\n' 'precondition(version.major == 1)'
+  printf '%s\n' 'print("umbrella \(version.major).\(version.minor).\(version.revision) \(type(of: remoteClient)) \(statusOptions.includeUntracked) \(promptPolicy.rawValue) \(remoteProtocol.rawValue) \(unsupported)")'
+} >"$SCRATCH_DIR/Sources/UmbrellaConsumer/main.swift"
 
 {
   printf '%s\n' 'import AgentStudioGit'
@@ -57,11 +78,18 @@ mkdir -p "$SCRATCH_DIR/Sources/Consumer"
   printf '%s\n' 'let remoteProtocol = GitRemoteProtocol.https'
   printf '%s\n' 'let unsupported = GitDataPlaneError.unsupported(message: "consumer smoke")'
   printf '%s\n' 'precondition(version.major == 1)'
-  printf '%s\n' 'print("\(version.major).\(version.minor).\(version.revision) \(type(of: remoteClient)) \(statusOptions.includeUntracked) \(promptPolicy.rawValue) \(remoteProtocol.rawValue) \(unsupported)")'
-} >"$SCRATCH_DIR/Sources/Consumer/main.swift"
+  printf '%s\n' 'print("leaf \(version.major).\(version.minor).\(version.revision) \(type(of: remoteClient)) \(statusOptions.includeUntracked) \(promptPolicy.rawValue) \(remoteProtocol.rawValue) \(unsupported)")'
+} >"$SCRATCH_DIR/Sources/LeafConsumer/main.swift"
 
-swift build --package-path "$SCRATCH_DIR"
-swift run --package-path "$SCRATCH_DIR" consumer
+env -u AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL \
+  -u AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM \
+  swift build --package-path "$SCRATCH_DIR"
+env -u AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL \
+  -u AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM \
+  swift run --package-path "$SCRATCH_DIR" umbrella-consumer
+env -u AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL \
+  -u AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM \
+  swift run --package-path "$SCRATCH_DIR" leaf-consumer
 
 AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL="$RELEASE_ARTIFACT_URL" \
   AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM="$libgit2_checksum" \

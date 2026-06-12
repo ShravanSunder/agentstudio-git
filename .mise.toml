@@ -48,6 +48,10 @@ run = "bash scripts/verify-libgit2-artifact.sh"
 description = "Verify downstream SwiftPM consumption and release manifest shape"
 run = "bash scripts/verify-package-consumer.sh"
 
+[tasks.verify-agentstudio-compatibility]
+description = "Verify compatibility against an explicit AgentStudio checkout"
+run = "bash scripts/verify-agentstudio-compatibility.sh"
+
 [tasks.check]
 description = "Run build, lint, and tests"
 run = """

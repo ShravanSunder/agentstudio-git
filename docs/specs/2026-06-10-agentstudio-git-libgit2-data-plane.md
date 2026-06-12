@@ -76,9 +76,9 @@ Remote operations such as clone, fetch, push, and remote reference discovery use
 
 System Git executable selection, inherited environment policy, prompt policy, protocol allowlist, and timeout are trusted client configuration. They are not public per-request fields.
 
-Default remote operations are noninteractive and set prompt policy explicitly. Noninteractive mode disables Git/SSH askpass helpers and enables SSH batch mode. Interactive prompting is trusted opt-in for a caller that owns UI or TTY behavior.
+Default remote operations are noninteractive and set prompt policy explicitly. Noninteractive mode disables Git/SSH askpass helpers and normalizes SSH batch mode by removing inherited `BatchMode` options and appending `-oBatchMode=yes`. Interactive prompting is trusted opt-in for a caller that owns UI or TTY behavior.
 
-Public values and errors must not expose credential-bearing URLs, raw argv, raw stderr, tokens, private key paths, or sensitive environment values. Public remote snapshots redact credential-bearing configured remotes before values are encoded or returned to AgentStudio. System Git processes fail with a typed timeout error when they exceed the configured operation timeout.
+Public values and errors must not expose credential-bearing URLs, raw argv, raw stderr, tokens, private key paths, or sensitive environment values. Public remote snapshots redact HTTP(S) credential userinfo and token-like query values before values are encoded or returned to AgentStudio, while preserving legitimate SSH usernames and local path remotes such as `ssh://git@example.com/org/repo.git` and paths under `.ssh/`. System Git processes fail with a typed timeout error when they exceed the configured operation timeout, and timeout cleanup targets the spawned process group so SSH/helper descendants are not left running.
 
 ## Locking And Concurrency
 
@@ -245,6 +245,7 @@ C interop tests:
 Remote/auth tests:
 
 - fake system-Git tests cover clone, fetch, push, remote reference discovery, command construction, environment policy, prompt policy, timeout behavior, protocol restrictions, parser output, and redaction
+- timeout tests cover both the top-level Git process and spawned descendants
 - opt-in live smoke records whether HTTPS and SSH auth paths were exercised against the user's configured environment
 
 Do not add wall-clock sleeps. Wait for exact filesystem/process state when necessary.
@@ -260,5 +261,5 @@ Do not add wall-clock sleeps. Wait for exact filesystem/process state when neces
 - Read operations do not write the actual main or linked worktree index.
 - Worktree removal safety is proven for main, linked, dirty, staged, untracked, locked, stale, forced, and partial-failure cases.
 - Remote/auth operations reuse the user's system Git credential path and redact all public failure values.
-- A clean downstream SwiftPM package can consume the distributable artifact path.
+- A clean downstream SwiftPM package can consume the local development path, and release HTTPS/checksum manifest mode is evaluated. Actual distributable artifact download proof requires a hosted `CLibGit2Local.xcframework.zip`.
 - AgentStudio adapters can consume the package without importing Bridge contracts into `agentstudio-git`.

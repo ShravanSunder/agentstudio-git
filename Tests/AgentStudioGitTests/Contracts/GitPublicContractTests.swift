@@ -134,4 +134,27 @@ struct GitPublicContractTests {
         #expect(payload["sizeBytes"] as? Int == 2048)
         #expect(payload["maxSizeBytes"] as? Int == 1024)
     }
+
+    @Test("process timeout errors carry redacted process failure facts")
+    func processTimeoutErrorsCarryRedactedProcessFailureFacts() throws {
+        let error = GitDataPlaneError.processTimedOut(
+            GitRemoteProcessFailure(
+                executable: "git",
+                redactedArguments: ["fetch", "origin"],
+                exitCode: -1,
+                redactedStderr: "git process timed out after 0.1 seconds"
+            ))
+
+        let data = try JSONEncoder().encode(error)
+        let decodedError = try JSONDecoder().decode(GitDataPlaneError.self, from: data)
+        let jsonObject = try JSONSerialization.jsonObject(with: data)
+        let dictionary = try #require(jsonObject as? [String: Any])
+        let payload = try #require(dictionary["processTimedOut"] as? [String: Any])
+
+        #expect(decodedError == error)
+        #expect(payload["executable"] as? String == "git")
+        #expect(payload["redactedArguments"] as? [String] == ["fetch", "origin"])
+        #expect(payload["exitCode"] as? Int == -1)
+        #expect(payload["redactedStderr"] as? String == "git process timed out after 0.1 seconds")
+    }
 }

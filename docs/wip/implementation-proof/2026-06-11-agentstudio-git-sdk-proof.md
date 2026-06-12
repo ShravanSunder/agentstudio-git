@@ -1832,3 +1832,261 @@ Known external proof limits after this checkpoint:
 
 - Authenticated HTTPS credential-helper and SSH-agent live smokes have not been exercised in this checkout because no private/authenticated smoke remotes were configured.
 - The release manifest HTTPS/checksum mode is evaluated, but an actual remote artifact download still requires a real hosted `CLibGit2Local.xcframework.zip` URL.
+
+## Review Round 2: Origin Semantics, Process Groups, And External Gates
+
+Date: 2026-06-12
+
+Status: implemented; final full validation pending in this checkpoint section.
+
+Review findings addressed:
+
+- `GitRemoteSnapshot.url` and `rawURL` were over-sanitized for normal SSH origins such as `ssh://git@example.com/org/repo.git`.
+- `rawURL` used the generic process redactor, which broke legitimate local path remotes containing `.ssh/`.
+- noninteractive `GIT_SSH_COMMAND` preserved inherited `BatchMode=no`.
+- timeout cleanup killed only the top-level Git process, not a spawned process group.
+- `GitDataPlaneError.processTimedOut` did not have pinned public wire shape.
+- `verify-package-consumer.sh` inherited ambient release-artifact environment variables during local-path proof.
+- default CI could not prove AgentStudio compatibility from an isolated checkout.
+- release HTTPS/checksum proof language still needed to distinguish manifest evaluation from a real hosted artifact download.
+
+Files changed:
+
+- `.github/workflows/check.yml`
+- `.mise.toml`
+- `Sources/AgentStudioGitContracts/GitDataPlaneError.swift`
+- `Sources/AgentStudioGitLocal/Status/LibGit2BranchReader.swift`
+- `Sources/AgentStudioGitRemote/GitProcessRunner.swift`
+- `Sources/AgentStudioGitRemote/SystemGitRemoteClient.swift`
+- `Tests/AgentStudioGitTests/Contracts/GitPublicContractTests.swift`
+- `Tests/AgentStudioGitTests/Integration/GitStatusIntegrationTests.swift`
+- `Tests/AgentStudioGitTests/Packaging/LibGit2PackagingScriptTests.swift`
+- `Tests/AgentStudioGitTests/Remote/GitProcessRunnerTests.swift`
+- `scripts/verify-agentstudio-compatibility.sh`
+- `scripts/verify-package-consumer.sh`
+- `docs/specs/2026-06-10-agentstudio-git-libgit2-data-plane.md`
+- `docs/superpowers/plans/2026-06-10-agentstudio-git-libgit2-data-plane.md`
+- `docs/guides/agentstudio-consumption.md`
+- `docs/wip/implementation-proof/2026-06-11-agentstudio-git-sdk-proof.md`
+
+Red evidence:
+
+```bash
+bash scripts/run-swift-test-filter.sh GitStatusIntegrationTests
+```
+
+Exit code: 1
+
+Result before implementation:
+
+- `Test run with 10 tests in 1 suite failed`
+- `origin snapshots preserve SSH usernames` failed because `rawURL` became `ssh://<redacted>@example.com/org/repo.git` and `url` became `ssh://example.com/org/repo.git`
+- `origin snapshots preserve local paths under dot ssh directories` failed because `rawURL` became `<redacted-private-key-path>`
+
+```bash
+bash scripts/run-swift-test-filter.sh GitProcessRunnerTests
+```
+
+Exit code: 1
+
+Result before implementation:
+
+- `Test run with 6 tests in 1 suite failed`
+- `runner overrides inherited SSH BatchMode no in noninteractive mode` failed because `GIT_SSH_COMMAND` stayed `ssh -F /tmp/agentstudio-ssh-config -oBatchMode=no`
+- `runner terminates descendant processes after timeout` failed because the signal-resistant spawned child PID was still running after timeout
+
+```bash
+bash scripts/run-swift-test-filter.sh GitPublicContractTests
+```
+
+Exit code: 1
+
+Result before implementation:
+
+- `Test run with 6 tests in 1 suite failed`
+- `process timeout errors carry redacted process failure facts` failed because the encoded `processTimedOut` payload did not expose `executable`, `redactedArguments`, `exitCode`, or `redactedStderr` directly
+
+```bash
+bash scripts/run-swift-test-filter.sh LibGit2PackagingScriptTests
+```
+
+Exit code: 1
+
+Result before implementation:
+
+- `Test run with 5 tests in 1 suite failed`
+- consumer verifier did not clear ambient `AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL` or `AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM` for local-path proof
+
+Implementation notes:
+
+- `LibGit2BranchReader` now uses origin-specific sanitization: HTTP(S) credential userinfo and sensitive query values are redacted; SSH usernames and local path remotes are preserved.
+- `SystemGitRemoteClient.Configuration` now removes inherited SSH `BatchMode` options before appending `-oBatchMode=yes`.
+- `GitProcessRunner` now launches Git with POSIX spawn attributes that create a process group and kills that group on timeout.
+- `GitDataPlaneError` now has explicit Codable encoding/decoding so typed error payloads have stable direct fields.
+- `verify-package-consumer.sh` now has an umbrella-only consumer and a leaf-product consumer, and clears release-artifact environment variables during local-path build/run proof.
+- `verify-agentstudio-compatibility.sh` requires an explicit AgentStudio checkout path and runs `CompatibilityTests` in required mode.
+- CI reports AgentStudio compatibility as an external gate unless `AGENTSTUDIO_GIT_AGENTSTUDIO_PATH` is configured.
+
+Focused green proof:
+
+```bash
+bash scripts/run-swift-test-filter.sh GitProcessRunnerTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 6 tests in 1 suite passed`
+
+```bash
+bash scripts/run-swift-test-filter.sh GitStatusIntegrationTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 10 tests in 1 suite passed`
+
+```bash
+bash scripts/run-swift-test-filter.sh GitPublicContractTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 6 tests in 1 suite passed`
+
+```bash
+bash scripts/run-swift-test-filter.sh LibGit2PackagingScriptTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 5 tests in 1 suite passed`
+
+Known external proof limits after this checkpoint:
+
+- Authenticated HTTPS credential-helper and SSH-agent live smokes still require configured private/authenticated smoke remotes.
+- A real hosted `CLibGit2Local.xcframework.zip` URL is still required before claiming actual remote artifact download proof; current proof evaluates manifest mode only.
+
+Final validation:
+
+```bash
+mise run format
+```
+
+Exit code: 0
+
+Result:
+
+- formatted Swift sources
+
+```bash
+swift test
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 76 tests in 18 suites passed`
+
+```bash
+bash scripts/verify-package-consumer.sh
+```
+
+Exit code: 0
+
+Result:
+
+- scratch downstream SwiftPM package built and ran
+- umbrella-only consumer output: `umbrella 1.9.4 SystemGitRemoteClient true noninteractive https unsupported(message: "consumer smoke")`
+- leaf-product consumer output: `leaf 1.9.4 SystemGitRemoteClient true noninteractive https unsupported(message: "consumer smoke")`
+
+```bash
+mise run lint
+```
+
+Exit code: 0
+
+Result:
+
+- `swift-format lint` passed
+- SwiftLint found 0 violations in 54 files
+
+```bash
+mise run check
+```
+
+Exit code: 0
+
+Result:
+
+- `verify-libgit2` rebuilt and verified `Artifacts/CLibGit2Local.xcframework`
+- `swift build` passed
+- `swift-format lint` passed
+- SwiftLint found 0 violations in 54 files
+- `swift test` passed with 76 tests in 18 suites
+
+```bash
+AGENTSTUDIO_GIT_AGENTSTUDIO_PATH=/Users/shravansunder/Documents/dev/project-dev/agent-studio.bridge-start bash scripts/verify-agentstudio-compatibility.sh
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 7 tests in 2 suites passed`
+- required AgentStudio compatibility mode proved the checked-out status and Bridge seams
+
+```bash
+AGENTSTUDIO_GIT_LIVE_REMOTE_SMOKE=1 AGENTSTUDIO_GIT_LIVE_REMOTE_URL="$(git remote get-url origin)" bash scripts/run-swift-test-filter.sh SystemGitRemoteClientTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 5 tests in 1 suite passed`
+- live HTTPS `ls-remote --symref` succeeded against the configured origin through `SystemGitRemoteClient`
+
+```bash
+git diff --check
+```
+
+Exit code: 0
+
+Result:
+
+- no whitespace errors
+
+```bash
+mise run test-asan
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 76 tests in 18 suites passed`
+- sanitizer applies to Swift wrapper/test code; native libgit2 was not rebuilt with sanitizer flags
+
+```bash
+mise run test-tsan
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 76 tests in 18 suites passed`
+- sanitizer applies to Swift wrapper/test code; native libgit2 was not rebuilt with sanitizer flags
+
+Validation-order note:
+
+- An initial parallel run of `verify-agentstudio-compatibility.sh` and the live remote smoke failed while `mise run check` was actively rebuilding `Artifacts/CLibGit2Local.xcframework`; SwiftPM saw the local binary target mid-replacement. Both gates were rerun after `mise run check` completed and passed.

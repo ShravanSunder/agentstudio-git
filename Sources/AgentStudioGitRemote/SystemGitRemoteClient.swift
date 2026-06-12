@@ -64,10 +64,33 @@ public struct SystemGitRemoteClient: AgentStudioGitRemoteClient, Sendable {
             guard let command, !command.isEmpty else {
                 return "ssh -oBatchMode=yes"
             }
-            guard !command.contains("BatchMode") else {
-                return command
+            return "\(removingBatchModeOptions(from: command)) -oBatchMode=yes"
+        }
+
+        private func removingBatchModeOptions(from command: String) -> String {
+            let patterns = [
+                #"(?i)(^|\s)-o\s*BatchMode\s*=\s*(?:yes|no|ask)(?=\s|$)"#,
+                #"(?i)(^|\s)-oBatchMode\s*=\s*(?:yes|no|ask)(?=\s|$)"#,
+                #"(?i)(^|\s)-o\s+BatchMode\s+(?:yes|no|ask)(?=\s|$)"#,
+            ]
+            return patterns.reduce(command) { currentCommand, pattern in
+                replacingMatches(in: currentCommand, pattern: pattern, template: "$1")
             }
-            return "\(command) -oBatchMode=yes"
+            .split(separator: " ")
+            .joined(separator: " ")
+        }
+
+        private func replacingMatches(in value: String, pattern: String, template: String) -> String {
+            guard let expression = try? NSRegularExpression(pattern: pattern) else {
+                return value
+            }
+            let range = NSRange(value.startIndex..<value.endIndex, in: value)
+            return expression.stringByReplacingMatches(
+                in: value,
+                options: [],
+                range: range,
+                withTemplate: template
+            )
         }
     }
 

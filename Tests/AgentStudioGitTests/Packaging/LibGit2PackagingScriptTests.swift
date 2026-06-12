@@ -55,6 +55,8 @@ struct LibGit2PackagingScriptTests {
         #expect(contents.contains(".package(path:"))
         #expect(contents.contains(".product(name: \"AgentStudioGitRemote\""))
         #expect(contents.contains("swift run --package-path"))
+        #expect(contents.contains("env -u AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL"))
+        #expect(contents.contains("-u AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM"))
         #expect(contents.contains("AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL"))
         #expect(contents.contains("AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM"))
         #expect(contents.contains("swift package dump-package"))
@@ -70,6 +72,8 @@ struct LibGit2PackagingScriptTests {
         #expect(contents.contains("mise run test-asan"))
         #expect(contents.contains("mise run test-tsan"))
         #expect(contents.contains("bash scripts/verify-package-consumer.sh"))
+        #expect(contents.contains("AgentStudio compatibility requires AGENTSTUDIO_GIT_AGENTSTUDIO_PATH"))
+        #expect(contents.contains("bash scripts/verify-agentstudio-compatibility.sh"))
     }
 
     @Test("third-party notice records pinned libgit2 tag and license")
