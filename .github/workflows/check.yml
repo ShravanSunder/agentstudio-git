@@ -16,7 +16,7 @@ jobs:
           submodules: recursive
 
       - name: Install tooling
-        run: brew install mise cmake
+        run: brew install mise cmake swift-format swiftlint
 
       - name: Run package checks
         run: mise run check

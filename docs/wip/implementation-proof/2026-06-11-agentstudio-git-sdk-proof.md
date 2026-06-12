@@ -2363,7 +2363,7 @@ Known external proof limits after this checkpoint:
 
 Date: 2026-06-12
 
-Status: local fix implemented; remote rerun pending after push.
+Status: local runner/tooling fixes implemented; remote rerun pending after push.
 
 Failure:
 
@@ -2470,9 +2470,96 @@ Result:
 - Build, verification, and artifact upload all completed.
 - Uploaded artifacts include `CLibGit2Local.xcframework.zip` and `CLibGit2Local.xcframework.zip.checksum`.
 
+Follow-up CI failure:
+
+```bash
+gh run watch 27414830257 --repo ShravanSunder/agentstudio-git --exit-status
+```
+
+Exit code: 1
+
+Result:
+
+- GitHub `Check` run `27414830257` reached `mise run lint` on `macos-26`.
+- The run failed with `swift-format: command not found`.
+
+Follow-up fix:
+
+- `.github/workflows/check.yml` now installs `swift-format` and `swiftlint` with the existing `mise` and `cmake` tooling.
+- `LibGit2PackagingScriptTests.checkWorkflowRunsSanitizerAndConsumerGates` now pins the CI tooling install command.
+
+Follow-up red evidence:
+
+```bash
+bash scripts/run-swift-test-filter.sh LibGit2PackagingScriptTests
+```
+
+Exit code: 1
+
+Result before fix:
+
+- `check workflow runs sanitizer and consumer gates` failed because `check.yml` did not contain `brew install mise cmake swift-format swiftlint`.
+
+Follow-up green proof:
+
+```bash
+bash scripts/run-swift-test-filter.sh LibGit2PackagingScriptTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 10 tests in 1 suite passed`.
+
+```bash
+mise run format
+```
+
+Exit code: 0
+
+Result:
+
+- formatted Swift sources.
+
+```bash
+mise run lint
+```
+
+Exit code: 0
+
+Result:
+
+- `swift-format lint` passed.
+- SwiftLint found 0 violations in 54 files.
+
+```bash
+swift test
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 83 tests in 18 suites passed`.
+- live auth test reported skipped because `AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_SMOKE` was not set.
+
+```bash
+mise run check
+```
+
+Exit code: 0
+
+Result:
+
+- rebuilt and verified `Artifacts/CLibGit2Local.xcframework`.
+- `swift build` completed.
+- `mise run lint` passed with 0 SwiftLint violations in 54 files.
+- `mise run test` passed with `Test run with 83 tests in 18 suites passed`.
+
 Known external proof limits after this checkpoint:
 
-- The `Check` workflow must be rerun after the `macos-26` fix is pushed.
+- The `Check` workflow must be rerun after the runner/tooling fixes are pushed.
 - GitHub Actions uploaded artifacts are CI artifacts, not a stable public SwiftPM binary-target URL. A real hosted `CLibGit2Local.xcframework.zip` URL is still required before claiming actual hosted artifact download proof.
 - The full live HTTPS/SSH remote-auth gate remains unchecked until SSH auth works in the host environment.
 

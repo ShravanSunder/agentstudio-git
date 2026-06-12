@@ -69,6 +69,7 @@ struct LibGit2PackagingScriptTests {
         let contents = try readFile(".github/workflows/check.yml")
 
         #expect(contents.contains("runs-on: macos-26"))
+        #expect(contents.contains("brew install mise cmake swift-format swiftlint"))
         #expect(contents.contains("mise run check"))
         #expect(contents.contains("mise run test-asan"))
         #expect(contents.contains("mise run test-tsan"))
