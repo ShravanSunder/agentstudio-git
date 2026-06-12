@@ -844,6 +844,12 @@ Pending until disposable writeable remotes are configured:
 AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL=<https-writeable-remote> AGENTSTUDIO_GIT_LIVE_SSH_REMOTE_URL=<ssh-writeable-remote> bash scripts/verify-live-remote-auth.sh
 ```
 
+Partial live-auth execution on 2026-06-12 against the real `agentstudio-git` GitHub remote:
+
+- HTTPS credential-helper lane passed: clone, local commit, push temporary ref, fetch, remote reference discovery, and temporary-ref deletion.
+- SSH-agent lane failed at external host auth: the 1Password SSH agent listed the GitHub auth key but could not sign noninteractively (`sign_and_send_pubkey: signing failed ... communication with agent failed`), so GitHub returned `Permission denied (publickey)`.
+- The full external gate remains unchecked until the SSH-agent lane passes. A post-run `git ls-remote --heads` check found no leftover `refs/heads/agentstudio-git-live-smoke/*` refs.
+
 - [x] **Step 8: Commit**
 
 ```bash
@@ -933,6 +939,8 @@ Pending until disposable writeable remotes are configured:
 ```bash
 AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL=<https-writeable-remote> AGENTSTUDIO_GIT_LIVE_SSH_REMOTE_URL=<ssh-writeable-remote> bash scripts/verify-live-remote-auth.sh
 ```
+
+Partial live-auth execution on 2026-06-12 proved the HTTPS credential-helper lane against the real `agentstudio-git` GitHub remote. The SSH-agent lane failed before clone because the local 1Password SSH agent could not sign with the GitHub auth key. This gate remains unchecked until SSH auth is usable in the host environment.
 
 - [x] **Step 6: Commit**
 

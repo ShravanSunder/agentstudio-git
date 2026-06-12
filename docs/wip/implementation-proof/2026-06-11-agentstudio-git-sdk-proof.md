@@ -2234,6 +2234,131 @@ Known external proof limits after this checkpoint:
 - The full live HTTPS credential-helper and SSH-agent smoke is executable, but still requires disposable writeable remotes configured through `AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL` and `AGENTSTUDIO_GIT_LIVE_SSH_REMOTE_URL`.
 - A real hosted `CLibGit2Local.xcframework.zip` URL is still required before claiming actual remote artifact download proof.
 
+## Live Remote/Auth External Gate Attempt
+
+Date: 2026-06-12
+
+Status: HTTPS credential-helper lane passed against a real remote; full gate remains pending because the host SSH agent could not sign with the GitHub auth key.
+
+Remote target:
+
+- HTTPS and SSH lanes used the real `agentstudio-git` GitHub repository as the disposable remote target.
+- The smoke harness creates temporary refs under `refs/heads/agentstudio-git-live-smoke/` and deletes them after validation.
+
+Preflight evidence:
+
+```bash
+git remote -v
+```
+
+Exit code: 0
+
+Result:
+
+- `origin` fetch and push point at `https://github.com/ShravanSunder/agentstudio-git.git`.
+
+```bash
+gh auth status
+```
+
+Exit code: 0
+
+Result:
+
+- GitHub CLI is logged in as `ShravanSunder`.
+- Git operations protocol is `https`.
+- Token scopes include `repo` and `workflow`.
+
+```bash
+ssh-add -l
+```
+
+Exit code: 0
+
+Result:
+
+- The 1Password SSH agent listed a GitHub SSH authentication key.
+
+```bash
+git ls-remote --heads https://github.com/ShravanSunder/agentstudio-git.git 'refs/heads/agentstudio-git-live-smoke/*'
+```
+
+Exit code: 0
+
+Result:
+
+- No pre-existing live-smoke refs were present.
+
+```bash
+git ls-remote --heads git@github.com:ShravanSunder/agentstudio-git.git 'refs/heads/agentstudio-git-live-smoke/*'
+```
+
+Exit code: 128
+
+Result:
+
+- SSH auth failed before remote listing: `sign_and_send_pubkey: signing failed ... communication with agent failed`; GitHub returned `Permission denied (publickey)`.
+
+HTTPS lane proof:
+
+```bash
+AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_SMOKE=1 AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_LABEL=https AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_PROTOCOL=https AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_URL=https://github.com/ShravanSunder/agentstudio-git.git bash scripts/run-swift-test-filter.sh SystemGitRemoteClientTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 6 tests in 1 suite passed`.
+- `live authenticated remote smoke covers clone fetch push and remote refs` passed after 3.546 seconds.
+- The HTTPS lane cloned the repository, created a local smoke commit, pushed a temporary ref, fetched, verified remote reference discovery, and deleted the temporary ref.
+
+SSH lane proof:
+
+```bash
+AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_SMOKE=1 AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_LABEL=ssh AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_PROTOCOL=ssh AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_URL=git@github.com:ShravanSunder/agentstudio-git.git bash scripts/run-swift-test-filter.sh SystemGitRemoteClientTests
+```
+
+Exit code: 1
+
+Result:
+
+- `Test run with 6 tests in 1 suite failed`.
+- The live-auth test failed at clone with exit code 128.
+- Public error output redacted the SSH remote argument as `<redacted-ssh-remote>`.
+- The host SSH agent failure was: `sign_and_send_pubkey: signing failed ... communication with agent failed`; GitHub returned `Permission denied (publickey)`.
+
+Official wrapper attempt:
+
+```bash
+AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL=https://github.com/ShravanSunder/agentstudio-git.git AGENTSTUDIO_GIT_LIVE_SSH_REMOTE_URL=git@github.com:ShravanSunder/agentstudio-git.git bash scripts/verify-live-remote-auth.sh
+```
+
+Exit code: 1
+
+Result:
+
+- Wrapper HTTPS lane passed with `Test run with 6 tests in 1 suite passed`.
+- Wrapper SSH lane failed with `Test run with 6 tests in 1 suite failed`.
+- Failure point was external SSH auth: the 1Password SSH agent could list the GitHub auth key but could not sign noninteractively.
+
+Post-run cleanup:
+
+```bash
+git ls-remote --heads https://github.com/ShravanSunder/agentstudio-git.git 'refs/heads/agentstudio-git-live-smoke/*'
+```
+
+Exit code: 0
+
+Result:
+
+- No leftover live-smoke refs were present after the HTTPS lane and wrapper attempt.
+
+Known external proof limits after this checkpoint:
+
+- The full live HTTPS/SSH remote-auth gate remains unchecked until SSH auth works in the host environment.
+- A real hosted `CLibGit2Local.xcframework.zip` URL is still required before claiming actual remote artifact download proof.
+
 ## Hosted libgit2 Artifact Gate
 
 Date: 2026-06-12
