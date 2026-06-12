@@ -25,7 +25,7 @@ run = "swift build"
 
 [tasks.test]
 description = "Run Swift Testing suites"
-run = "swift test"
+run = "bash scripts/run-swift-test-suites.sh"
 
 [tasks.test-asan]
 description = "Run Swift wrapper tests with AddressSanitizer"

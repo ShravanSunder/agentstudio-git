@@ -2557,9 +2557,98 @@ Result:
 - `mise run lint` passed with 0 SwiftLint violations in 54 files.
 - `mise run test` passed with `Test run with 83 tests in 18 suites passed`.
 
+Second follow-up CI hang:
+
+```bash
+gh run watch 27415217419 --repo ShravanSunder/agentstudio-git --exit-status
+```
+
+Exit code: 1
+
+Result:
+
+- GitHub `Check` run `27415217419` was canceled after 21m46s.
+- The run passed checkout and tooling install.
+- `mise run check` rebuilt and verified `Artifacts/CLibGit2Local.xcframework`.
+- `swift build` completed.
+- `swift-format lint` passed and SwiftLint found 0 violations in 54 files.
+- `swift test` compiled the test bundle, then emitted no Swift Testing suite output before cancellation.
+
+Second follow-up fix:
+
+- `.github/workflows/check.yml` now caps `Run package checks` at 12 minutes.
+- `.mise.toml` now routes `mise run test` through `scripts/run-swift-test-suites.sh`.
+- `scripts/run-swift-test-suites.sh` runs every named Swift Testing suite through `scripts/run-swift-test-filter.sh`, preserving the zero-test guard while making any future hang identify the last suite printed.
+- `LibGit2PackagingScriptTests` now pins the workflow timeout and suite-filter test task.
+
+Second follow-up red evidence:
+
+```bash
+bash scripts/run-swift-test-filter.sh LibGit2PackagingScriptTests
+```
+
+Exit code: 1
+
+Result before fix:
+
+- `check workflow runs sanitizer and consumer gates` failed because `check.yml` did not contain `timeout-minutes: 12`.
+- `test task runs named Swift Testing suites through no-zero filter` failed because `scripts/run-swift-test-suites.sh` did not exist.
+
+Second follow-up green proof:
+
+```bash
+bash scripts/run-swift-test-filter.sh LibGit2PackagingScriptTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 11 tests in 1 suite passed`.
+
+```bash
+bash scripts/run-swift-test-suites.sh
+```
+
+Exit code: 0
+
+Result:
+
+- all 18 named Swift Testing suite filters passed.
+- total tests covered by the filtered suite runner: 84.
+- live auth test reported skipped because `AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_SMOKE` was not set.
+
+```bash
+mise run test
+```
+
+Exit code: 0
+
+Result:
+
+- ran `bash scripts/run-swift-test-suites.sh`.
+- all 18 named Swift Testing suite filters passed.
+- total tests covered by the filtered suite runner: 84.
+- live auth test reported skipped because `AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_SMOKE` was not set.
+
+```bash
+mise run check
+```
+
+Exit code: 0
+
+Result:
+
+- rebuilt and verified `Artifacts/CLibGit2Local.xcframework`.
+- `swift build` completed.
+- `mise run lint` passed with 0 SwiftLint violations in 54 files.
+- `mise run test` ran all 18 named Swift Testing suite filters.
+- total tests covered by the filtered suite runner: 84.
+- live auth test reported skipped because `AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_SMOKE` was not set.
+
 Known external proof limits after this checkpoint:
 
-- The `Check` workflow must be rerun after the runner/tooling fixes are pushed.
+- The `Check` workflow must be rerun after the runner/tooling/test-observability fixes are pushed.
 - GitHub Actions uploaded artifacts are CI artifacts, not a stable public SwiftPM binary-target URL. A real hosted `CLibGit2Local.xcframework.zip` URL is still required before claiming actual hosted artifact download proof.
 - The full live HTTPS/SSH remote-auth gate remains unchecked until SSH auth works in the host environment.
 

@@ -70,12 +70,25 @@ struct LibGit2PackagingScriptTests {
 
         #expect(contents.contains("runs-on: macos-26"))
         #expect(contents.contains("brew install mise cmake swift-format swiftlint"))
+        #expect(contents.contains("timeout-minutes: 12"))
         #expect(contents.contains("mise run check"))
         #expect(contents.contains("mise run test-asan"))
         #expect(contents.contains("mise run test-tsan"))
         #expect(contents.contains("bash scripts/verify-package-consumer.sh"))
         #expect(contents.contains("AgentStudio compatibility requires AGENTSTUDIO_GIT_AGENTSTUDIO_PATH"))
         #expect(contents.contains("bash scripts/verify-agentstudio-compatibility.sh"))
+    }
+
+    @Test("test task runs named Swift Testing suites through no-zero filter")
+    func testTaskRunsNamedSwiftTestingSuitesThroughNoZeroFilter() throws {
+        let miseContents = try readFile(".mise.toml")
+        let scriptContents = try readFile("scripts/run-swift-test-suites.sh")
+
+        #expect(miseContents.contains("bash scripts/run-swift-test-suites.sh"))
+        #expect(scriptContents.contains("scripts/run-swift-test-filter.sh"))
+        #expect(scriptContents.contains("GitProcessRunnerTests"))
+        #expect(scriptContents.contains("SystemGitRemoteClientTests"))
+        #expect(scriptContents.contains("BridgeReviewSourceCompatibilityTests"))
     }
 
     @Test("artifact workflow runs on Swift 6.2 capable macOS image")
