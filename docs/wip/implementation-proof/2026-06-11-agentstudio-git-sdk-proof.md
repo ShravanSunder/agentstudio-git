@@ -2264,6 +2264,22 @@ Result:
 - `Run AddressSanitizer tests` started raw `swift test --sanitize address`, built the test bundle, then emitted no Swift Testing output after `Build complete!`.
 - The run was canceled to stop burning CI time; later gates did not execute.
 
+Follow-up remote CI failure:
+
+```bash
+gh run watch 27419694602 --repo ShravanSunder/agentstudio-git --exit-status
+```
+
+Exit code: 1
+
+Result:
+
+- GitHub `Check` run `27419694602` rebuilt and verified `Artifacts/CLibGit2Local.xcframework`.
+- `swift build` completed.
+- `swift-format lint` passed and SwiftLint found 0 violations in 54 files.
+- `mise run test` failed immediately in `scripts/run-swift-test-suites.sh` before the first suite launched with `swift_test_arguments[@]: unbound variable`.
+- Root cause: on the GitHub macOS runner Bash, expanding an empty array under `set -u` failed when no sanitizer options were passed.
+
 Local red evidence:
 
 ```bash
@@ -2277,6 +2293,16 @@ Result before the sanitizer runner fix:
 - `check workflow runs sanitizer and consumer gates` failed because the ASan/TSan workflow steps were not bounded with `timeout-minutes: 12`.
 - `test task runs named Swift Testing suites through no-zero filter` failed because sanitizer tasks still used raw `swift test --sanitize ...`.
 - `filter script preserves Swift test options` failed because `scripts/run-swift-test-filter.sh` accepted only one filter argument and could not forward sanitizer options.
+
+```bash
+bash scripts/run-swift-test-filter.sh LibGit2PackagingScriptTests
+```
+
+Exit code: 1
+
+Result before the empty-args suite-runner fix:
+
+- `test task runs named Swift Testing suites through no-zero filter` failed because `scripts/run-swift-test-suites.sh` did not branch around empty `swift_test_arguments` under `set -u`.
 
 ```bash
 mise run test-asan
@@ -2305,6 +2331,7 @@ Fixes:
 - `.mise.toml` now routes `mise run test-asan` through `bash scripts/run-swift-test-suites.sh --sanitize address --disable-xctest`.
 - `.mise.toml` now routes `mise run test-tsan` through `bash scripts/run-swift-test-suites.sh --sanitize thread --disable-xctest`.
 - `scripts/run-swift-test-suites.sh` forwards Swift test options to every named suite filter.
+- `scripts/run-swift-test-suites.sh` now branches explicitly between zero-option and option-forwarding calls, avoiding empty-array expansion under `set -u` on GitHub's macOS Bash.
 - `scripts/run-swift-test-filter.sh` accepts `[swift test options...] <filter>` and preserves the zero-test guard.
 - `.github/workflows/check.yml` gives ASan and TSan steps `timeout-minutes: 12`.
 - `GitProcessRunner` sends `SIGKILL` to the private process group after the TERM grace path on timeout, so descendants that ignore TERM cannot survive only because the parent exited.
@@ -2321,6 +2348,18 @@ Exit code: 0
 Result:
 
 - `Test run with 14 tests in 1 suite passed`.
+
+```bash
+bash scripts/run-swift-test-suites.sh
+```
+
+Exit code: 0
+
+Result:
+
+- ran all 18 named Swift Testing suite filters with no forwarded Swift test options.
+- total tests covered by the filtered suite runner: 87.
+- live auth test reported skipped because `AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_SMOKE` was not set.
 
 ```bash
 bash scripts/run-swift-test-filter.sh --sanitize thread --disable-xctest GitProcessRunnerTests

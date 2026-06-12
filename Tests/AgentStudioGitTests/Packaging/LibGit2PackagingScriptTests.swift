@@ -97,6 +97,7 @@ struct LibGit2PackagingScriptTests {
         #expect(miseContents.contains("bash scripts/run-swift-test-suites.sh --sanitize thread --disable-xctest"))
         #expect(scriptContents.contains("scripts/run-swift-test-filter.sh"))
         #expect(scriptContents.contains("\"${swift_test_arguments[@]}\""))
+        #expect(scriptContents.contains("if [ \"${#swift_test_arguments[@]}\" -gt 0 ]; then"))
         #expect(scriptContents.contains("GitProcessRunnerTests"))
         #expect(scriptContents.contains("SystemGitRemoteClientTests"))
         #expect(scriptContents.contains("BridgeReviewSourceCompatibilityTests"))

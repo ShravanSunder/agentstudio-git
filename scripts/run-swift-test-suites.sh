@@ -2,7 +2,10 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-swift_test_arguments=("$@")
+swift_test_arguments=()
+if [ "$#" -gt 0 ]; then
+  swift_test_arguments=("$@")
+fi
 
 suites=(
   GitWireEnumSnapshotTests
@@ -27,5 +30,9 @@ suites=(
 
 for suite in "${suites[@]}"; do
   echo "--- swift test filter: ${suite} ---"
-  bash "$ROOT_DIR/scripts/run-swift-test-filter.sh" "${swift_test_arguments[@]}" "$suite"
+  if [ "${#swift_test_arguments[@]}" -gt 0 ]; then
+    bash "$ROOT_DIR/scripts/run-swift-test-filter.sh" "${swift_test_arguments[@]}" "$suite"
+  else
+    bash "$ROOT_DIR/scripts/run-swift-test-filter.sh" "$suite"
+  fi
 done
