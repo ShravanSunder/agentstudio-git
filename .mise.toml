@@ -27,6 +27,14 @@ run = "swift build"
 description = "Run Swift Testing suites"
 run = "swift test"
 
+[tasks.test-asan]
+description = "Run Swift wrapper tests with AddressSanitizer"
+run = "swift test --sanitize address"
+
+[tasks.test-tsan]
+description = "Run Swift wrapper tests with ThreadSanitizer"
+run = "swift test --sanitize thread"
+
 [tasks.check]
 description = "Run build, lint, and tests"
 depends = ["build", "lint", "test"]

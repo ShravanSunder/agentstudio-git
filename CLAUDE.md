@@ -34,7 +34,7 @@ Use `mise run check` before claiming the repo is complete or ready to consume.
 - Use `@concurrent nonisolated` helpers for blocking I/O that must leave an actor executor.
 - Keep public payloads `Codable`, `Sendable`, and explicitly discriminated for bridge/package boundaries.
 - Use Unix millisecond timestamps for Swift/TypeScript parity.
-- Treat the Git CLI as the oracle for parity tests until libgit2 behavior is proven.
+- Use Git compatibility fixtures to compare package behavior against controlled real Git repositories. This is a test strategy, not a product architecture.
 
 ## Constraints
 
@@ -49,7 +49,7 @@ Use `mise run check` before claiming the repo is complete or ready to consume.
 
 Most coverage should be unit tests over value models, path rules, command/response encoding, error mapping, and pure diff/status classification.
 
-Integration tests should use temporary real Git repositories and compare package output against `git` CLI oracle behavior for status, worktree listing, branches, ignored files, and diff facts.
+Integration tests use temporary real Git repositories with scrubbed test Git config. They may call system `git` to create fixture states and expected behavior. Production local status/diff/content/worktree reads must be backed by the SDK local engine, not shell parsing.
 
 End-to-end tests belong in AgentStudio after this package is wired through an app provider seam. This repo should keep e2e coverage minimal unless it owns a runnable CLI or fixture harness.
 
@@ -62,4 +62,4 @@ Every test should use Swift Testing (`@Suite`, `@Test`, `#expect`) and Arrange /
 - `mise run test` passes and reports the test count.
 - `mise run build` passes.
 - Public payload changes have Codable round-trip tests and, when relevant, fixture parity tests.
-- Git behavior changes have CLI-oracle integration tests before replacing shell behavior in AgentStudio.
+- Git behavior changes have compatibility integration tests before replacing shell behavior in AgentStudio.

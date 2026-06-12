@@ -1,1289 +1,925 @@
-# AgentStudioGit Libgit2 Data Plane Implementation Plan
+# AgentStudio Git SDK Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build `agentstudio-git` into a real SwiftPM libgit2 data-plane package that AgentStudio can import for local worktree, status, branch, diff, and content facts.
+**Goal:** Build `agentstudio-git` into the Git SDK boundary AgentStudio needs: fast local worktree/status/diff/content operations through libgit2, plus a deliberate remote/auth seam that reuses the user's Git client, credential helpers, SSH agent, certificates, and Git config where authenticated network work is needed.
 
-**Architecture:** `AgentStudioGit` exposes method-oriented Swift APIs and immutable Git-shaped values. libgit2 is pinned and built as a local-only static XCFramework; mutating operations go through a repository writer actor keyed by canonical common git directory, while read operations use isolated per-operation libgit2 sessions. AgentStudio owns Bridge/app adapters; this package does not own Bridge DTOs or app persistence.
+**Architecture:** The package exposes method-oriented Swift protocols and immutable Git-shaped values. Local repository operations are libgit2-backed. Remote/auth operations are system-Git-backed because libgit2 credential callbacks do not automatically inherit all user Git credential-helper and SSH behavior. AgentStudio owns app enrichment, Bridge DTOs, checkpoint collation, atoms, stores, UI, and persistence.
 
-**Tech Stack:** Swift 6.2, SwiftPM, Swift Testing, SwiftLint, swift-format, mise, libgit2 1.9.x, CMake, GitHub Actions, ASan/TSan sanitizer test lanes.
+**Tech Stack:** Swift 6.2, SwiftPM, Swift Testing, SwiftLint, swift-format, mise, libgit2 1.9.x, CMake, GitHub Actions, ASan/TSan wrapper lanes, system `git` for remote/auth and controlled fixture setup.
 
 ---
 
-## File Structure
+## Review Status
 
-Create or modify these files:
+This plan supersedes the earlier local-only data-plane plan. It was rewritten after an adversarial plan review with Codex, Gemini, and Claude lanes. Do not execute the older local-only shape.
 
-- `Package.swift` — SwiftPM products/targets, `AgentStudioGit`, `CLibGit2Local`, binary artifact target when available.
-- `.mise.toml` — pinned tools and build/test/lint/artifact tasks.
-- `.swiftlint.yml` — remove copied AgentStudio app comments; enforce package-specific safety rules.
-- `.github/workflows/check.yml` — CI for build, lint, tests, sanitizer lanes.
-- `scripts/build-libgit2-xcframework.sh` — reproducibly build local-only static libgit2 XCFramework.
-- `scripts/verify-libgit2-artifact.sh` — verify artifact exists, architectures, checksum.
-- `docs/specs/2026-06-10-agentstudio-git-libgit2-data-plane.md` — design source of truth.
-- `docs/superpowers/plans/2026-06-10-agentstudio-git-libgit2-data-plane.md` — this plan.
-- `Sources/AgentStudioGit/AgentStudioGit.swift` — temporary barrel exports only after split.
-- `Sources/AgentStudioGit/Models/GitStatusModels.swift` — two-axis status values.
-- `Sources/AgentStudioGit/Models/GitWorktreeModels.swift` — worktree snapshots and requests.
-- `Sources/AgentStudioGit/Models/GitBranchModels.swift` — branch/head snapshots.
-- `Sources/AgentStudioGit/Models/GitDiffModels.swift` — diff requests and snapshots.
-- `Sources/AgentStudioGit/Models/GitContentModels.swift` — blob/tree content payloads.
-- `Sources/AgentStudioGit/Errors/GitDataPlaneError.swift` — typed error taxonomy.
-- `Sources/AgentStudioGit/Client/AgentStudioGitClient.swift` — public protocol.
-- `Sources/AgentStudioGit/Client/LibGit2AgentStudioGitClient.swift` — concrete client.
-- `Sources/AgentStudioGit/Runtime/LibGit2Runtime.swift` — init/shutdown and version validation.
-- `Sources/AgentStudioGit/Runtime/LibGit2ErrorCapture.swift` — same-frame error capture.
-- `Sources/AgentStudioGit/Runtime/LibGit2RepositorySession.swift` — non-Sendable pointer owner.
-- `Sources/AgentStudioGit/Runtime/GitRepositoryWriterActor.swift` — serialized writer lane.
-- `Sources/AgentStudioGit/Runtime/GitRepositoryIdentity.swift` — canonical path and common-git-dir identity.
-- `Sources/AgentStudioGit/Readers/GitWorktreeReader.swift` — read worktree facts.
-- `Sources/AgentStudioGit/Readers/GitStatusReader.swift` — read status facts without index writes.
-- `Sources/AgentStudioGit/Readers/GitBranchReader.swift` — read branch facts.
-- `Sources/AgentStudioGit/Readers/GitDiffReader.swift` — read diffs.
-- `Sources/AgentStudioGit/Readers/GitContentReader.swift` — read tree/blob content.
-- `Sources/AgentStudioGit/Writers/GitWorktreeWriter.swift` — create/prune/lock/unlock worktrees.
-- `Tests/AgentStudioGitTests/Contracts/*.swift` — payload and decoding tests.
-- `Tests/AgentStudioGitTests/Fixtures/*.swift` — temp repo fixture builders.
-- `Tests/AgentStudioGitTests/Integration/*.swift` — real repository behavior tests.
-- `Tests/AgentStudioGitTests/Runtime/*.swift` — runtime/error/lifecycle tests.
+Accepted review fixes included here:
 
-## Task 1: Repo Standards And CI Baseline
+- public contracts and value models are now one dependency-safe cutover task
+- source spec reconciliation is a first task, not a footnote
+- local and distributable libgit2 packaging are separate explicit states
+- XCFramework headers/modulemap/linking are required
+- zero-test filtered SwiftPM commands are forbidden by a helper script
+- actual AgentStudio adapter compile proof replaces mirror-only compatibility
+- worktree remove is separated from stale metadata prune and protects dirty worktrees
+- remote/auth errors and URLs must be redacted before becoming public values
+- remote process policy is trusted client configuration, not untrusted request data
+- prompt behavior is explicit: default noninteractive; interactive is trusted opt-in
+- linked-worktree index paths are resolved before read-only proof
+- sanitizer claims are narrowed unless an instrumented libgit2 artifact is used
+
+## Source Coverage
+
+- Current plan: this file.
+- Source spec: `docs/specs/2026-06-10-agentstudio-git-libgit2-data-plane.md` lines 1-201.
+- Current package scaffold:
+  - `Package.swift`
+  - `.mise.toml`
+  - `CLAUDE.md`
+  - `Sources/AgentStudioGit/AgentStudioGit.swift`
+  - `Tests/AgentStudioGitTests/AgentStudioGitTests.swift`
+- AgentStudio consumer evidence:
+  - `Sources/AgentStudio/Core/RuntimeEventSystem/Git/GitWorkingTreeStatusProvider.swift`
+  - `Sources/AgentStudio/Features/Bridge/Runtime/ReviewFoundation/BridgeReviewSourceProvider.swift`
+  - `Sources/AgentStudio/Features/Bridge/Runtime/ReviewFoundation/BridgeReviewPackageBuilder.swift`
+  - `Sources/AgentStudio/Features/Bridge/Runtime/ReviewFoundation/BridgeContentStore.swift`
+  - `Sources/AgentStudio/Features/Bridge/Models/ReviewFoundation/*`
+- Research basis:
+  - libgit2 threading: https://github.com/libgit2/libgit2/blob/main/docs/threading.md
+  - libgit2 worktree API: https://github.com/libgit2/libgit2/blob/main/include/git2/worktree.h
+  - libgit2 index writes: https://libgit2.org/docs/reference/main/index/git_index_write.html
+  - Git worktree behavior: https://git-scm.com/docs/git-worktree
+  - Git credential helpers: https://git-scm.com/docs/gitcredentials
+  - Git environment variables: https://git-scm.com/docs/git
+  - libgit2 build/link: https://libgit2.org/docs/guides/build-and-link/
+
+## Non-Goals
+
+- No Bridge DTOs, review package builders, checkpoint stores, pane controllers, atoms, stores, persistence, or UI in this package.
+- No patch application or source editing from Bridge review surfaces.
+- No custom credential vault or token store.
+- No hidden system-`git` implementation path for fast local status/diff/content/worktree reads.
+- No `gh` dependency in this SDK. Forge APIs belong in a separate layer if needed.
+- No command/response envelope inside the package. AgentStudio owns transport/correlation where needed.
+- No public raw credential-bearing URL, argv, stderr, or environment value.
+
+## Capability Matrix
+
+| AgentStudio need | SDK owner | First implementation | Proof |
+| --- | --- | --- | --- |
+| list and validate worktrees | `AgentStudioGitLocalClient` | libgit2 worktree APIs | main + linked worktree tests |
+| create worktree | `AgentStudioGitLocalClient` writer lane | libgit2 branch/ref + worktree add | existing branch, new branch, detached tests |
+| stale metadata prune | `AgentStudioGitLocalClient` writer lane | libgit2 prune after prunable check | missing worktree metadata tests |
+| linked worktree remove | `AgentStudioGitLocalClient` writer lane | validated ID/path + clean/force policy + prune flags | clean, dirty, untracked, locked, main refusal tests |
+| repo identity | `GitRepositoryIdentityResolver` | common git dir + canonical worktree path | symlink, `.git` file, main/linked tests |
+| app enrichment status | `AgentStudioGitLocalClient.status` | libgit2 status + diff + refs/config | actual `GitWorkingTreeStatusProvider` adapter compile proof |
+| Bridge endpoint comparison | `AgentStudioGitLocalClient.resolveRevision`, `readTree`, `diff`, `content` | libgit2 object/tree/diff/blob reads | actual Bridge adapter compile proof |
+| Bridge content loading | adapter-owned handle index + SDK content locators | package values plus AgentStudio handle registry | request by handle round trip test |
+| authenticated clone/fetch/push/remote refs | `AgentStudioGitRemoteClient` | system Git with trusted process policy | fake-git tests + opt-in live smoke status |
+| future forge APIs | separate layer | out of scope | no GitHub API dependency here |
+
+## Security Context
+
+Assets / privileges:
+- User repository contents, `.git` metadata, worktree directories, refs, index, config, credential helper outputs, SSH agent access, remote URLs, release artifacts, and CI scripts.
+
+Entry points:
+- Public SDK requests, filesystem paths, remote URLs, branch/ref names, environment values, system Git subprocesses, libgit2 C APIs, artifact scripts, and CI workflows.
+
+Untrusted inputs:
+- Repository paths, worktree paths, branch names, remote names, refspecs, remote URLs, Git config values, subprocess output, file names from repositories, commit messages, binary content, and environment variables.
+
+Trust boundaries / auth assumptions:
+- Local libgit2 operations read local repo data and do not require credentials.
+- Remote/auth operations use system Git so the user's existing credential helpers, SSH agent, Git config, certificates, and enterprise setup remain authoritative.
+- System Git executable selection, inherited environment policy, prompt policy, and protocol allowlist are trusted client configuration. They are not public per-request fields.
+- Default remote operations are noninteractive. Interactive prompting is a trusted opt-in policy for a caller that owns UI/TTY behavior.
+
+Security invariants:
+- Public values never contain credential-bearing URLs, tokens, raw argv with secrets, raw stderr with secrets, or private key paths.
+- Do not auto-delete Git lock files.
+- Do not remove a worktree working directory unless the request targets a validated worktree ID/path and explicitly allows the relevant destructive behavior.
+- Read-only status/diff/content operations must not write the actual index for either main or linked worktrees.
+- All libgit2 error details are copied on the failing thread before any `await`.
+
+Required proof:
+- Unit tests for URL/argv/stderr redaction.
+- Unit tests for typed error mapping and public Codable payloads.
+- Integration tests for lock failures, dirty-worktree refusal, force removal, stale prune, linked worktree index paths, and read-only index hash stability.
+- Fake system-Git tests for command construction, environment policy, prompt policy, protocol restrictions, `remoteReferences`, parser output, and redaction.
+- Clean consumer proof that a downstream package can resolve and build the distributable artifact path.
+
+## Public Shape
+
+Use split targets/products inside the same repo:
+
+- `AgentStudioGitContracts`: public value types and protocols, no libgit2, no system Git process runner.
+- `AgentStudioGitLocal`: libgit2 local implementation.
+- `AgentStudioGitRemote`: system Git remote/auth implementation.
+- `AgentStudioGit`: convenience product that re-exports contracts plus local and remote implementations.
+
+Local-only AgentStudio adapters must be able to depend on `AgentStudioGitContracts` + `AgentStudioGitLocal` without linking remote/auth process code.
+
+## Requirements / Proof Matrix
+
+| Requirement | Task | Proof layer | Required evidence |
+| --- | --- | --- | --- |
+| Spec matches two-seam SDK | 0 | docs + grep | no old local-only API/auth contradictions |
+| No false filtered test gates | 0 | unit/tooling | helper fails on zero executed tests |
+| Public contracts compile in one cutover | 1 | unit | full `swift test`; raw-value and negative decode tests |
+| Public values redact sensitive data | 1, 8 | unit/security | credential URL, argv, stderr redaction tests |
+| Worktree identity and writer registry are stable | 2 | unit + integration | symlink, `.git` file, main/linked tests |
+| libgit2 packaging works locally and downstream | 3 | build + CI | local build, import canary, scratch consumer resolve/build |
+| libgit2 runtime/errors are safe | 4 | unit + sanitizer scope | same-frame error capture; wrapper sanitizer proof |
+| Worktree create/prune/remove semantics are safe | 5 | integration | dirty/untracked/locked/main/force/stale cases |
+| App enrichment seam is backed without shell parsing | 6 | integration + compile proof | actual AgentStudio adapter compile spike |
+| Bridge data and content handles are supported | 7 | integration + compile proof | actual Bridge adapter compile spike |
+| Remote/auth uses user Git safely | 8 | unit + smoke | fake-git + smoke status recorded |
+| CI and release artifact are consumable | 9 | CI + consumer | downstream SwiftPM dependency proof |
+
+---
+
+### Task 0: Reconcile Spec, Tooling, And Proof Helpers
 
 **Files:**
+- Modify: `CLAUDE.md`
+- Modify: `docs/specs/2026-06-10-agentstudio-git-libgit2-data-plane.md`
 - Modify: `.mise.toml`
-- Modify: `.swiftlint.yml`
+- Create: `scripts/run-swift-test-filter.sh`
 - Create: `.github/workflows/check.yml`
-- Modify: `.claude/settings.local.json`
 
-- [ ] **Step 1: Pin tools in mise**
+- [x] **Step 1: Rewrite stale repo guidance**
 
-Replace `.mise.toml` with:
+Replace stale CLI-test wording in `CLAUDE.md` with:
+
+```markdown
+- Use Git compatibility fixtures to compare package behavior against controlled real Git repositories. This is a test strategy, not a product architecture.
+```
+
+Replace the integration paragraph with:
+
+```markdown
+Integration tests use temporary real Git repositories with scrubbed test Git config. They may call system `git` to create fixture states and expected behavior. Production local status/diff/content/worktree reads must be backed by the SDK local engine, not shell parsing.
+```
+
+- [x] **Step 2: Reconcile the source spec**
+
+Update the spec's goal, non-goals, authentication, public API shape, packaging, AgentStudio boundaries, and acceptance criteria so it has one story:
+
+```markdown
+The SDK owns two seams:
+
+1. Local Git engine: libgit2-backed worktree, status, branch/ref, diff, tree, blob, and content operations.
+2. Remote/auth engine: system-Git-backed network operations that intentionally reuse the user's Git client configuration and credential path.
+
+The old local-only API shape is superseded by `AgentStudioGitLocalClient` and `AgentStudioGitRemoteClient`.
+```
+
+Remove or update claims that clone/fetch/push/auth are first-implementation non-goals.
+
+- [x] **Step 3: Add sanitizer tasks with scoped wording**
+
+In `.mise.toml`:
 
 ```toml
-[tools]
-swiftlint = "0.63.3"
-swiftformat = "602.0.0"
-cmake = "latest"
-
-[env]
-PROJECT_ROOT = "{{config_root}}"
-
-[tasks.format]
-description = "Format Swift sources with swift-format"
-run = """
-swift-format format --in-place --recursive Sources/ Tests/
-echo "Formatted all Swift sources"
-"""
-
-[tasks.lint]
-description = "Lint Swift sources with swift-format and SwiftLint"
-run = """
-#!/usr/bin/env bash
-set -euo pipefail
-echo "--- swift-format lint ---"
-swift-format lint --recursive Sources/ Tests/ 2>&1 && echo "swift-format: OK" || { echo "swift-format: FAIL"; exit 1; }
-echo "--- swiftlint ---"
-swiftlint lint --strict 2>&1 && echo "swiftlint: OK" || { echo "swiftlint: FAIL"; exit 1; }
-"""
-
-[tasks.build]
-description = "Build the Swift package"
-run = "swift build"
-
-[tasks.test]
-description = "Run Swift Testing suites"
-run = "swift test"
-
 [tasks.test-asan]
-description = "Run tests with Address Sanitizer"
-run = "swift test -Xswiftc -sanitize=address"
+description = "Run Swift wrapper tests with AddressSanitizer"
+run = "swift test --sanitize address"
 
 [tasks.test-tsan]
-description = "Run tests with Thread Sanitizer"
-run = "swift test -Xswiftc -sanitize=thread"
-
-[tasks.check]
-description = "Run build, lint, and tests"
-depends = ["build", "lint", "test"]
+description = "Run Swift wrapper tests with ThreadSanitizer"
+run = "swift test --sanitize thread"
 ```
 
-- [ ] **Step 2: Run format and lint**
+Do not claim these instrument a prebuilt libgit2 artifact unless Task 3 adds sanitizer-specific libgit2 builds.
 
-Run: `mise run format && mise run lint`
+- [x] **Step 4: Add no-zero-test helper**
 
-Expected: `swift-format: OK` and `swiftlint: OK`.
-
-- [ ] **Step 3: Retarget SwiftLint thresholds**
-
-In `.swiftlint.yml`, remove comments that mention AgentStudio app files, `LUNA-325`, and `Sources/AgentStudio/Legacy`. Set:
-
-```yaml
-file_length:
-  warning: 600
-  error: 900
-
-type_body_length:
-  warning: 400
-  error: 700
-
-function_body_length:
-  warning: 80
-  error: 160
-```
-
-Also remove `force_cast`, `force_try`, and `force_unwrapping` from `disabled_rules`.
-
-- [ ] **Step 4: Add CI**
-
-Create `.github/workflows/check.yml`:
-
-```yaml
-name: check
-
-on:
-  pull_request:
-  push:
-    branches: [main]
-
-jobs:
-  swift:
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: jdx/mise-action@v2
-      - run: mise run check
-      - run: mise run test-asan
-      - run: mise run test-tsan
-```
-
-- [ ] **Step 5: Verify**
-
-Run: `mise run check`
-
-Expected: build passes, lint passes, current tests pass.
-
-- [ ] **Step 6: Commit**
+Create `scripts/run-swift-test-filter.sh`:
 
 ```bash
-git add .mise.toml .swiftlint.yml .github/workflows/check.yml .claude/settings.local.json
-git commit -m "chore: add package validation baseline"
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "$#" -ne 1 ]; then
+  echo "usage: scripts/run-swift-test-filter.sh <SwiftPM filter>" >&2
+  exit 64
+fi
+
+filter="$1"
+output_file="$(mktemp)"
+trap 'rm -f "$output_file"' EXIT
+
+swift test --filter "$filter" 2>&1 | tee "$output_file"
+
+if rg -q "No matching test cases were run|Test run with 0 tests in 0 suites" "$output_file"; then
+  echo "filtered Swift test gate executed zero tests: $filter" >&2
+  exit 1
+fi
 ```
 
-## Task 2: Replace Placeholder Contracts
+- [x] **Step 5: Create baseline CI**
 
-**Files:**
-- Delete content from: `Sources/AgentStudioGit/AgentStudioGit.swift`
-- Create: `Sources/AgentStudioGit/Errors/GitDataPlaneError.swift`
-- Create: `Sources/AgentStudioGit/Models/GitStatusModels.swift`
-- Create: `Sources/AgentStudioGit/Models/GitWorktreeModels.swift`
-- Create: `Sources/AgentStudioGit/Models/GitBranchModels.swift`
-- Create: `Sources/AgentStudioGit/Models/GitDiffModels.swift`
-- Create: `Sources/AgentStudioGit/Models/GitContentModels.swift`
-- Create: `Sources/AgentStudioGit/Client/AgentStudioGitClient.swift`
-- Test: `Tests/AgentStudioGitTests/Contracts/GitContractRoundTripTests.swift`
-
-- [ ] **Step 1: Write failing contract tests**
-
-Create `Tests/AgentStudioGitTests/Contracts/GitContractRoundTripTests.swift`:
-
-```swift
-import Foundation
-import Testing
-
-@testable import AgentStudioGit
-
-@Suite("AgentStudioGit contract round trips")
-struct GitContractRoundTripTests {
-    @Test("status supports staged and unstaged modifications at the same path")
-    func statusEntrySupportsTwoAxisState() throws {
-        let entry = GitStatusEntry(
-            path: "Sources/App.swift",
-            previousPath: nil,
-            indexState: .modified,
-            worktreeState: .modified,
-            ignored: false,
-            untracked: false
-        )
-
-        let data = try JSONEncoder().encode(entry)
-        let decoded = try JSONDecoder().decode(GitStatusEntry.self, from: data)
-
-        #expect(decoded == entry)
-        #expect(decoded.indexState == .modified)
-        #expect(decoded.worktreeState == .modified)
-    }
-
-    @Test("worktree snapshot carries stable identity and canonical paths")
-    func worktreeSnapshotRoundTrip() throws {
-        let snapshot = GitWorktreeSnapshot(
-            id: GitWorktreeID(rawValue: "repo:/private/tmp/repo|worktree:/private/tmp/repo"),
-            name: "main",
-            repositoryPath: URL(fileURLWithPath: "/private/tmp/repo"),
-            commonGitDirectoryPath: URL(fileURLWithPath: "/private/tmp/repo/.git"),
-            worktreePath: URL(fileURLWithPath: "/private/tmp/repo"),
-            branchName: "main",
-            headCommitSha: "abc123",
-            isMainWorktree: true,
-            isBareRepository: false,
-            lock: nil
-        )
-
-        let data = try JSONEncoder().encode(snapshot)
-        let decoded = try JSONDecoder().decode(GitWorktreeSnapshot.self, from: data)
-
-        #expect(decoded == snapshot)
-    }
-
-    @Test("large Unix millisecond timestamps remain Int64 values")
-    func generatedTimestampUsesInt64() throws {
-        let snapshot = GitStatusSnapshot(
-            worktreePath: URL(fileURLWithPath: "/private/tmp/repo"),
-            generatedAtUnixMilliseconds: 9_007_199_254_740_993,
-            head: nil,
-            entries: []
-        )
-
-        let data = try JSONEncoder().encode(snapshot)
-        let decoded = try JSONDecoder().decode(GitStatusSnapshot.self, from: data)
-
-        #expect(decoded.generatedAtUnixMilliseconds == 9_007_199_254_740_993)
-    }
-}
-```
-
-- [ ] **Step 2: Run tests to verify failure**
-
-Run: `swift test --filter GitContractRoundTripTests`
-
-Expected: compile fails because `GitStatusEntry`, `GitWorktreeID`, and related types do not exist.
-
-- [ ] **Step 3: Add typed error model**
-
-Create `Sources/AgentStudioGit/Errors/GitDataPlaneError.swift`:
-
-```swift
-import Foundation
-
-public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
-    case repositoryNotFound(path: String)
-    case worktreeNotFound(name: String, repositoryPath: String)
-    case locked(operation: String, path: String?, message: String)
-    case modifiedConcurrently(operation: String, message: String)
-    case unsupported(operation: String, reason: String)
-    case libgit2(code: Int32, klass: Int32, message: String)
-}
-```
-
-- [ ] **Step 4: Add status models**
-
-Create `Sources/AgentStudioGit/Models/GitStatusModels.swift`:
-
-```swift
-import Foundation
-
-public enum GitStatusState: String, Codable, CaseIterable, Sendable {
-    case added
-    case deleted
-    case modified
-    case renamed
-    case copied
-    case typeChanged
-    case unmerged
-}
-
-public struct GitStatusEntry: Codable, Equatable, Hashable, Sendable {
-    public let path: String
-    public let previousPath: String?
-    public let indexState: GitStatusState?
-    public let worktreeState: GitStatusState?
-    public let ignored: Bool
-    public let untracked: Bool
-
-    public init(
-        path: String,
-        previousPath: String?,
-        indexState: GitStatusState?,
-        worktreeState: GitStatusState?,
-        ignored: Bool,
-        untracked: Bool
-    ) {
-        self.path = path
-        self.previousPath = previousPath
-        self.indexState = indexState
-        self.worktreeState = worktreeState
-        self.ignored = ignored
-        self.untracked = untracked
-    }
-}
-
-public struct GitStatusSnapshot: Codable, Equatable, Hashable, Sendable {
-    public let worktreePath: URL
-    public let generatedAtUnixMilliseconds: Int64
-    public let head: GitHeadSnapshot?
-    public let entries: [GitStatusEntry]
-
-    public init(
-        worktreePath: URL,
-        generatedAtUnixMilliseconds: Int64,
-        head: GitHeadSnapshot?,
-        entries: [GitStatusEntry]
-    ) {
-        self.worktreePath = worktreePath
-        self.generatedAtUnixMilliseconds = generatedAtUnixMilliseconds
-        self.head = head
-        self.entries = entries
-    }
-}
-
-public struct GitStatusOptions: Codable, Equatable, Hashable, Sendable {
-    public let includeIgnored: Bool
-    public let includeUntracked: Bool
-
-    public static let `default` = Self(includeIgnored: false, includeUntracked: true)
-
-    public init(includeIgnored: Bool, includeUntracked: Bool) {
-        self.includeIgnored = includeIgnored
-        self.includeUntracked = includeUntracked
-    }
-}
-```
-
-- [ ] **Step 5: Add branch/head models**
-
-Create `Sources/AgentStudioGit/Models/GitBranchModels.swift`:
-
-```swift
-import Foundation
-
-public struct GitHeadSnapshot: Codable, Equatable, Hashable, Sendable {
-    public let commitSha: String?
-    public let branchName: String?
-    public let isDetached: Bool
-
-    public init(commitSha: String?, branchName: String?, isDetached: Bool) {
-        self.commitSha = commitSha
-        self.branchName = branchName
-        self.isDetached = isDetached
-    }
-}
-
-public struct GitBranchSnapshot: Codable, Equatable, Hashable, Sendable {
-    public let name: String
-    public let commitSha: String?
-    public let isHead: Bool
-    public let isRemote: Bool
-
-    public init(name: String, commitSha: String?, isHead: Bool, isRemote: Bool) {
-        self.name = name
-        self.commitSha = commitSha
-        self.isHead = isHead
-        self.isRemote = isRemote
-    }
-}
-```
-
-- [ ] **Step 6: Add worktree models**
-
-Create `Sources/AgentStudioGit/Models/GitWorktreeModels.swift`:
-
-```swift
-import Foundation
-
-public struct GitWorktreeID: RawRepresentable, Codable, Equatable, Hashable, Sendable {
-    public let rawValue: String
-
-    public init(rawValue: String) {
-        self.rawValue = rawValue
-    }
-}
-
-public struct GitWorktreeLock: Codable, Equatable, Hashable, Sendable {
-    public let reason: String?
-
-    public init(reason: String?) {
-        self.reason = reason
-    }
-}
-
-public struct GitWorktreeSnapshot: Codable, Equatable, Hashable, Sendable {
-    public let id: GitWorktreeID
-    public let name: String
-    public let repositoryPath: URL
-    public let commonGitDirectoryPath: URL
-    public let worktreePath: URL
-    public let branchName: String?
-    public let headCommitSha: String?
-    public let isMainWorktree: Bool
-    public let isBareRepository: Bool
-    public let lock: GitWorktreeLock?
-
-    public init(
-        id: GitWorktreeID,
-        name: String,
-        repositoryPath: URL,
-        commonGitDirectoryPath: URL,
-        worktreePath: URL,
-        branchName: String?,
-        headCommitSha: String?,
-        isMainWorktree: Bool,
-        isBareRepository: Bool,
-        lock: GitWorktreeLock?
-    ) {
-        self.id = id
-        self.name = name
-        self.repositoryPath = repositoryPath
-        self.commonGitDirectoryPath = commonGitDirectoryPath
-        self.worktreePath = worktreePath
-        self.branchName = branchName
-        self.headCommitSha = headCommitSha
-        self.isMainWorktree = isMainWorktree
-        self.isBareRepository = isBareRepository
-        self.lock = lock
-    }
-}
-
-public struct GitCreateWorktreeRequest: Codable, Equatable, Hashable, Sendable {
-    public let repositoryPath: URL
-    public let name: String
-    public let worktreePath: URL
-    public let referenceName: String?
-
-    public init(repositoryPath: URL, name: String, worktreePath: URL, referenceName: String?) {
-        self.repositoryPath = repositoryPath
-        self.name = name
-        self.worktreePath = worktreePath
-        self.referenceName = referenceName
-    }
-}
-
-public struct GitRemoveWorktreeRequest: Codable, Equatable, Hashable, Sendable {
-    public let repositoryPath: URL
-    public let name: String
-    public let removeWorkingDirectory: Bool
-
-    public init(repositoryPath: URL, name: String, removeWorkingDirectory: Bool) {
-        self.repositoryPath = repositoryPath
-        self.name = name
-        self.removeWorkingDirectory = removeWorkingDirectory
-    }
-}
-
-public struct GitWorktreeRemovalResult: Codable, Equatable, Hashable, Sendable {
-    public let name: String
-    public let prunedAdministrativeData: Bool
-    public let removedWorkingDirectory: Bool
-
-    public init(name: String, prunedAdministrativeData: Bool, removedWorkingDirectory: Bool) {
-        self.name = name
-        self.prunedAdministrativeData = prunedAdministrativeData
-        self.removedWorkingDirectory = removedWorkingDirectory
-    }
-}
-```
-
-- [ ] **Step 7: Add diff and content models**
-
-Create `Sources/AgentStudioGit/Models/GitDiffModels.swift` and `Sources/AgentStudioGit/Models/GitContentModels.swift` with minimal values:
-
-```swift
-import Foundation
-
-public enum GitDiffTarget: Codable, Equatable, Hashable, Sendable {
-    case head
-    case index
-    case workingTree
-    case commit(String)
-}
-
-public struct GitDiffRequest: Codable, Equatable, Hashable, Sendable {
-    public let worktreePath: URL
-    public let base: GitDiffTarget
-    public let compare: GitDiffTarget
-
-    public init(worktreePath: URL, base: GitDiffTarget, compare: GitDiffTarget) {
-        self.worktreePath = worktreePath
-        self.base = base
-        self.compare = compare
-    }
-}
-
-public struct GitDiffFile: Codable, Equatable, Hashable, Sendable {
-    public let path: String
-    public let previousPath: String?
-    public let isBinary: Bool
-    public let additions: Int
-    public let deletions: Int
-
-    public init(path: String, previousPath: String?, isBinary: Bool, additions: Int, deletions: Int) {
-        self.path = path
-        self.previousPath = previousPath
-        self.isBinary = isBinary
-        self.additions = additions
-        self.deletions = deletions
-    }
-}
-
-public struct GitDiffSnapshot: Codable, Equatable, Hashable, Sendable {
-    public let generatedAtUnixMilliseconds: Int64
-    public let files: [GitDiffFile]
-
-    public init(generatedAtUnixMilliseconds: Int64, files: [GitDiffFile]) {
-        self.generatedAtUnixMilliseconds = generatedAtUnixMilliseconds
-        self.files = files
-    }
-}
-```
-
-```swift
-import Foundation
-
-public struct GitContentRequest: Codable, Equatable, Hashable, Sendable {
-    public let worktreePath: URL
-    public let path: String
-    public let target: GitDiffTarget
-
-    public init(worktreePath: URL, path: String, target: GitDiffTarget) {
-        self.worktreePath = worktreePath
-        self.path = path
-        self.target = target
-    }
-}
-
-public struct GitContentPayload: Codable, Equatable, Hashable, Sendable {
-    public let path: String
-    public let bytes: Data
-    public let isBinary: Bool
-
-    public init(path: String, bytes: Data, isBinary: Bool) {
-        self.path = path
-        self.bytes = bytes
-        self.isBinary = isBinary
-    }
-}
-```
-
-- [ ] **Step 8: Add client protocol and remove envelopes**
-
-Create `Sources/AgentStudioGit/Client/AgentStudioGitClient.swift`:
-
-```swift
-import Foundation
-
-public protocol AgentStudioGitClient: Sendable {
-    func worktrees(for repositoryPath: URL) async throws(GitDataPlaneError) -> [GitWorktreeSnapshot]
-    func validateWorktree(repositoryPath: URL, name: String) async throws(GitDataPlaneError) -> GitWorktreeSnapshot
-    func status(for worktreePath: URL, options: GitStatusOptions) async throws(GitDataPlaneError) -> GitStatusSnapshot
-    func branches(for repositoryPath: URL) async throws(GitDataPlaneError) -> [GitBranchSnapshot]
-    func createWorktree(_ request: GitCreateWorktreeRequest) async throws(GitDataPlaneError) -> GitWorktreeSnapshot
-    func removeWorktree(_ request: GitRemoveWorktreeRequest) async throws(GitDataPlaneError) -> GitWorktreeRemovalResult
-    func diff(_ request: GitDiffRequest) async throws(GitDataPlaneError) -> GitDiffSnapshot
-    func content(_ request: GitContentRequest) async throws(GitDataPlaneError) -> GitContentPayload
-}
-```
-
-Replace `Sources/AgentStudioGit/AgentStudioGit.swift` with:
-
-```swift
-// Public symbols live in focused files under Sources/AgentStudioGit/.
-```
-
-- [ ] **Step 9: Run tests**
-
-Run: `swift test --filter GitContractRoundTripTests`
-
-Expected: tests pass.
-
-- [ ] **Step 10: Commit**
+Create `.github/workflows/check.yml` now, not later. It must run:
 
 ```bash
-git add Sources Tests
-git commit -m "feat: define Git data-plane contracts"
+mise run check
 ```
 
-## Task 3: Contract Test Base
+The libgit2 artifact jobs are added in Task 3 after the artifact path exists.
 
-**Files:**
-- Create: `Tests/AgentStudioGitTests/Contracts/GitWireEnumTests.swift`
-- Create: `Tests/AgentStudioGitTests/Contracts/GitErrorContractTests.swift`
-- Create: `Tests/AgentStudioGitTests/Contracts/GitDiffTargetCodableTests.swift`
+- [x] **Step 6: Verify**
 
-- [ ] **Step 1: Add enum raw value tests**
-
-Create `Tests/AgentStudioGitTests/Contracts/GitWireEnumTests.swift`:
-
-```swift
-import Testing
-
-@testable import AgentStudioGit
-
-@Suite("Git wire enum raw values")
-struct GitWireEnumTests {
-    @Test("status state raw values are stable")
-    func statusStateRawValuesAreStable() {
-        #expect(GitStatusState.added.rawValue == "added")
-        #expect(GitStatusState.deleted.rawValue == "deleted")
-        #expect(GitStatusState.modified.rawValue == "modified")
-        #expect(GitStatusState.renamed.rawValue == "renamed")
-        #expect(GitStatusState.copied.rawValue == "copied")
-        #expect(GitStatusState.typeChanged.rawValue == "typeChanged")
-        #expect(GitStatusState.unmerged.rawValue == "unmerged")
-    }
-}
-```
-
-- [ ] **Step 2: Add typed error tests**
-
-Create `Tests/AgentStudioGitTests/Contracts/GitErrorContractTests.swift`:
-
-```swift
-import Testing
-
-@testable import AgentStudioGit
-
-@Suite("Git data-plane errors")
-struct GitErrorContractTests {
-    @Test("locked error round trips with operation and path")
-    func lockedErrorRoundTrip() throws {
-        let error = GitDataPlaneError.locked(
-            operation: "createWorktree",
-            path: "/private/tmp/repo/.git/index.lock",
-            message: "Lock file prevented operation"
-        )
-
-        let data = try JSONEncoder().encode(error)
-        let decoded = try JSONDecoder().decode(GitDataPlaneError.self, from: data)
-
-        #expect(decoded == error)
-    }
-}
-```
-
-- [ ] **Step 3: Add diff target tests**
-
-Create `Tests/AgentStudioGitTests/Contracts/GitDiffTargetCodableTests.swift`:
-
-```swift
-import Testing
-
-@testable import AgentStudioGit
-
-@Suite("Git diff target coding")
-struct GitDiffTargetCodableTests {
-    @Test("commit diff target requires a sha payload")
-    func commitDiffTargetRoundTrips() throws {
-        let target = GitDiffTarget.commit("abc123")
-
-        let data = try JSONEncoder().encode(target)
-        let decoded = try JSONDecoder().decode(GitDiffTarget.self, from: data)
-
-        #expect(decoded == target)
-    }
-}
-```
-
-- [ ] **Step 4: Run contract tests**
-
-Run: `swift test --filter Contracts`
-
-Expected: all contract tests pass.
-
-- [ ] **Step 5: Commit**
+Run:
 
 ```bash
-git add Tests/AgentStudioGitTests/Contracts
-git commit -m "test: cover Git data-plane contracts"
+rg -n "AgentStudioGitClient|clone, fetch, push.*out of scope|SSH auth.*out of scope|HTTPS auth.*out of scope" docs/specs/2026-06-10-agentstudio-git-libgit2-data-plane.md
+scripts/run-swift-test-filter.sh DefinitelyNoSuchTest
 ```
 
-## Task 4: Libgit2 Artifact Build
+Expected:
+- grep returns no stale old-API/auth scope claims
+- helper fails on `DefinitelyNoSuchTest`
+
+- [x] **Step 7: Commit**
+
+```bash
+git add CLAUDE.md docs/specs/2026-06-10-agentstudio-git-libgit2-data-plane.md .mise.toml scripts .github
+git commit -m "docs: define AgentStudio Git SDK boundary"
+```
+
+### Task 1: Public Contract Cutover
 
 **Files:**
 - Modify: `Package.swift`
-- Create: `scripts/build-libgit2-xcframework.sh`
-- Create: `scripts/verify-libgit2-artifact.sh`
-- Modify: `.gitignore`
-- Modify: `.mise.toml`
-- Create: `ThirdPartyNotices/libgit2.md`
+- Modify: `Sources/AgentStudioGit/AgentStudioGit.swift`
+- Delete or replace: `Tests/AgentStudioGitTests/AgentStudioGitTests.swift`
+- Create: `Sources/AgentStudioGit/Contracts/AgentStudioGitSDK.swift`
+- Create: `Sources/AgentStudioGit/Contracts/GitDataPlaneError.swift`
+- Create: `Sources/AgentStudioGit/Contracts/GitRepositoryIdentity.swift`
+- Create: `Sources/AgentStudioGit/Contracts/GitWorktreeContracts.swift`
+- Create: `Sources/AgentStudioGit/Contracts/GitStatusContracts.swift`
+- Create: `Sources/AgentStudioGit/Contracts/GitDiffContentContracts.swift`
+- Create: `Sources/AgentStudioGit/Contracts/GitRemoteContracts.swift`
+- Create: `Sources/AgentStudioGit/Contracts/GitRedaction.swift`
+- Create: `Tests/AgentStudioGitTests/Contracts/GitPublicContractTests.swift`
+- Create: `Tests/AgentStudioGitTests/Contracts/GitWireEnumSnapshotTests.swift`
+- Create: `Tests/AgentStudioGitTests/Contracts/GitInvalidDecodeTests.swift`
+- Create: `Tests/AgentStudioGitTests/Contracts/GitRedactionTests.swift`
 
-- [ ] **Step 1: Add artifact scripts**
+- [ ] **Step 1: Split products and targets**
 
-Create `scripts/build-libgit2-xcframework.sh`:
+`Package.swift` must expose `AgentStudioGitContracts`, `AgentStudioGitLocal`, `AgentStudioGitRemote`, and `AgentStudioGit`. `AgentStudioGitLocal` and `AgentStudioGitRemote` can be stub targets until later tasks, but the package graph must compile.
 
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
+- [ ] **Step 2: Write failing contract tests**
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LIBGIT2_DIR="$ROOT/vendor/libgit2"
-BUILD_ROOT="$ROOT/.build/libgit2"
-ARTIFACT_DIR="$ROOT/Artifacts"
-FRAMEWORK_PATH="$ARTIFACT_DIR/CLibGit2Local.xcframework"
+Tests must cover:
+- `GitStatusSnapshot` with tri-state `originResolution`
+- `GitDiffFile` with stable `fileId` or documented deterministic derivation
+- `GitRemoteProcessFailure` redacts credentials from arguments and stderr
+- enum raw values
+- invalid decode behavior
+- URL fields encode as Swift `URL` strings and are not promised as raw POSIX paths across non-Swift boundaries
 
-if [ ! -f "$LIBGIT2_DIR/CMakeLists.txt" ]; then
-  echo "Missing vendor/libgit2. Add libgit2 before building the artifact." >&2
-  exit 1
-fi
+- [ ] **Step 3: Define SDK protocols**
 
-rm -rf "$BUILD_ROOT" "$FRAMEWORK_PATH"
-mkdir -p "$BUILD_ROOT/arm64" "$BUILD_ROOT/x86_64" "$ARTIFACT_DIR"
+Define:
 
-build_arch() {
-  local arch="$1"
-  local build_dir="$BUILD_ROOT/$arch"
-  cmake -S "$LIBGIT2_DIR" -B "$build_dir" \
-    -DCMAKE_OSX_ARCHITECTURES="$arch" \
-    -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
-    -DBUILD_SHARED_LIBS=OFF \
-    -DBUILD_CLAR=OFF \
-    -DBUILD_EXAMPLES=OFF \
-    -DUSE_SSH=OFF \
-    -DUSE_HTTPS=OFF \
-    -DUSE_GSSAPI=OFF
-  cmake --build "$build_dir" --config Release
+```swift
+public protocol AgentStudioGitLocalClient: Sendable {
+    func repositoryIdentity(for worktreePath: URL) async throws(GitDataPlaneError) -> GitRepositoryIdentity
+    func worktrees(for repositoryPath: URL) async throws(GitDataPlaneError) -> [GitWorktreeSnapshot]
+    func validateWorktree(_ request: GitValidateWorktreeRequest) async throws(GitDataPlaneError) -> GitWorktreeValidation
+    func createWorktree(_ request: GitCreateWorktreeRequest) async throws(GitDataPlaneError) -> GitWorktreeSnapshot
+    func pruneStaleWorktree(_ request: GitPruneStaleWorktreeRequest) async throws(GitDataPlaneError) -> GitWorktreePruneResult
+    func removeWorktree(_ request: GitRemoveWorktreeRequest) async throws(GitDataPlaneError) -> GitWorktreeRemovalResult
+    func lockWorktree(_ request: GitLockWorktreeRequest) async throws(GitDataPlaneError) -> GitWorktreeSnapshot
+    func unlockWorktree(_ request: GitUnlockWorktreeRequest) async throws(GitDataPlaneError) -> GitWorktreeSnapshot
+    func status(for worktreePath: URL, options: GitStatusOptions) async throws(GitDataPlaneError) -> GitStatusSnapshot
+    func branches(for repositoryPath: URL) async throws(GitDataPlaneError) -> [GitBranchSnapshot]
+    func resolveRevision(_ request: GitRevisionResolutionRequest) async throws(GitDataPlaneError) -> GitResolvedRevision
+    func readTree(_ request: GitTreeReadRequest) async throws(GitDataPlaneError) -> GitTreeSnapshot
+    func diff(_ request: GitDiffRequest) async throws(GitDataPlaneError) -> GitDiffSnapshot
+    func content(_ request: GitContentRequest) async throws(GitDataPlaneError) -> GitContentPayload
 }
 
-build_arch arm64
-build_arch x86_64
-
-xcodebuild -create-xcframework \
-  -library "$BUILD_ROOT/arm64/libgit2.a" -headers "$LIBGIT2_DIR/include" \
-  -library "$BUILD_ROOT/x86_64/libgit2.a" -headers "$LIBGIT2_DIR/include" \
-  -output "$FRAMEWORK_PATH"
-
-echo "Built $FRAMEWORK_PATH"
+public protocol AgentStudioGitRemoteClient: Sendable {
+    func clone(_ request: GitCloneRequest) async throws(GitDataPlaneError) -> GitCloneResult
+    func fetch(_ request: GitFetchRequest) async throws(GitDataPlaneError) -> GitFetchResult
+    func push(_ request: GitPushRequest) async throws(GitDataPlaneError) -> GitPushResult
+    func remoteReferences(_ request: GitRemoteReferencesRequest) async throws(GitDataPlaneError) -> [GitRemoteReference]
+}
 ```
 
-- [ ] **Step 2: Add verify script**
+- [ ] **Step 4: Define worktree create/remove modes**
 
-Create `scripts/verify-libgit2-artifact.sh`:
+`GitCreateWorktreeRequest` must use an explicit mode:
+
+```swift
+public enum GitWorktreeCreateMode: Codable, Equatable, Hashable, Sendable {
+    case existingBranch(name: String)
+    case newBranch(name: String, startPoint: GitRevisionTarget)
+    case detached(startPoint: GitRevisionTarget)
+}
+```
+
+`GitRemoveWorktreeRequest` must target `GitWorktreeID` or canonical path and include:
+- `removeWorkingDirectory: Bool`
+- `forceDiscardChanges: Bool`
+
+Default behavior refuses dirty tracked changes, staged changes, untracked files, locked worktrees, main worktree, and ambiguous paths.
+
+- [ ] **Step 5: Define status origin tri-state**
+
+`GitStatusSnapshot` must include:
+
+```swift
+public enum GitOriginResolution: Codable, Equatable, Hashable, Sendable {
+    case awaitingResolution
+    case confirmedAbsent
+    case resolved(GitRemoteSnapshot)
+}
+```
+
+- [ ] **Step 6: Define content locators and hashes honestly**
+
+`GitDiffFile` must include either a stable `fileId` or an explicit deterministic derivation rule. `contentHashAlgorithm` must use an honest label such as `git-blob-sha1`. If a workdir-side object ID is absent, the implementation must explicitly hash the filtered content before exposing `newContentHash`.
+
+- [ ] **Step 7: Define redacted error values**
+
+Public process failures expose redacted fields only:
+
+```swift
+public struct GitRemoteProcessFailure: Codable, Equatable, Sendable {
+    public let executable: String
+    public let redactedArguments: [String]
+    public let exitCode: Int32
+    public let redactedStderr: String
+}
+```
+
+- [ ] **Step 8: Run tests**
+
+Run:
 
 ```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-FRAMEWORK_PATH="$ROOT/Artifacts/CLibGit2Local.xcframework"
-
-test -d "$FRAMEWORK_PATH" || { echo "Missing $FRAMEWORK_PATH" >&2; exit 1; }
-find "$FRAMEWORK_PATH" -name libgit2.a -print | grep -q libgit2.a
-echo "CLibGit2Local artifact exists"
+scripts/run-swift-test-filter.sh GitPublicContractTests
+swift test
 ```
 
-- [ ] **Step 3: Update mise artifact tasks**
+Expected: filtered gate executes non-zero tests, and full suite passes.
 
-Add to `.mise.toml`:
+- [ ] **Step 9: Commit**
+
+```bash
+git add Package.swift Sources Tests scripts
+git commit -m "feat: define AgentStudio Git SDK contracts"
+```
+
+### Task 2: Repository Identity And Writer Registry
+
+**Files:**
+- Create: `Sources/AgentStudioGitLocal/Runtime/GitPathCanonicalizer.swift`
+- Create: `Sources/AgentStudioGitLocal/Runtime/GitRepositoryIdentityResolver.swift`
+- Create: `Sources/AgentStudioGitLocal/Runtime/GitRepositoryWriterRegistry.swift`
+- Create: `Tests/AgentStudioGitTests/Runtime/GitRepositoryIdentityTests.swift`
+- Create: `Tests/AgentStudioGitTests/Runtime/GitRepositoryWriterRegistryTests.swift`
+
+- [ ] **Step 1: Write identity tests**
+
+Cover:
+- relative path and absolute path equivalence
+- symlink path and real path equivalence
+- linked worktree `.git` file parsing
+- main worktree and linked worktree share common git directory
+- linked worktree private index path resolves correctly
+- synthetic `main` display name does not collide with a real linked worktree named `main`
+
+- [ ] **Step 2: Implement identity resolver**
+
+Use libgit2 repository APIs where available, especially common git dir and repository path APIs, rather than relying only on `URL.resolvingSymlinksInPath()`.
+
+- [ ] **Step 3: Implement writer registry**
+
+The registry is process-wide and actor-backed, keyed by canonical common git directory. It serializes this process only; Git/libgit2 still create real lock files for write operations.
+
+- [ ] **Step 4: Run tests**
+
+```bash
+scripts/run-swift-test-filter.sh GitRepositoryIdentityTests
+scripts/run-swift-test-filter.sh GitRepositoryWriterRegistryTests
+swift test
+```
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add Sources/AgentStudioGitLocal Tests/AgentStudioGitTests/Runtime
+git commit -m "feat: add repository identity and writer registry"
+```
+
+### Task 3: libgit2 Artifact Pipeline And Downstream Packaging
+
+**Files:**
+- Modify: `Package.swift`
+- Modify: `.mise.toml`
+- Modify: `.gitignore`
+- Modify: `.github/workflows/check.yml`
+- Create: `.github/workflows/libgit2-artifact.yml`
+- Create: `scripts/build-libgit2-xcframework.sh`
+- Create: `scripts/verify-libgit2-artifact.sh`
+- Create: `scripts/verify-package-consumer.sh`
+- Create: `ThirdPartyNotices/libgit2.md`
+
+- [ ] **Step 1: Choose source ownership**
+
+Use a pinned git submodule at `vendor/libgit2` with an exact commit. CI must checkout submodules. Record the commit, license, build flags, and update process in `ThirdPartyNotices/libgit2.md`.
+
+- [ ] **Step 2: Build importable XCFramework**
+
+The build script must:
+- build static libgit2 with `BUILD_SHARED_LIBS=OFF`, `BUILD_CLAR=OFF`, `BUILD_EXAMPLES=OFF`, `USE_SSH=OFF`, `USE_HTTPS=OFF`, `USE_GSSAPI=OFF`
+- include libgit2 headers
+- generate `module.modulemap`
+- pass headers to `xcodebuild -create-xcframework`
+- create a zip only for release/distribution
+- compute checksum only for the release zip, not as proof for a local path binary target
+
+- [ ] **Step 3: Add linker settings and import canary**
+
+`Package.swift` must include the binary target and any required system link settings, such as `z` and `iconv` if the chosen libgit2 build requires them. Add a small import canary that imports `CLibGit2Local` and calls `git_libgit2_version`.
+
+- [ ] **Step 4: Separate local and distributable manifests**
+
+During local development, the package may use a local binary target path. Before AgentStudio consumption, the plan must cut over to a URL-based binary target with checksum, or another proven SwiftPM-consumable strategy. The local path is not the downstream consumption story.
+
+- [ ] **Step 5: Wire mise and CI before runtime work**
+
+Add:
 
 ```toml
 [tasks.build-libgit2]
-description = "Build local-only static libgit2 XCFramework"
 run = "bash scripts/build-libgit2-xcframework.sh"
 
 [tasks.verify-libgit2]
-description = "Verify local libgit2 XCFramework"
 run = "bash scripts/verify-libgit2-artifact.sh"
 ```
 
-- [ ] **Step 4: Add artifact ignore policy**
+`mise run check` must build or fetch the artifact before SwiftPM evaluates targets that import it.
 
-Add to `.gitignore`:
+- [ ] **Step 6: Prove clean checkout and downstream consumer**
 
-```gitignore
-Artifacts/*.xcframework
+Run:
+
+```bash
+rm -rf .build Artifacts
+mise run build-libgit2
+mise run verify-libgit2
+swift build
+swift test
+bash scripts/verify-package-consumer.sh
 ```
 
-- [ ] **Step 5: Add license notice**
-
-Create `ThirdPartyNotices/libgit2.md`:
-
-```markdown
-# libgit2
-
-AgentStudioGit links libgit2 under the libgit2 GPLv2 with Linking Exception license.
-
-Source: https://github.com/libgit2/libgit2
-License: https://github.com/libgit2/libgit2/blob/main/COPYING
-
-Network transports are disabled in the initial local-only build.
-```
-
-- [ ] **Step 6: Verify scripts parse**
-
-Run: `bash -n scripts/build-libgit2-xcframework.sh scripts/verify-libgit2-artifact.sh`
-
-Expected: exit 0.
+`verify-package-consumer.sh` creates a scratch SwiftPM package outside this repo, depends on `agentstudio-git`, resolves it from the intended downstream path, imports `AgentStudioGitLocal`, and builds without running repo-local mise tasks inside the dependency checkout.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add Package.swift .mise.toml .gitignore scripts ThirdPartyNotices
+git add Package.swift .mise.toml .gitignore .github scripts ThirdPartyNotices
 git commit -m "build: add libgit2 artifact pipeline"
 ```
 
-## Task 5: Libgit2 Runtime And Error Capture
+### Task 4: libgit2 Runtime, Errors, And Sessions
 
 **Files:**
-- Create: `Sources/AgentStudioGit/Runtime/LibGit2Runtime.swift`
-- Create: `Sources/AgentStudioGit/Runtime/LibGit2ErrorCapture.swift`
-- Create: `Sources/AgentStudioGit/Runtime/LibGit2RepositorySession.swift`
-- Test: `Tests/AgentStudioGitTests/Runtime/LibGit2RuntimeTests.swift`
+- Create: `Sources/AgentStudioGitLocal/LibGit2/LibGit2Runtime.swift`
+- Create: `Sources/AgentStudioGitLocal/LibGit2/LibGit2ErrorCapture.swift`
+- Create: `Sources/AgentStudioGitLocal/LibGit2/LibGit2RepositorySession.swift`
+- Create: `Tests/AgentStudioGitTests/LibGit2/LibGit2RuntimeTests.swift`
+- Create: `Tests/AgentStudioGitTests/LibGit2/LibGit2ErrorCaptureTests.swift`
+- Create: `Tests/AgentStudioGitTests/LibGit2/LibGit2RepositorySessionTests.swift`
 
 - [ ] **Step 1: Write runtime tests**
 
-Create `Tests/AgentStudioGitTests/Runtime/LibGit2RuntimeTests.swift`:
+Tests cover init-once-per-process behavior, same-frame error copying, repository-open failure mapping, and pointer release on early throws. Lifecycle tests are serialized so they do not race other Swift Testing suites.
 
-```swift
-import Testing
+- [ ] **Step 2: Implement runtime manager**
 
-@testable import AgentStudioGit
+`LibGit2Runtime` is process-scoped. Do not shutdown libgit2 while any operation can still hold libgit2 objects.
 
-@Suite("LibGit2 runtime")
-struct LibGit2RuntimeTests {
-    @Test("runtime can start and stop")
-    func runtimeStartStop() throws {
-        let runtime = LibGit2Runtime()
+- [ ] **Step 3: Implement error capture**
 
-        try runtime.start()
-        runtime.shutdown()
+Copy `git_error_last()` fields synchronously in the failing call frame before any `await`.
 
-        #expect(true)
-    }
-}
-```
+- [ ] **Step 4: Implement session owner**
 
-- [ ] **Step 2: Run failing test**
+`git_repository*`, `git_index*`, `git_diff*`, `git_worktree*`, and related pointers do not cross actor or task boundaries. Acquisitions pair with `defer` frees in the same synchronous frame.
 
-Run: `swift test --filter LibGit2RuntimeTests`
-
-Expected: compile fails because `LibGit2Runtime` does not exist.
-
-- [ ] **Step 3: Implement runtime**
-
-Create `Sources/AgentStudioGit/Runtime/LibGit2Runtime.swift`:
-
-```swift
-import Foundation
-
-public final class LibGit2Runtime: @unchecked Sendable {
-    private let lock = NSLock()
-    private var started = false
-
-    public init() {}
-
-    public func start() throws(GitDataPlaneError) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !started else { return }
-        started = true
-    }
-
-    public func shutdown() {
-        lock.lock()
-        defer { lock.unlock() }
-        started = false
-    }
-}
-```
-
-After Task 4 adds `CLibGit2Local`, replace `LibGit2Runtime.swift` with:
-
-```swift
-import CLibGit2Local
-import Foundation
-
-public final class LibGit2Runtime: @unchecked Sendable {
-    private let lock = NSLock()
-    private var startCount = 0
-
-    public init() {}
-
-    public func start() throws(GitDataPlaneError) {
-        lock.lock()
-        defer { lock.unlock() }
-
-        let result = git_libgit2_init()
-        if result < 0 {
-            throw LibGit2ErrorCapture.capture(operation: "git_libgit2_init", result: result)
-        }
-        startCount += 1
-    }
-
-    public func shutdown() {
-        lock.lock()
-        defer { lock.unlock() }
-
-        guard startCount > 0 else { return }
-        git_libgit2_shutdown()
-        startCount -= 1
-    }
-}
-```
-
-- [ ] **Step 4: Run test**
-
-Run: `swift test --filter LibGit2RuntimeTests`
-
-Expected: pass.
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Run tests**
 
 ```bash
-git add Sources/AgentStudioGit/Runtime Tests/AgentStudioGitTests/Runtime
-git commit -m "feat: add libgit2 runtime boundary"
+scripts/run-swift-test-filter.sh LibGit2RuntimeTests
+scripts/run-swift-test-filter.sh LibGit2ErrorCaptureTests
+scripts/run-swift-test-filter.sh LibGit2RepositorySessionTests
+swift test
+swift test --sanitize address
+swift test --sanitize thread
 ```
 
-## Task 6: Git Compatibility Fixture Harness
-
-**Files:**
-- Create: `Tests/AgentStudioGitTests/Fixtures/TemporaryGitRepository.swift`
-- Create: `Tests/AgentStudioGitTests/Fixtures/GitProcess.swift`
-- Create: `Tests/AgentStudioGitTests/Integration/GitStatusCompatibilityTests.swift`
-
-- [ ] **Step 1: Add temporary repository helper**
-
-Create `Tests/AgentStudioGitTests/Fixtures/TemporaryGitRepository.swift`:
-
-```swift
-import Foundation
-
-struct TemporaryGitRepository {
-    let rootURL: URL
-
-    static func create() throws -> Self {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("agentstudio-git-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        try GitProcess.run(["init"], at: url)
-        try GitProcess.run(["config", "user.email", "agentstudio@example.com"], at: url)
-        try GitProcess.run(["config", "user.name", "AgentStudio Test"], at: url)
-        return Self(rootURL: url)
-    }
-
-    func writeFile(_ path: String, contents: String) throws {
-        let fileURL = rootURL.appendingPathComponent(path)
-        try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try contents.data(using: .utf8)?.write(to: fileURL)
-    }
-}
-```
-
-- [ ] **Step 2: Add Git process test helper**
-
-Create `Tests/AgentStudioGitTests/Fixtures/GitProcess.swift`:
-
-```swift
-import Foundation
-
-enum GitProcess {
-    static func run(_ arguments: [String], at directory: URL) throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        process.arguments = arguments
-        process.currentDirectoryURL = directory
-        try process.run()
-        process.waitUntilExit()
-        if process.terminationStatus != 0 {
-            throw GitDataPlaneError.unsupported(operation: "git \(arguments.joined(separator: " "))", reason: "process failed")
-        }
-    }
-}
-```
-
-- [ ] **Step 3: Add compatibility test skeleton**
-
-Create `Tests/AgentStudioGitTests/Integration/GitStatusCompatibilityTests.swift`:
-
-```swift
-import Testing
-
-@testable import AgentStudioGit
-
-@Suite("Git status compatibility")
-struct GitStatusCompatibilityTests {
-    @Test("fixture can create a real repository")
-    func fixtureCreatesRepository() throws {
-        let repository = try TemporaryGitRepository.create()
-
-        #expect(FileManager.default.fileExists(atPath: repository.rootURL.appendingPathComponent(".git").path))
-    }
-}
-```
-
-- [ ] **Step 4: Run integration fixture test**
-
-Run: `swift test --filter GitStatusCompatibilityTests`
-
-Expected: pass.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add Tests/AgentStudioGitTests/Fixtures Tests/AgentStudioGitTests/Integration
-git commit -m "test: add Git compatibility fixtures"
-```
-
-## Task 7: First Libgit2 Reader Slice
-
-**Files:**
-- Create: `Sources/AgentStudioGit/Readers/GitStatusReader.swift`
-- Create: `Sources/AgentStudioGit/Client/LibGit2AgentStudioGitClient.swift`
-- Test: `Tests/AgentStudioGitTests/Integration/GitStatusCompatibilityTests.swift`
-
-- [ ] **Step 1: Add failing status test**
-
-Append to `GitStatusCompatibilityTests`:
-
-```swift
-@Test("status reports staged and unstaged modification on same path")
-func statusReportsStagedAndUnstagedModification() async throws {
-    let repository = try TemporaryGitRepository.create()
-    try repository.writeFile("file.txt", contents: "one\n")
-    try GitProcess.run(["add", "file.txt"], at: repository.rootURL)
-    try GitProcess.run(["commit", "-m", "initial"], at: repository.rootURL)
-    try repository.writeFile("file.txt", contents: "two\n")
-    try GitProcess.run(["add", "file.txt"], at: repository.rootURL)
-    try repository.writeFile("file.txt", contents: "three\n")
-
-    let client = LibGit2AgentStudioGitClient()
-    let status = try await client.status(for: repository.rootURL, options: .default)
-
-    let entry = try #require(status.entries.first { $0.path == "file.txt" })
-    #expect(entry.indexState == .modified)
-    #expect(entry.worktreeState == .modified)
-}
-```
-
-- [ ] **Step 2: Run failing test**
-
-Run: `swift test --filter statusReportsStagedAndUnstagedModification`
-
-Expected: compile fails because `LibGit2AgentStudioGitClient` does not exist.
-
-- [ ] **Step 3: Implement unsupported client scaffold**
-
-Create `Sources/AgentStudioGit/Client/LibGit2AgentStudioGitClient.swift`:
-
-```swift
-import Foundation
-
-public actor LibGit2AgentStudioGitClient: AgentStudioGitClient {
-    public init() {}
-
-    public func worktrees(for repositoryPath: URL) async throws(GitDataPlaneError) -> [GitWorktreeSnapshot] {
-        throw .unsupported(operation: "worktrees", reason: "pending libgit2 worktree reader slice")
-    }
-
-    public func validateWorktree(repositoryPath: URL, name: String) async throws(GitDataPlaneError) -> GitWorktreeSnapshot {
-        throw .unsupported(operation: "validateWorktree", reason: "pending libgit2 worktree reader slice")
-    }
-
-    public func status(for worktreePath: URL, options: GitStatusOptions) async throws(GitDataPlaneError) -> GitStatusSnapshot {
-        throw .unsupported(operation: "status", reason: "pending libgit2 status reader slice")
-    }
-
-    public func branches(for repositoryPath: URL) async throws(GitDataPlaneError) -> [GitBranchSnapshot] {
-        throw .unsupported(operation: "branches", reason: "pending libgit2 branch reader slice")
-    }
-
-    public func createWorktree(_ request: GitCreateWorktreeRequest) async throws(GitDataPlaneError) -> GitWorktreeSnapshot {
-        throw .unsupported(operation: "createWorktree", reason: "pending libgit2 worktree writer slice")
-    }
-
-    public func removeWorktree(_ request: GitRemoveWorktreeRequest) async throws(GitDataPlaneError) -> GitWorktreeRemovalResult {
-        throw .unsupported(operation: "removeWorktree", reason: "pending libgit2 worktree writer slice")
-    }
-
-    public func diff(_ request: GitDiffRequest) async throws(GitDataPlaneError) -> GitDiffSnapshot {
-        throw .unsupported(operation: "diff", reason: "pending libgit2 diff reader slice")
-    }
-
-    public func content(_ request: GitContentRequest) async throws(GitDataPlaneError) -> GitContentPayload {
-        throw .unsupported(operation: "content", reason: "pending libgit2 content reader slice")
-    }
-}
-```
-
-- [ ] **Step 4: Implement libgit2-backed status reader**
-
-Replace the `status` unsupported branch with libgit2-backed status reading. Requirements:
-
-- open repository from `worktreePath`
-- do not set any status option that updates the index
-- map staged flags to `indexState`
-- map worktree flags to `worktreeState`
-- return `GitStatusSnapshot`
-- every libgit2 pointer uses `defer git_*_free(pointer)`
-- every negative return captures `git_error_last()` before returning
-
-- [ ] **Step 5: Run status test**
-
-Run: `swift test --filter statusReportsStagedAndUnstagedModification`
-
-Expected: pass.
+Expected: Swift wrapper sanitizer lanes pass, or exact toolchain limitation is recorded. Do not claim native libgit2 instrumentation unless Task 3 built a sanitizer-specific artifact.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add Sources/AgentStudioGit/Client Sources/AgentStudioGit/Readers Tests/AgentStudioGitTests/Integration
-git commit -m "feat: read worktree status with libgit2"
+git add Sources/AgentStudioGitLocal/LibGit2 Tests/AgentStudioGitTests/LibGit2
+git commit -m "feat: add libgit2 runtime wrappers"
 ```
 
-## Task 8: Worktree List And Mutation Slice
+### Task 5: Fast Worktree Operations
 
 **Files:**
-- Create: `Sources/AgentStudioGit/Runtime/GitRepositoryWriterActor.swift`
-- Create: `Sources/AgentStudioGit/Writers/GitWorktreeWriter.swift`
-- Create: `Sources/AgentStudioGit/Readers/GitWorktreeReader.swift`
-- Test: `Tests/AgentStudioGitTests/Integration/GitWorktreeCompatibilityTests.swift`
+- Create: `Sources/AgentStudioGitLocal/Worktrees/LibGit2WorktreeReader.swift`
+- Create: `Sources/AgentStudioGitLocal/Worktrees/LibGit2WorktreeWriter.swift`
+- Create: `Sources/AgentStudioGitLocal/LibGit2AgentStudioGitLocalClient.swift`
+- Create: `Tests/AgentStudioGitTests/Fixtures/GitFixtureRepository.swift`
+- Create: `Tests/AgentStudioGitTests/Fixtures/GitProcess.swift`
+- Create: `Tests/AgentStudioGitTests/Integration/GitWorktreeIntegrationTests.swift`
 
-- [ ] **Step 1: Add worktree tests**
+- [ ] **Step 1: Add deterministic fixture helpers**
 
-Create `Tests/AgentStudioGitTests/Integration/GitWorktreeCompatibilityTests.swift` with tests for:
+`GitProcess` is test-only. It uses scrubbed config, captures stdout/stderr, pins locale where parsing matters, and includes output in failures.
 
-- main worktree appears in output with `isMainWorktree == true`
-- created linked worktree appears with stable ID
-- locked worktree reports `GitWorktreeLock`
-- locked worktree removal returns `GitDataPlaneError.locked`
+- [ ] **Step 2: Write worktree tests**
 
-- [ ] **Step 2: Implement writer actor**
+Cover:
+- main worktree listed with synthetic display name
+- linked worktree listed
+- real linked worktree named `main`
+- create from existing branch
+- create new branch from start point
+- create detached worktree
+- branch already checked out in another worktree
+- validate existing worktree
+- validate missing/stale worktree
+- lock with reason
+- unlock
+- stale metadata prune without touching a live worktree
+- main worktree removal refused
+- clean linked worktree removal
+- dirty tracked removal refused without force
+- staged removal refused without force
+- untracked removal refused without force
+- dirty removal with `forceDiscardChanges: true`
+- locked removal refused unless force policy explicitly permits it
+- symlink escape/path mismatch refused
+- permission-denied partial failure returns typed recovery outcome
 
-Create `GitRepositoryWriterActor` keyed by canonical common git directory. Mutating methods call `GitWorktreeWriter`.
+- [ ] **Step 3: Implement reader**
 
-- [ ] **Step 3: Implement worktree list**
+Use libgit2 list/lookup/open/validate/lock APIs. Preserve display name separately from stable ID.
 
-Use `git_worktree_list`, `git_worktree_lookup`, `git_worktree_name`, `git_worktree_path`, `git_worktree_is_locked`, and `git_worktree_open_from_repository`.
+- [ ] **Step 4: Implement create**
 
-- [ ] **Step 4: Implement worktree create**
+Compose branch/ref operations and worktree add inside the writer lane:
+- existing branch
+- new branch from revision
+- detached from revision
 
-Use `git_worktree_add` with explicit options. Do not set `lock` unless request asks for a locked worktree in a later API revision.
+- [ ] **Step 5: Implement stale prune and remove separately**
 
-- [ ] **Step 5: Implement worktree remove**
-
-Use `git_worktree_prune`. Refuse locked worktrees by default. Do not remove working directory unless `removeWorkingDirectory == true`.
+Stale prune uses libgit2 prunable checks and does not delete a live worktree. Remove validates the target ID/path, checks dirty state unless force is set, refuses main worktree, and only then uses the required libgit2 prune flags for working-tree deletion.
 
 - [ ] **Step 6: Run tests**
 
-Run: `swift test --filter GitWorktreeCompatibilityTests`
-
-Expected: all worktree tests pass.
+```bash
+scripts/run-swift-test-filter.sh GitWorktreeIntegrationTests
+swift test
+```
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add Sources/AgentStudioGit/Runtime Sources/AgentStudioGit/Readers Sources/AgentStudioGit/Writers Tests/AgentStudioGitTests/Integration
-git commit -m "feat: manage local worktrees with libgit2"
+git add Sources/AgentStudioGitLocal Tests/AgentStudioGitTests
+git commit -m "feat: implement safe worktree operations"
 ```
 
-## Task 9: Branch, Diff, And Content Readers
+### Task 6: App Enrichment Status, Branch, And Origin Facts
 
 **Files:**
-- Create: `Sources/AgentStudioGit/Readers/GitBranchReader.swift`
-- Create: `Sources/AgentStudioGit/Readers/GitDiffReader.swift`
-- Create: `Sources/AgentStudioGit/Readers/GitContentReader.swift`
-- Test: `Tests/AgentStudioGitTests/Integration/GitDiffCompatibilityTests.swift`
+- Create: `Sources/AgentStudioGitLocal/Status/LibGit2StatusReader.swift`
+- Create: `Sources/AgentStudioGitLocal/Status/LibGit2BranchReader.swift`
+- Create: `Sources/AgentStudioGitLocal/Status/GitIndexPathResolver.swift`
+- Create: `Tests/AgentStudioGitTests/Integration/GitStatusIntegrationTests.swift`
+- Create: `Tests/AgentStudioGitTests/ConsumerCompatibility/GitWorkingTreeStatusCompatibilityTests.swift`
 
-- [ ] **Step 1: Add branch/diff/content tests**
+- [ ] **Step 1: Write status tests**
 
-Create tests for:
+Cover:
+- clean
+- modified
+- staged
+- staged and modified again
+- untracked
+- ignored
+- deleted
+- renamed
+- binary
+- ahead
+- behind
+- diverged
+- no upstream
+- origin present
+- origin absent
+- origin lookup failure with summary still returned
+- detached HEAD
+- unborn HEAD / empty repo
+- main and linked worktree index paths
 
-- branch list includes current local branch
-- diff reports additions/deletions for modified text file
-- diff marks binary file as binary
-- content reads bytes for HEAD and working tree targets
+- [ ] **Step 2: Prove reads do not mutate index**
 
-- [ ] **Step 2: Implement branch reader**
+Resolve the actual index path through libgit2/repository metadata for main and linked worktrees. Compare index bytes or content hash before and after status/diff-backed shortstat. Assert no existing lock file is removed or replaced.
 
-Use libgit2 branch iteration and HEAD inspection.
+- [ ] **Step 3: Pin line-count semantics**
 
-- [ ] **Step 3: Implement diff reader**
+Match current AgentStudio UI semantics: `git diff --shortstat HEAD --` equivalent, which means HEAD tree to workdir-with-index. Add a fixture with staged and unstaged edits to prove exact counts.
 
-Use libgit2 diff APIs without index-update flags. Put line stats and binary flags on `GitDiffFile`, not `GitStatusEntry`.
+- [ ] **Step 4: Implement status and branch readers**
 
-- [ ] **Step 4: Implement content reader**
+Map libgit2 status flags to two-axis status entries. Compute `GitStatusSummary`, `GitOriginResolution`, branch/head, upstream, ahead/behind, and origin facts.
 
-Use tree/blob lookup for commit targets and filesystem read for working tree target.
+- [ ] **Step 5: Add actual adapter compile proof**
 
-- [ ] **Step 5: Run tests**
+Create a small AgentStudio-side compile spike or checked harness that implements the real `GitWorkingTreeStatusProvider` from SDK values. Mirror-only structs are not sufficient proof.
 
-Run: `swift test --filter GitDiffCompatibilityTests`
+- [ ] **Step 6: Run tests**
 
-Expected: pass.
+```bash
+scripts/run-swift-test-filter.sh GitStatusIntegrationTests
+scripts/run-swift-test-filter.sh GitWorkingTreeStatusCompatibilityTests
+swift test
+```
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add Sources/AgentStudioGitLocal Tests/AgentStudioGitTests
+git commit -m "feat: implement status and branch enrichment"
+```
+
+### Task 7: Bridge Review Data Operations
+
+**Files:**
+- Create: `Sources/AgentStudioGitLocal/Review/LibGit2RevisionResolver.swift`
+- Create: `Sources/AgentStudioGitLocal/Review/LibGit2TreeReader.swift`
+- Create: `Sources/AgentStudioGitLocal/Review/LibGit2DiffReader.swift`
+- Create: `Sources/AgentStudioGitLocal/Review/LibGit2ContentReader.swift`
+- Create: `Tests/AgentStudioGitTests/Integration/GitReviewDataIntegrationTests.swift`
+- Create: `Tests/AgentStudioGitTests/ConsumerCompatibility/BridgeReviewSourceCompatibilityTests.swift`
+
+- [ ] **Step 1: Write review-data tests**
+
+Cover:
+- commit endpoint resolution
+- head endpoint resolution
+- index endpoint resolution
+- working-tree endpoint resolution
+- two endpoint diff
+- tree listing with folders/files
+- text content load
+- binary content load
+- large file metadata
+- old/new content hashes
+- workdir-side filtered hash when libgit2 diff ID is not valid
+- CRLF/filter fixture
+- rename descriptor with stable ID
+- deleted file descriptor
+- content load from adapter handle index after local path values are discarded
+
+- [ ] **Step 2: Keep checkpoint composition out of this package**
+
+Package proof covers git-backed endpoints only. `resolveCheckpointEndpoint` remains AgentStudio-owned composition: checkpoint metadata -> git endpoint -> package call.
+
+- [ ] **Step 3: Implement revision resolver and tree reader**
+
+Return Git-shaped revision/tree/blob identities. Do not import Bridge types.
+
+- [ ] **Step 4: Implement diff reader**
+
+Return changed-file descriptors with stable `fileId` or a documented derivation rule, previous path, mode, size, binary flag, line counts, blob hashes, and content locators. Language/mime values may be basic file metadata only; rich classification remains AgentStudio-owned.
+
+- [ ] **Step 5: Implement content reader**
+
+Support blob reads and working-tree file reads. Enforce size limits through request options and typed errors.
+
+- [ ] **Step 6: Add actual Bridge adapter compile proof**
+
+Create an AgentStudio-side compile spike or checked harness that uses real Bridge types for `compareEndpoints`, `readTree`, `readReviewItemDescriptor`, and `loadContent`. The content test must build handles, discard local path variables, and load content from only `BridgeContentLoadRequest`.
+
+- [ ] **Step 7: Run tests**
+
+```bash
+scripts/run-swift-test-filter.sh GitReviewDataIntegrationTests
+scripts/run-swift-test-filter.sh BridgeReviewSourceCompatibilityTests
+swift test
+```
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add Sources/AgentStudioGitLocal Tests/AgentStudioGitTests
+git commit -m "feat: implement Git review data operations"
+```
+
+### Task 8: Remote/Auth Seam Using System Git
+
+**Files:**
+- Create: `Sources/AgentStudioGitRemote/SystemGitRemoteClient.swift`
+- Create: `Sources/AgentStudioGitRemote/GitExecutableLocator.swift`
+- Create: `Sources/AgentStudioGitRemote/GitProcessRunner.swift`
+- Create: `Sources/AgentStudioGitRemote/GitRemoteOutputParser.swift`
+- Create: `Tests/AgentStudioGitTests/Remote/SystemGitRemoteClientTests.swift`
+- Create: `Tests/AgentStudioGitTests/Remote/GitProcessRunnerTests.swift`
+- Create: `Tests/AgentStudioGitTests/Remote/GitRemoteOutputParserTests.swift`
+
+- [ ] **Step 1: Define trusted process policy**
+
+Move executable selection, inherited environment behavior, protocol allowlist, and prompt behavior into trusted client configuration. Public request values do not choose arbitrary executables or environment allowlists.
+
+Default policy:
+- inherit user environment by default for production
+- strip tracing variables and redact public output
+- set `LC_ALL=C` for parsed command output
+- default `GIT_TERMINAL_PROMPT=0`
+- allow only configured protocols
+- interactive prompting requires trusted opt-in
+
+- [ ] **Step 2: Write fake-git tests**
+
+Cover:
+- clone args
+- fetch args
+- push args
+- `remoteReferences` / `ls-remote` args
+- default env inheritance
+- scrubbed test env
+- prompt suppression
+- interactive opt-in
+- protocol restrictions
+- redacted argv/stderr for credential-bearing URLs
+- parser tests for normal refs, symrefs, peeled tags, malformed lines, and failures
+
+- [ ] **Step 3: Implement executable locator**
+
+Resolve from trusted configuration or normal user path. Do not accept arbitrary untrusted per-request executable paths.
+
+- [ ] **Step 4: Implement process runner**
+
+Use `Process` argument arrays, never shell string concatenation. Validate or delimit untrusted ref/remote/path values so option-shaped inputs cannot be interpreted as flags where Git supports separators. Capture stdout/stderr. Redact before constructing public errors.
+
+- [ ] **Step 5: Implement remote client**
+
+Use parseable output where available:
+- `ls-remote` for `remoteReferences`
+- porcelain/pinned formats for fetch/push where Git version supports them
+- typed fallback errors where the user's Git is too old for a required parseable mode
+
+- [ ] **Step 6: Add opt-in live smoke**
+
+Add `AGENTSTUDIO_GIT_LIVE_REMOTE_SMOKE=1`. The final proof artifact must record whether the smoke was run or skipped. Default CI does not require real credentials.
+
+- [ ] **Step 7: Run tests**
+
+```bash
+scripts/run-swift-test-filter.sh SystemGitRemoteClientTests
+scripts/run-swift-test-filter.sh GitProcessRunnerTests
+scripts/run-swift-test-filter.sh GitRemoteOutputParserTests
+swift test
+```
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add Sources/AgentStudioGitRemote Tests/AgentStudioGitTests/Remote
+git commit -m "feat: add system Git remote auth seam"
+```
+
+### Task 9: CI, Release Artifact, And Consumer Readiness
+
+**Files:**
+- Modify: `.github/workflows/check.yml`
+- Modify: `.github/workflows/libgit2-artifact.yml`
+- Modify: `Package.swift`
+- Create: `docs/guides/agentstudio-consumption.md`
+- Create: `docs/wip/implementation-proof/2026-06-11-agentstudio-git-sdk-proof.md`
+
+- [ ] **Step 1: Prove CI gates**
+
+CI must run:
+
+```bash
+mise run check
+swift test --sanitize address
+swift test --sanitize thread
+bash scripts/verify-package-consumer.sh
+```
+
+- [ ] **Step 2: Publish or simulate the distributable artifact path**
+
+Before AgentStudio consumption, prove the manifest strategy that downstream SwiftPM will use:
+- URL binary target with checksum, or
+- committed artifact if that tradeoff is explicitly accepted
+
+Local untracked artifacts are not an AgentStudio consumption strategy.
+
+- [ ] **Step 3: Add consumer guide**
+
+Document:
+- split products/targets
+- local engine vs remote/auth engine
+- redaction and prompt policy
+- why system Git owns remote/auth
+- how AgentStudio imports the package
+- proof gates required before replacing shell parsing
+
+- [ ] **Step 4: Record proof**
+
+Create proof doc with:
+- commit SHA
+- command outputs
+- test counts
+- filtered gate counts
+- sanitizer scope/result
+- libgit2 commit
+- artifact checksum
+- downstream consumer proof
+- remote live smoke status
+- known limitations
+
+- [ ] **Step 5: Run final validation**
+
+```bash
+mise run format
+mise run lint
+mise run check
+swift test --sanitize address
+swift test --sanitize thread
+bash scripts/verify-package-consumer.sh
+```
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add Sources/AgentStudioGit/Readers Tests/AgentStudioGitTests/Integration
-git commit -m "feat: read branches diffs and content with libgit2"
+git add .github Package.swift docs
+git commit -m "ci: prove AgentStudio Git SDK readiness"
 ```
 
-## Task 10: AgentStudio Adapter Plan Gate
+## AgentStudio Follow-Up Plan Boundary
 
-**Files:**
-- Create: `docs/specs/2026-06-10-agentstudio-integration-boundary.md`
+After this SDK plan is implemented and reviewed, create a separate AgentStudio plan to consume it:
 
-- [ ] **Step 1: Write integration boundary note**
+1. Add `agentstudio-git` through the proven downstream SwiftPM path.
+2. Replace `ShellGitWorkingTreeStatusProvider` behind the existing `GitWorkingTreeStatusProvider` seam.
+3. Add Bridge adapter backed by `AgentStudioGitLocalClient`.
+4. Keep checkpoint resolution, Bridge DTOs, filters, annotation metadata, and review package construction in AgentStudio.
+5. Keep Worktrunk UX until a separate product decision moves create/remove/switch commands.
 
-Create `docs/specs/2026-06-10-agentstudio-integration-boundary.md`:
+Do not start cross-repo integration until this package has a green SDK proof artifact.
 
-```markdown
-# AgentStudio Integration Boundary
-
-AgentStudio consumes AgentStudioGit through adapters.
-
-Adapters:
-
-- `AgentStudioGitWorkingTreeStatusProvider` implements AgentStudio `GitWorkingTreeStatusProvider`.
-- `BridgeGitReviewSourceProvider` maps Git-shaped package output into Bridge-owned review contracts.
-
-AgentStudioGit does not import Bridge, AtomRegistry, persistence, AppKit, SwiftUI, Worktrunk, or pane runtime code.
-```
-
-- [ ] **Step 2: Commit**
+## Validation Commands For This Plan
 
 ```bash
-git add docs/specs/2026-06-10-agentstudio-integration-boundary.md
-git commit -m "docs: define AgentStudio adapter boundary"
+rg -n "AgentStudioGitClient|clone, fetch, push.*out of scope|SSH auth.*out of scope|HTTPS auth.*out of scope" docs/specs/2026-06-10-agentstudio-git-libgit2-data-plane.md
+scripts/run-swift-test-filter.sh GitPublicContractTests
+swift test
+mise run format
+mise run lint
+mise run check
+swift test --sanitize address
+swift test --sanitize thread
+bash scripts/verify-package-consumer.sh
 ```
 
-## Task 11: Full Verification
+Expected:
+- no stale local-only spec claims
+- no filtered SwiftPM gate can pass with zero tests
+- formatting/lint pass
+- all default tests pass
+- sanitizer scope is honest
+- downstream consumer proof passes
 
-**Files:**
-- No source files.
+## Replan Triggers
 
-- [ ] **Step 1: Run diff check**
+Pause implementation and update the plan if:
 
-Run: `git diff --check`
+- SwiftPM cannot support the selected local/distributable libgit2 artifact strategy.
+- libgit2 worktree APIs cannot safely express create/prune/remove semantics.
+- dirty worktree detection cannot match Git safety semantics.
+- status/diff reads mutate the actual main or linked worktree index.
+- Bridge content loading requires importing Bridge DTOs into `agentstudio-git`.
+- remote/auth behavior needs interactive UI that AgentStudio has not designed.
+- system Git output parsing cannot be made stable for supported Git versions.
 
-Expected: no output.
+## Recommended Next Step
 
-- [ ] **Step 2: Run validation**
-
-Run: `mise run check`
-
-Expected: build, lint, and tests pass.
-
-- [ ] **Step 3: Run sanitizer lanes**
-
-Run:
-
-```bash
-mise run test-asan
-mise run test-tsan
-```
-
-Expected: both pass, or document an environment-specific sanitizer limitation with exact output.
-
-- [ ] **Step 4: Verify public repo state**
-
-Run:
-
-```bash
-git status --short --branch
-gh repo view ShravanSunder/agentstudio-git --json url,visibility,defaultBranchRef
-```
-
-Expected: clean branch, public repo, default branch `main`.
-
-## Self-Review Notes
-
-- Spec coverage: packaging, auth, locking, actor/read model, public contracts, testing pyramid, AgentStudio boundary, and validation are all covered.
-- Type consistency: public protocol and model names match the task snippets.
-- Terminology: this plan uses “Git compatibility tests” for fixture behavior checks and does not use ambiguous test-architecture jargon.
+Run one focused plan-review pass on this revised plan. If no blockers remain, start Task 0 and Task 1 with TDD.

@@ -1,25 +1,30 @@
-# AgentStudioGit Libgit2 Data Plane Spec
+# AgentStudioGit SDK Spec
 
 ## Goal
 
-`agentstudio-git` is a standalone SwiftPM package that AgentStudio imports to perform fast, correct local Git operations through libgit2.
+`agentstudio-git` is a standalone SwiftPM package that AgentStudio imports as its Git SDK boundary.
 
-The package exists because AgentStudio needs dependable worktree, status, branch, diff, and content facts for repo enrichment and Bridge review surfaces. It is not a CLI wrapper, not a Bridge model package, and not a GitHub/network client.
+The SDK owns two seams:
+
+1. Local Git engine: libgit2-backed worktree, status, branch/ref, diff, tree, blob, and content operations.
+2. Remote/auth engine: system-Git-backed network operations that intentionally reuse the user's Git client configuration and credential path.
+
+The package exists because AgentStudio needs dependable worktree, status, branch, diff, content, and remote/auth facts for repo enrichment, Bridge review surfaces, and fast worktree operations. It is not a Bridge model package, not an app state package, and not a forge API package.
 
 ## Non-Goals
 
-- No `git` CLI implementation path in production.
-- No `gh` authentication integration.
-- No clone, fetch, push, remote negotiation, SSH auth, or HTTPS auth in the first implementation.
+- No system-`git` implementation path for production local status, diff, content, tree, branch, or worktree reads.
+- No `gh` dependency or forge API ownership.
+- No custom credential vault, token store, or replacement for the user's Git credential helpers.
 - No Bridge DTOs, review packages, atoms, stores, pane controllers, persistence, or UI.
 - No patch application or source mutation from Bridge review surfaces.
 - No command/response envelope inside this package. AgentStudio already has transport/correlation layers where needed.
 
 ## Vocabulary
 
-Use “Git compatibility tests” for tests that compare package output against the behavior of a real Git repository. Avoid jargon that makes Git commands sound like a product architecture.
+Use "Git compatibility tests" for tests that compare package output against the behavior of a real Git repository. Avoid jargon that makes Git commands sound like a product architecture.
 
-Git commands may appear in tests as a reference for expected Git behavior over controlled fixtures. They are not the product implementation.
+Git commands may appear in tests as a reference for expected Git behavior over controlled fixtures. They are not the product implementation for local SDK reads.
 
 ## Source Research
 
@@ -31,20 +36,23 @@ Git commands may appear in tests as a reference for expected Git behavior over c
   https://libgit2.org/docs/reference/main/index/git_index_write.html
 - Git worktree docs: linked worktrees have metadata, can be locked, and list output includes locked/prunable state.
   https://git-scm.com/docs/git-worktree
+- Git credential helpers and environment docs: system Git is the compatibility boundary for clone/fetch/push auth.
+  https://git-scm.com/docs/gitcredentials
+  https://git-scm.com/docs/git
 - libgit2 build docs and README: CMake build, static/shared options, `USE_SSH`, `USE_HTTPS`, local dependency choices.
   https://libgit2.org/docs/guides/build-and-link/
   https://github.com/libgit2/libgit2/blob/main/README.md
 
 ## Packaging Decision
 
-Use an AgentStudio-owned Swift API package that links a pinned, local-only static libgit2 build.
+Use an AgentStudio-owned Swift API package that links a pinned static libgit2 build for local operations and delegates authenticated network operations to system Git.
 
 Implementation stages:
 
-1. Build and validate libgit2 through a repo-owned script that produces a local static XCFramework.
-2. Consume that XCFramework from SwiftPM through an internal binary target.
-3. Keep the build recipe in the repo so the binary is reproducible and maintainable.
-4. Before AgentStudio release consumption, publish the XCFramework as a versioned release artifact with a SwiftPM checksum.
+1. Build and validate libgit2 through a repo-owned script that produces an importable local static XCFramework with headers and module map.
+2. Consume that XCFramework from SwiftPM through an internal binary target during local development.
+3. Keep the build recipe and pinned libgit2 source reference in the repo so the binary is reproducible and maintainable.
+4. Before AgentStudio release consumption, prove the downstream SwiftPM strategy: URL binary target with checksum, or another explicitly accepted consumable artifact strategy.
 
 Initial libgit2 build profile:
 
@@ -58,17 +66,21 @@ cmake -S vendor/libgit2 -B .build/libgit2 \
   -DUSE_GSSAPI=OFF
 ```
 
-This avoids Homebrew/system-library runtime dependency and avoids network/auth surface in the first implementation. Local Git operations still include repository open, object reads, refs, branches, index reads, status, worktree metadata, worktree add/prune, and diffs.
+This avoids a Homebrew/system libgit2 runtime dependency for local SDK operations. Network transport and authentication compatibility are handled by system Git in the remote/auth seam.
 
 ## Authentication
 
-Local operations do not use `git` auth or `gh` auth. libgit2 reads local `.git` data directly.
+Local operations do not use Git or GitHub authentication. libgit2 reads local `.git` data directly.
 
-Authentication is only relevant for network operations such as clone/fetch/push. Those operations are out of scope for the first implementation, so SSH and HTTPS support stay off.
+Remote operations such as clone, fetch, push, and remote reference discovery use the user's existing system `git` binary through a trusted process policy. That preserves credential helpers, SSH agent behavior, certificates, Git config, and enterprise setup that libgit2 credential callbacks would not automatically inherit.
+
+Default remote operations are noninteractive and set prompt policy explicitly. Interactive prompting is trusted opt-in for a caller that owns UI or TTY behavior.
+
+Public values and errors must not expose credential-bearing URLs, raw argv, raw stderr, tokens, private key paths, or sensitive environment values.
 
 ## Locking And Concurrency
 
-A Swift `RepositoryActor` does not create Git lock files. It serializes our process’s mutation work so libgit2 objects and shared repository state are not touched unsafely.
+A Swift repository actor does not create Git lock files. It serializes our process's mutation work so libgit2 objects and shared repository state are not touched unsafely.
 
 Git lock files are created by Git/libgit2 write operations. Examples:
 
@@ -83,7 +95,8 @@ Concurrency model:
 
 - `GitRepositoryWriterActor`, keyed by canonical common git directory, serializes mutating operations:
   - create worktree
-  - prune/remove worktree
+  - prune stale worktree metadata
+  - remove linked worktree
   - worktree lock/unlock
   - branch/ref creation, deletion, rename
   - config writes
@@ -104,16 +117,31 @@ No libgit2 pointer type crosses an actor or task boundary. All `git_*_free` call
 
 The package exposes method-oriented Swift APIs, not transport envelopes.
 
+The old local-only API shape is superseded by `AgentStudioGitLocalClient` and `AgentStudioGitRemoteClient`.
+
 ```swift
-public protocol AgentStudioGitClient: Sendable {
+public protocol AgentStudioGitLocalClient: Sendable {
+    func repositoryIdentity(for worktreePath: URL) async throws(GitDataPlaneError) -> GitRepositoryIdentity
     func worktrees(for repositoryPath: URL) async throws(GitDataPlaneError) -> [GitWorktreeSnapshot]
-    func validateWorktree(repositoryPath: URL, name: String) async throws(GitDataPlaneError) -> GitWorktreeSnapshot
+    func validateWorktree(_ request: GitValidateWorktreeRequest) async throws(GitDataPlaneError) -> GitWorktreeValidation
+    func createWorktree(_ request: GitCreateWorktreeRequest) async throws(GitDataPlaneError) -> GitWorktreeSnapshot
+    func pruneStaleWorktree(_ request: GitPruneStaleWorktreeRequest) async throws(GitDataPlaneError) -> GitWorktreePruneResult
+    func removeWorktree(_ request: GitRemoveWorktreeRequest) async throws(GitDataPlaneError) -> GitWorktreeRemovalResult
+    func lockWorktree(_ request: GitLockWorktreeRequest) async throws(GitDataPlaneError) -> GitWorktreeSnapshot
+    func unlockWorktree(_ request: GitUnlockWorktreeRequest) async throws(GitDataPlaneError) -> GitWorktreeSnapshot
     func status(for worktreePath: URL, options: GitStatusOptions) async throws(GitDataPlaneError) -> GitStatusSnapshot
     func branches(for repositoryPath: URL) async throws(GitDataPlaneError) -> [GitBranchSnapshot]
-    func createWorktree(_ request: GitCreateWorktreeRequest) async throws(GitDataPlaneError) -> GitWorktreeSnapshot
-    func removeWorktree(_ request: GitRemoveWorktreeRequest) async throws(GitDataPlaneError) -> GitWorktreeRemovalResult
+    func resolveRevision(_ request: GitRevisionResolutionRequest) async throws(GitDataPlaneError) -> GitResolvedRevision
+    func readTree(_ request: GitTreeReadRequest) async throws(GitDataPlaneError) -> GitTreeSnapshot
     func diff(_ request: GitDiffRequest) async throws(GitDataPlaneError) -> GitDiffSnapshot
     func content(_ request: GitContentRequest) async throws(GitDataPlaneError) -> GitContentPayload
+}
+
+public protocol AgentStudioGitRemoteClient: Sendable {
+    func clone(_ request: GitCloneRequest) async throws(GitDataPlaneError) -> GitCloneResult
+    func fetch(_ request: GitFetchRequest) async throws(GitDataPlaneError) -> GitFetchResult
+    func push(_ request: GitPushRequest) async throws(GitDataPlaneError) -> GitPushResult
+    func remoteReferences(_ request: GitRemoteReferencesRequest) async throws(GitDataPlaneError) -> [GitRemoteReference]
 }
 ```
 
@@ -140,6 +168,16 @@ public struct GitStatusEntry: Codable, Equatable, Hashable, Sendable {
 }
 ```
 
+Status snapshots include a tri-state origin value:
+
+```swift
+public enum GitOriginResolution: Codable, Equatable, Hashable, Sendable {
+    case awaitingResolution
+    case confirmedAbsent
+    case resolved(GitRemoteSnapshot)
+}
+```
+
 Line counts, binary flags, hunks, mode changes, and content hashes belong to diff/content payloads, not status entries.
 
 ## Identity And Path Rules
@@ -147,8 +185,22 @@ Line counts, binary flags, hunks, mode changes, and content hashes belong to dif
 - Public input paths are `URL`, not raw `String`.
 - The package canonicalizes filesystem paths before building IDs.
 - Worktree IDs are stable value IDs derived from canonical common git directory plus canonical worktree path.
-- The main worktree gets an explicit synthetic name, `main`, only in package output; callers must not assume libgit2 has a main-worktree name.
+- The main worktree gets an explicit synthetic display name only in package output; callers must not use display names as identity.
 - The package must preserve both display path and canonical identity path when they differ.
+- Linked worktree `.git` files must resolve to the actual private git directory and index path before read-only proof is evaluated.
+
+## Worktree Safety
+
+Stale worktree metadata prune is separate from user-visible linked worktree removal.
+
+Removal must:
+
+- target a validated `GitWorktreeID` or canonical path
+- refuse the main worktree
+- refuse dirty tracked changes, staged changes, untracked files, locked worktrees, and ambiguous paths by default
+- require explicit `forceDiscardChanges` before destructive removal
+- return typed partial-failure outcomes when metadata and working-directory deletion diverge
+- never auto-delete lock files created by other processes
 
 ## AgentStudio Boundaries
 
@@ -156,10 +208,10 @@ AgentStudio integration has two consumers:
 
 1. App-wide Git enrichment:
    - adapter replaces shell parsing behind `GitWorkingTreeStatusProvider`
-   - package returns branch/head/status facts
+   - package returns branch/head/status/origin facts
 2. Bridge review foundation:
    - adapter maps Git-shaped package values into Bridge-owned review contracts
-   - Bridge keeps `BridgeReviewSourceProvider`, `BridgeReviewPackage`, `BridgeContentHandle`, filters, annotations, and URL scheme details
+   - Bridge keeps `BridgeReviewSourceProvider`, `BridgeReviewPackage`, `BridgeContentHandle`, filters, annotations, checkpoint composition, and URL scheme details
 
 Worktrunk remains the user-facing worktree UX layer until a separate AgentStudio product decision moves create/remove/switch behavior to AgentStudioGit-backed commands.
 
@@ -171,21 +223,27 @@ Unit tests:
 - enum raw-value snapshots
 - invalid/unknown discriminator decoding
 - typed error mapping
+- redaction of credential-bearing URLs, argv, stderr, and sensitive environment values
 - path canonicalization
 - two-axis status states such as staged+modified
 
 Integration tests:
 
 - create temporary real Git repositories
-- create controlled fixture states
+- create controlled fixture states with scrubbed test config
 - verify package output matches expected Git behavior for those fixture states
-- include clean, modified, staged, staged+modified, renamed, deleted, untracked, ignored, binary, linked worktree, locked worktree, and stale metadata cases
+- include clean, modified, staged, staged+modified, renamed, deleted, untracked, ignored, binary, linked worktree, locked worktree, stale metadata, dirty removal refusal, forced removal, detached HEAD, unborn HEAD, origin present, origin absent, and origin lookup failure cases
 
 C interop tests:
 
 - every pointer acquisition uses `defer` to free in the same frame
-- lock errors are surfaced as `GitDataPlaneError.locked`
-- ASan and TSan CI lanes run once libgit2 call sites exist
+- lock errors are surfaced as typed errors
+- ASan and TSan lanes run with honest sanitizer scope; do not claim native libgit2 instrumentation unless the artifact is built with matching sanitizer flags
+
+Remote/auth tests:
+
+- fake system-Git tests cover clone, fetch, push, remote reference discovery, command construction, environment policy, prompt policy, protocol restrictions, parser output, and redaction
+- opt-in live smoke records whether HTTPS and SSH auth paths were exercised against the user's configured environment
 
 Do not add wall-clock sleeps. Wait for exact filesystem/process state when necessary.
 
@@ -196,6 +254,9 @@ Do not add wall-clock sleeps. Wait for exact filesystem/process state when neces
 - No Homebrew/system libgit2 dependency is required for package consumers.
 - libgit2 is pinned and reproducibly built.
 - Public payloads are `Codable`, `Sendable`, and tested.
-- Mutating operations are actor-serialized by canonical repository identity.
-- Read operations do not write the index or create hidden lock contention.
+- Mutating local operations are actor-serialized by canonical repository identity.
+- Read operations do not write the actual main or linked worktree index.
+- Worktree removal safety is proven for main, linked, dirty, staged, untracked, locked, stale, forced, and partial-failure cases.
+- Remote/auth operations reuse the user's system Git credential path and redact all public failure values.
+- A clean downstream SwiftPM package can consume the distributable artifact path.
 - AgentStudio adapters can consume the package without importing Bridge contracts into `agentstudio-git`.
