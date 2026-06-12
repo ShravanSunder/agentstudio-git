@@ -115,12 +115,78 @@ struct LibGit2PackagingScriptTests {
         #expect(scriptContents.contains(".package(path:"))
         #expect(scriptContents.contains("import AgentStudioGitLocal"))
         #expect(scriptContents.contains("LibGit2ImportCanary.version()"))
-        #expect(scriptContents.contains("swift run --package-path"))
+        #expect(scriptContents.contains("expectedLibGit2MajorVersion = 1"))
+        #expect(scriptContents.contains("expectedLibGit2MinorVersion = 9"))
+        #expect(scriptContents.contains("expectedLibGit2RevisionVersion = 4"))
+        #expect(scriptContents.contains("swift run"))
+        #expect(scriptContents.contains("--package-path"))
+        #expect(scriptContents.contains("--cache-path"))
         #expect(!scriptContents.contains("mise run"))
         #expect(miseContents.contains("[tasks.verify-hosted-libgit2-artifact]"))
         #expect(miseContents.contains("bash scripts/verify-hosted-libgit2-artifact.sh"))
         #expect(guideContents.contains("verify-hosted-libgit2-artifact.sh"))
         #expect(guideContents.contains("AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL"))
+    }
+
+    @Test("hosted artifact verifier validates public inputs before SwiftPM")
+    func hostedArtifactVerifierValidatesPublicInputsBeforeSwiftPM() throws {
+        let fakeSwift = try FakeSwiftExecutable()
+        let checksum = String(repeating: "a", count: 64)
+
+        let queryResult = try runHostedArtifactVerifier(
+            environment: [
+                "AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL":
+                    "https://example.com/CLibGit2Local.xcframework.zip?token=secret",
+                "AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM": checksum,
+            ],
+            fakeSwift: fakeSwift
+        )
+
+        #expect(queryResult.exitCode == 2)
+        #expect(!queryResult.combinedOutput.contains("token=secret"))
+        #expect(try fakeSwift.recordedArguments().isEmpty)
+
+        let loopbackResult = try runHostedArtifactVerifier(
+            environment: [
+                "AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL": "https://127.0.0.1/CLibGit2Local.xcframework.zip",
+                "AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM": checksum,
+            ],
+            fakeSwift: fakeSwift
+        )
+
+        #expect(loopbackResult.exitCode == 2)
+        #expect(try fakeSwift.recordedArguments().isEmpty)
+
+        let checksumResult = try runHostedArtifactVerifier(
+            environment: [
+                "AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL": "https://example.com/CLibGit2Local.xcframework.zip",
+                "AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM": "not-a-checksum",
+            ],
+            fakeSwift: fakeSwift
+        )
+
+        #expect(checksumResult.exitCode == 2)
+        #expect(try fakeSwift.recordedArguments().isEmpty)
+    }
+
+    @Test("hosted artifact verifier isolates cache and redacts SwiftPM output")
+    func hostedArtifactVerifierIsolatesCacheAndRedactsSwiftPMOutput() throws {
+        let fakeSwift = try FakeSwiftExecutable()
+        let artifactURL = "https://example.com/signed/path-token-123/CLibGit2Local.xcframework.zip"
+
+        let result = try runHostedArtifactVerifier(
+            environment: [
+                "AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL": artifactURL,
+                "AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM": String(repeating: "b", count: 64),
+            ],
+            fakeSwift: fakeSwift
+        )
+
+        #expect(result.exitCode == 1)
+        #expect(!result.combinedOutput.contains(artifactURL))
+        #expect(!result.combinedOutput.contains("path-token-123"))
+        let arguments = try fakeSwift.recordedArguments()
+        #expect(arguments.contains("--cache-path"))
     }
 
     @Test("third-party notice records pinned libgit2 tag and license")
@@ -134,5 +200,83 @@ struct LibGit2PackagingScriptTests {
 
     private func readFile(_ path: String) throws -> String {
         try String(contentsOf: URL(fileURLWithPath: path), encoding: .utf8)
+    }
+
+    private func runHostedArtifactVerifier(
+        environment: [String: String],
+        fakeSwift: FakeSwiftExecutable
+    ) throws -> CapturedScriptResult {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["bash", "scripts/verify-hosted-libgit2-artifact.sh"]
+        process.currentDirectoryURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+
+        var processEnvironment = ProcessInfo.processInfo.environment
+        processEnvironment.merge(environment) { _, testValue in testValue }
+        processEnvironment["PATH"] =
+            "\(fakeSwift.binDirectory.path):\(ProcessInfo.processInfo.environment["PATH"] ?? "")"
+        processEnvironment["AGENTSTUDIO_FAKE_SWIFT_ARGUMENTS"] = fakeSwift.argumentsURL.path
+        process.environment = processEnvironment
+
+        let output = Pipe()
+        let error = Pipe()
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = output
+        process.standardError = error
+        try process.run()
+        process.waitUntilExit()
+
+        return CapturedScriptResult(
+            exitCode: process.terminationStatus,
+            stdout: String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "",
+            stderr: String(data: error.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        )
+    }
+}
+
+private struct FakeSwiftExecutable {
+    private let fileManager = FileManager.default
+    let root: URL
+    let binDirectory: URL
+    let argumentsURL: URL
+
+    init() throws {
+        root = fileManager.temporaryDirectory.appending(path: "agentstudio-git-fake-swift-\(UUID().uuidString)")
+        binDirectory = root.appending(path: "bin")
+        argumentsURL = root.appending(path: "arguments.txt")
+        try fileManager.createDirectory(at: binDirectory, withIntermediateDirectories: true)
+        let executableURL = binDirectory.appending(path: "swift")
+        try """
+        #!/bin/sh
+        {
+          for argument in "$@"; do
+            printf '%s\\n' "$argument"
+          done
+        } >> "$AGENTSTUDIO_FAKE_SWIFT_ARGUMENTS"
+        printf 'Downloading binary artifact %s\\n' "$AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL" >&2
+        printf "failed downloading '%s'\\n" "$AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL" >&2
+        exit 1
+        """
+        .write(to: executableURL, atomically: true, encoding: .utf8)
+        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executableURL.path)
+    }
+
+    func recordedArguments() throws -> [String] {
+        guard fileManager.fileExists(atPath: argumentsURL.path) else {
+            return []
+        }
+        return try String(contentsOf: argumentsURL, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+    }
+}
+
+private struct CapturedScriptResult {
+    let exitCode: Int32
+    let stdout: String
+    let stderr: String
+
+    var combinedOutput: String {
+        "\(stdout)\n\(stderr)"
     }
 }

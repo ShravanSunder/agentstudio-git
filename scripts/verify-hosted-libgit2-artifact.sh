@@ -33,8 +33,35 @@ if [[ "$binary_url" != https://* ]]; then
   exit 2
 fi
 
-if [[ "$binary_url" == *"@"* || "$binary_url" == *"?"* ]]; then
-  echo "AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL must be a public release artifact URL without userinfo or query credentials." >&2
+if [[ "$binary_url" == *"@"* || "$binary_url" == *"?"* || "$binary_url" == *"#"* || "$binary_url" =~ [[:space:]] ]]; then
+  echo "AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL must be a public release artifact URL without userinfo, query credentials, fragments, or whitespace." >&2
+  exit 2
+fi
+
+url_without_scheme="${binary_url#https://}"
+host_port="${url_without_scheme%%/*}"
+if [[ "$host_port" == \[*\]* ]]; then
+  artifact_host="${host_port%%]*}"
+  artifact_host="${artifact_host#[}"
+else
+  artifact_host="${host_port%%:*}"
+fi
+artifact_host="$(printf '%s' "$artifact_host" | tr '[:upper:]' '[:lower:]')"
+
+if [[ -z "$artifact_host" ||
+  "$artifact_host" == "localhost" ||
+  "$artifact_host" == *.localhost ||
+  "$artifact_host" == "127."* ||
+  "$artifact_host" == "0."* ||
+  "$artifact_host" == "10."* ||
+  "$artifact_host" == "192.168."* ||
+  "$artifact_host" =~ ^172\.(1[6-9]|2[0-9]|3[0-1])\. ||
+  "$artifact_host" == "169.254."* ||
+  "$artifact_host" == "::1" ||
+  "$artifact_host" == "fc"* ||
+  "$artifact_host" == "fd"* ||
+  "$artifact_host" == "fe80:"* ]]; then
+  echo "AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL must point at a public HTTPS artifact host." >&2
   exit 2
 fi
 
@@ -44,6 +71,7 @@ if [[ ! "$binary_checksum" =~ ^[0-9a-fA-F]{64}$ ]]; then
 fi
 
 mkdir -p "$SCRATCH_DIR/Sources/HostedArtifactConsumer"
+mkdir -p "$SCRATCH_DIR/swift-cache" "$SCRATCH_DIR/swift-scratch"
 
 {
   printf '%s\n' '// swift-tools-version: 6.2'
@@ -75,7 +103,12 @@ mkdir -p "$SCRATCH_DIR/Sources/HostedArtifactConsumer"
   printf '%s\n' 'import AgentStudioGitLocal'
   printf '%s\n' ''
   printf '%s\n' 'let version = LibGit2ImportCanary.version()'
-  printf '%s\n' 'precondition(version.major == 1)'
+  printf '%s\n' 'let expectedLibGit2MajorVersion = 1'
+  printf '%s\n' 'let expectedLibGit2MinorVersion = 9'
+  printf '%s\n' 'let expectedLibGit2RevisionVersion = 4'
+  printf '%s\n' 'precondition(version.major == expectedLibGit2MajorVersion)'
+  printf '%s\n' 'precondition(version.minor == expectedLibGit2MinorVersion)'
+  printf '%s\n' 'precondition(version.revision == expectedLibGit2RevisionVersion)'
   printf '%s\n' 'print("hosted libgit2 \(version.major).\(version.minor).\(version.revision)")'
 } >"$SCRATCH_DIR/Sources/HostedArtifactConsumer/main.swift"
 
@@ -83,6 +116,18 @@ echo "--- hosted libgit2 artifact proof ---"
 echo "artifact: configured HTTPS URL (value not printed)"
 echo "checksum: configured SwiftPM checksum"
 
-AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL="$binary_url" \
+swift_output="$SCRATCH_DIR/swift-output.txt"
+if AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL="$binary_url" \
   AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM="$binary_checksum" \
-  swift run --package-path "$SCRATCH_DIR" hosted-artifact-consumer
+  swift run \
+    --package-path "$SCRATCH_DIR" \
+    --cache-path "$SCRATCH_DIR/swift-cache" \
+    --scratch-path "$SCRATCH_DIR/swift-scratch" \
+    --manifest-cache local \
+    hosted-artifact-consumer >"$swift_output" 2>&1; then
+  echo "hosted libgit2 artifact linked successfully"
+else
+  status="$?"
+  echo "hosted libgit2 artifact verification failed; SwiftPM output omitted to avoid artifact URL disclosure." >&2
+  exit "$status"
+fi

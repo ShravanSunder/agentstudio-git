@@ -52,7 +52,7 @@ AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM="<swift-package-checksum>" \
 bash scripts/verify-hosted-libgit2-artifact.sh
 ```
 
-The hosted-artifact verifier builds and runs a scratch SwiftPM consumer that imports `AgentStudioGitLocal` while the package manifest is forced into URL-binary-target mode. It does not run repo-local `mise` tasks inside the consumer.
+The hosted-artifact verifier builds and runs a scratch SwiftPM consumer that imports `AgentStudioGitLocal` while the package manifest is forced into URL-binary-target mode. It does not run repo-local `mise` tasks inside the consumer. It uses an isolated SwiftPM cache/scratch path so a pass requires resolving the current hosted artifact, suppresses raw SwiftPM output so configured URLs do not leak into proof logs, rejects loopback/private artifact hosts, and asserts the pinned libgit2 version `1.9.4`.
 
 ## Remote/Auth Policy
 

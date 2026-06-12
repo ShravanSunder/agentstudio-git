@@ -920,7 +920,7 @@ AGENTSTUDIO_GIT_AGENTSTUDIO_PATH=/path/to/agent-studio bash scripts/verify-agent
 
 - [ ] **External gate: Run hosted libgit2 artifact download proof**
 
-Pending until `CLibGit2Local.xcframework.zip` is published to a real public HTTPS URL:
+Pending until `CLibGit2Local.xcframework.zip` is published to a real public HTTPS URL. The verifier must use an isolated SwiftPM cache/scratch path, suppress raw SwiftPM output, reject local/private artifact hosts, and assert the pinned libgit2 version:
 
 ```bash
 AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL=<https-hosted-CLibGit2Local.xcframework.zip> AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM=<swiftpm-checksum> bash scripts/verify-hosted-libgit2-artifact.sh

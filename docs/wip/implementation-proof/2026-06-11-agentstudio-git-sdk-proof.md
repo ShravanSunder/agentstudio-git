@@ -2382,6 +2382,191 @@ Known external proof limits after this checkpoint:
 - A real hosted `CLibGit2Local.xcframework.zip` URL and matching SwiftPM checksum are still required before claiming actual hosted artifact download proof.
 - The full live HTTPS credential-helper and SSH-agent smoke still requires disposable writeable remotes configured through `AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL` and `AGENTSTUDIO_GIT_LIVE_SSH_REMOTE_URL`.
 
+## Hosted libgit2 Artifact Review Fixes
+
+Date: 2026-06-12
+
+Status: review findings fixed; external hosted artifact execution remains pending on a real public HTTPS artifact URL and matching checksum.
+
+Review scope:
+
+- commit `96d6c6c` (`test: add hosted libgit2 artifact verifier`)
+- reviewer lanes: spec/proof, security/trust-boundary, reliability/contracts
+
+Accepted findings:
+
+- hosted artifact proof could false-pass from SwiftPM's shared artifact cache instead of downloading the current hosted URL
+- SwiftPM download failures could print the configured artifact URL even though the wrapper said the value was not printed
+- hosted consumer accepted any libgit2 `1.x` artifact instead of the pinned `1.9.4` build
+- executable validation tests were missing for critical pre-SwiftPM guard paths
+- loopback/private HTTPS artifact hosts could reach SwiftPM and be mistaken for public external proof
+
+Fixes:
+
+- `scripts/verify-hosted-libgit2-artifact.sh` now runs SwiftPM with `--cache-path "$SCRATCH_DIR/swift-cache"`, `--scratch-path "$SCRATCH_DIR/swift-scratch"`, and `--manifest-cache local`.
+- The verifier captures SwiftPM stdout/stderr to a scratch file and emits only generic success/failure output so configured artifact URLs do not leak into proof logs.
+- The generated hosted consumer now asserts libgit2 version `1.9.4`.
+- The verifier rejects userinfo, query strings, fragments, whitespace, loopback hosts, and private/link-local host forms before invoking SwiftPM.
+- Packaging tests now execute the verifier with a fake `swift` executable to prove invalid public inputs stop before SwiftPM, raw SwiftPM URL output is suppressed, and `--cache-path` is passed.
+
+Red evidence:
+
+```bash
+bash scripts/run-swift-test-filter.sh LibGit2PackagingScriptTests
+```
+
+Exit code: 1
+
+Result before fix:
+
+- `hosted artifact verifier proves release binary target download` failed because the verifier did not assert `expectedLibGit2MajorVersion = 1`, `expectedLibGit2MinorVersion = 9`, `expectedLibGit2RevisionVersion = 4`, or `--cache-path`.
+- `hosted artifact verifier isolates cache and redacts SwiftPM output` failed because fake SwiftPM output still printed `https://example.com/signed/path-token-123/CLibGit2Local.xcframework.zip` and the invocation lacked `--cache-path`.
+- `hosted artifact verifier validates public inputs before SwiftPM` failed because `https://127.0.0.1/CLibGit2Local.xcframework.zip` reached SwiftPM.
+
+Green proof:
+
+```bash
+bash scripts/run-swift-test-filter.sh LibGit2PackagingScriptTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 9 tests in 1 suite passed`.
+
+```bash
+bash scripts/verify-hosted-libgit2-artifact.sh
+```
+
+Exit code: 2
+
+Result:
+
+- verifier reported `AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL is required for the hosted libgit2 artifact gate`.
+
+```bash
+AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL=https://127.0.0.1/CLibGit2Local.xcframework.zip AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef bash scripts/verify-hosted-libgit2-artifact.sh
+```
+
+Exit code: 2
+
+Result:
+
+- verifier rejected the loopback host before invoking SwiftPM: `AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL must point at a public HTTPS artifact host.`
+
+```bash
+AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL=https://example.com/CLibGit2Local.xcframework.zip?token=secret AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef bash scripts/verify-hosted-libgit2-artifact.sh
+```
+
+Exit code: 2
+
+Result:
+
+- verifier rejected query credentials before invoking SwiftPM: `AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL must be a public release artifact URL without userinfo, query credentials, fragments, or whitespace.`
+
+```bash
+AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL=https://example.com/signed/path-token-123/CLibGit2Local.xcframework.zip AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef bash scripts/verify-hosted-libgit2-artifact.sh
+```
+
+Exit code: 1
+
+Result:
+
+- verifier attempted SwiftPM with a public HTTPS URL and failed generically because the artifact does not exist.
+- output did not include the configured URL or `path-token-123`.
+
+```bash
+bash -n scripts/verify-hosted-libgit2-artifact.sh
+```
+
+Exit code: 0
+
+Result:
+
+- hosted artifact verifier shell syntax is valid.
+
+```bash
+mise run format
+```
+
+Exit code: 0
+
+Result:
+
+- formatted Swift sources.
+
+```bash
+mise run lint
+```
+
+Exit code: 0
+
+Result:
+
+- `swift-format lint` passed.
+- SwiftLint found 0 violations in 54 files.
+
+```bash
+swift test
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 82 tests in 18 suites passed`.
+- live auth test reported skipped because `AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_SMOKE` was not set.
+
+```bash
+mise run check
+```
+
+First run exit code: 1
+
+Result:
+
+- `verify-libgit2`, `swift build`, and lint passed.
+- `swift test` failed once in existing `runner terminates descendant processes after timeout`.
+
+```bash
+bash scripts/run-swift-test-filter.sh GitProcessRunnerTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 6 tests in 1 suite passed`.
+
+```bash
+mise run check
+```
+
+Second run exit code: 0
+
+Result:
+
+- rebuilt and verified `Artifacts/CLibGit2Local.xcframework`.
+- `swift build` completed.
+- `mise run lint` passed with 0 SwiftLint violations in 54 files.
+- `mise run test` passed with `Test run with 82 tests in 18 suites passed`.
+
+```bash
+git diff --check
+```
+
+Exit code: 0
+
+Result:
+
+- no whitespace errors.
+
+Known external proof limits after this checkpoint:
+
+- A real hosted `CLibGit2Local.xcframework.zip` URL and matching SwiftPM checksum are still required before claiming actual hosted artifact download proof.
+- The full live HTTPS credential-helper and SSH-agent smoke still requires disposable writeable remotes configured through `AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL` and `AGENTSTUDIO_GIT_LIVE_SSH_REMOTE_URL`.
+
 ## Live Remote/Auth Review Fixes
 
 Date: 2026-06-12
