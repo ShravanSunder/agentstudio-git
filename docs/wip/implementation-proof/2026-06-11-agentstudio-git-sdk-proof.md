@@ -2646,9 +2646,96 @@ Result:
 - total tests covered by the filtered suite runner: 84.
 - live auth test reported skipped because `AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_SMOKE` was not set.
 
+Third follow-up CI timeout:
+
+```bash
+gh run watch 27416665585 --repo ShravanSunder/agentstudio-git --exit-status
+```
+
+Exit code: 1
+
+Result:
+
+- GitHub `Check` run `27416665585` failed after `Run package checks` timed out at 12 minutes.
+- The run passed checkout and tooling install.
+- `mise run check` rebuilt and verified `Artifacts/CLibGit2Local.xcframework`, built the package, and passed lint before tests.
+- The suite-filter runner reached `GitProcessRunnerTests`, then emitted no suite result before the package-check timeout.
+- The completed log also showed `scripts/run-swift-test-filter.sh: line 15: rg: command not found` after earlier filters. Because that `rg` check was inside an `if`, the helper did not fail, so zero-test detection was not portable to runners without ripgrep.
+
+Third follow-up fix:
+
+- `scripts/run-swift-test-filter.sh` now uses `rg` when available and falls back to `grep -E` when ripgrep is unavailable.
+- `GitProcessRunnerTests` is now marked `.serialized`.
+- The test-only `FakeGitExecutable.configuration` default timeout is now 2 seconds instead of 30 seconds, so fake-process hangs fail inside the suite rather than consuming the whole CI step.
+- `LibGit2PackagingScriptTests` now proves the no-ripgrep fallback and pins the process-runner suite serialization/bounds.
+
+Third follow-up red evidence:
+
+```bash
+bash scripts/run-swift-test-filter.sh LibGit2PackagingScriptTests
+```
+
+Exit code: 1
+
+Result before fix:
+
+- `filter script falls back when ripgrep is unavailable` failed because the filter helper exited 0 when a fake `swift test` printed `Test run with 0 tests in 0 suites` and `rg` was absent from `PATH`.
+- `Git process runner suite is serialized and bounded` failed because `GitProcessRunnerTests` lacked `.serialized` and the fake-git default timeout was 30 seconds.
+
+Third follow-up green proof:
+
+```bash
+bash scripts/run-swift-test-filter.sh LibGit2PackagingScriptTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 13 tests in 1 suite passed`.
+
+```bash
+bash scripts/run-swift-test-filter.sh GitProcessRunnerTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 6 tests in 1 suite passed`.
+- The suite ran serialized and completed in about 4 seconds locally.
+
+```bash
+bash scripts/run-swift-test-suites.sh
+```
+
+Exit code: 0
+
+Result:
+
+- all 18 named Swift Testing suite filters passed.
+- total tests covered by the filtered suite runner: 86.
+- live auth test reported skipped because `AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_SMOKE` was not set.
+
+```bash
+mise run check
+```
+
+Exit code: 0
+
+Result:
+
+- rebuilt and verified `Artifacts/CLibGit2Local.xcframework`.
+- `swift build` completed.
+- `mise run lint` passed with 0 SwiftLint violations in 54 files.
+- `mise run test` ran all 18 named Swift Testing suite filters.
+- `GitProcessRunnerTests`, the suite identified by CI run `27416665585`, passed in 4.29 seconds inside the full local check.
+- total tests covered by the filtered suite runner: 86.
+- live auth test reported skipped because `AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_SMOKE` was not set.
+
 Known external proof limits after this checkpoint:
 
-- The `Check` workflow must be rerun after the runner/tooling/test-observability fixes are pushed.
+- The `Check` workflow must be rerun after the process-runner/filter fallback fixes are pushed.
 - GitHub Actions uploaded artifacts are CI artifacts, not a stable public SwiftPM binary-target URL. A real hosted `CLibGit2Local.xcframework.zip` URL is still required before claiming actual hosted artifact download proof.
 - The full live HTTPS/SSH remote-auth gate remains unchecked until SSH auth works in the host environment.
 

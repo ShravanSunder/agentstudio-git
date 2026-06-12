@@ -3,7 +3,7 @@ import Darwin
 import Foundation
 import Testing
 
-@Suite("Git process runner")
+@Suite("Git process runner", .serialized)
 struct GitProcessRunnerTests {
     @Test("runner applies scrubbed prompt environment and captures output")
     func runnerAppliesScrubbedPromptEnvironmentAndCapturesOutput() async throws {
@@ -198,7 +198,7 @@ struct FakeGitExecutable {
         promptPolicy: GitRemotePromptPolicy = .noninteractive,
         inheritEnvironment: Bool = false,
         allowedProtocols: [GitRemoteProtocol] = [.https, .ssh],
-        operationTimeoutSeconds: Double = 30,
+        operationTimeoutSeconds: Double = 2,
         additionalEnvironment: [String: String] = [:]
     ) -> SystemGitRemoteClient.Configuration {
         var environment = additionalEnvironment

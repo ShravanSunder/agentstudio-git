@@ -91,6 +91,31 @@ struct LibGit2PackagingScriptTests {
         #expect(scriptContents.contains("BridgeReviewSourceCompatibilityTests"))
     }
 
+    @Test("filter script falls back when ripgrep is unavailable")
+    func filterScriptFallsBackWhenRipgrepIsUnavailable() throws {
+        let fakeSwift = try FakeSwiftTestExecutable(
+            stdout: "Test run with 0 tests in 0 suites passed after 0.001 seconds.\n",
+            exitCode: 0
+        )
+
+        let result = try runSwiftTestFilter(
+            filter: "MissingTests",
+            fakeSwift: fakeSwift,
+            path: "\(fakeSwift.binDirectory.path):/usr/bin:/bin"
+        )
+
+        #expect(result.exitCode == 1)
+        #expect(result.combinedOutput.contains("filtered Swift test gate executed zero tests: MissingTests"))
+    }
+
+    @Test("Git process runner suite is serialized and bounded")
+    func gitProcessRunnerSuiteIsSerializedAndBounded() throws {
+        let contents = try readFile("Tests/AgentStudioGitTests/Remote/GitProcessRunnerTests.swift")
+
+        #expect(contents.contains("@Suite(\"Git process runner\", .serialized)"))
+        #expect(contents.contains("operationTimeoutSeconds: Double = 2"))
+    }
+
     @Test("artifact workflow runs on Swift 6.2 capable macOS image")
     func artifactWorkflowRunsOnSwift62CapableMacOSImage() throws {
         let contents = try readFile(".github/workflows/libgit2-artifact.yml")
@@ -254,6 +279,37 @@ struct LibGit2PackagingScriptTests {
             stderr: String(data: error.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         )
     }
+
+    private func runSwiftTestFilter(
+        filter: String,
+        fakeSwift: FakeSwiftTestExecutable,
+        path: String
+    ) throws -> CapturedScriptResult {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["bash", "scripts/run-swift-test-filter.sh", filter]
+        process.currentDirectoryURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+
+        var processEnvironment = ProcessInfo.processInfo.environment
+        processEnvironment["PATH"] = path
+        processEnvironment["AGENTSTUDIO_FAKE_SWIFT_OUTPUT"] = fakeSwift.output
+        processEnvironment["AGENTSTUDIO_FAKE_SWIFT_EXIT"] = "\(fakeSwift.exitCode)"
+        process.environment = processEnvironment
+
+        let output = Pipe()
+        let error = Pipe()
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = output
+        process.standardError = error
+        try process.run()
+        process.waitUntilExit()
+
+        return CapturedScriptResult(
+            exitCode: process.terminationStatus,
+            stdout: String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "",
+            stderr: String(data: error.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        )
+    }
 }
 
 private struct FakeSwiftExecutable {
@@ -290,6 +346,30 @@ private struct FakeSwiftExecutable {
         return try String(contentsOf: argumentsURL, encoding: .utf8)
             .split(separator: "\n")
             .map(String.init)
+    }
+}
+
+private struct FakeSwiftTestExecutable {
+    private let fileManager = FileManager.default
+    let root: URL
+    let binDirectory: URL
+    let output: String
+    let exitCode: Int32
+
+    init(stdout: String, exitCode: Int32) throws {
+        root = fileManager.temporaryDirectory.appending(path: "agentstudio-git-fake-swift-test-\(UUID().uuidString)")
+        binDirectory = root.appending(path: "bin")
+        output = stdout
+        self.exitCode = exitCode
+        try fileManager.createDirectory(at: binDirectory, withIntermediateDirectories: true)
+        let executableURL = binDirectory.appending(path: "swift")
+        try """
+        #!/bin/sh
+        printf '%s' "$AGENTSTUDIO_FAKE_SWIFT_OUTPUT"
+        exit "$AGENTSTUDIO_FAKE_SWIFT_EXIT"
+        """
+        .write(to: executableURL, atomically: true, encoding: .utf8)
+        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executableURL.path)
     }
 }
 
