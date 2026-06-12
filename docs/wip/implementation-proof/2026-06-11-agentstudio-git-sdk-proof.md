@@ -2233,3 +2233,178 @@ Known external proof limits after this checkpoint:
 
 - The full live HTTPS credential-helper and SSH-agent smoke is executable, but still requires disposable writeable remotes configured through `AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL` and `AGENTSTUDIO_GIT_LIVE_SSH_REMOTE_URL`.
 - A real hosted `CLibGit2Local.xcframework.zip` URL is still required before claiming actual remote artifact download proof.
+
+## Live Remote/Auth Review Fixes
+
+Date: 2026-06-12
+
+Status: review findings fixed; external live HTTPS/SSH execution remains pending on disposable writeable remotes.
+
+Review scope:
+
+- commit `11df523` (`test: add live remote auth verifier`)
+- reviewer lanes: spec/proof, security/trust-boundary, reliability/contracts
+
+Accepted findings:
+
+- verifier inherited older `AGENTSTUDIO_GIT_LIVE_REMOTE_SMOKE` / `AGENTSTUDIO_GIT_LIVE_REMOTE_URL` and could touch an unintended ambient remote
+- plan inserted the live-auth command into already-checked validation steps even though the external gate had not run
+- SSH live-smoke process failures could expose configured SSH remote host/path values
+- verifier labels did not enforce protocol-specific HTTPS vs SSH lanes
+- live-auth test returned normally when disabled instead of reporting a real Swift Testing skip
+- marker file used normal `git add`, so broad ignore rules in a disposable repo could create false harness failures
+
+Fixes:
+
+- `scripts/verify-live-remote-auth.sh` now validates `https://` for the HTTPS lane and SSH URL/scp syntax for the SSH lane before running tests.
+- The verifier clears the older read-only live-smoke env while running the auth suite and passes `AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_PROTOCOL` into the test.
+- The live-auth test uses a lane-specific `SystemGitRemoteClient` protocol allowlist, reports a Swift Testing skip when not configured, and force-adds its marker file.
+- `GitRedaction` now scrubs SSH remote values from public process failure arguments/stderr.
+- The implementation plan now splits full live HTTPS/SSH auth proof into unchecked external gate steps instead of checked local validation blocks.
+
+Red evidence:
+
+```bash
+bash scripts/run-swift-test-filter.sh GitRedactionTests
+```
+
+Exit code: 1
+
+Result before fix:
+
+- `remote process failures redact SSH remote values` failed because output still contained `internal.example.com`, `team/smoke.git`, and `git@`
+
+```bash
+bash scripts/run-swift-test-filter.sh LibGit2PackagingScriptTests
+```
+
+Exit code: 1
+
+Result before fix:
+
+- `live remote auth verifier requires HTTPS and SSH smoke remotes` failed because the verifier lacked legacy-env clearing, lane protocol plumbing, protocol validation strings, and the live test still lacked the enabled trait / force-add marker contract
+
+Green proof:
+
+```bash
+bash scripts/run-swift-test-filter.sh GitRedactionTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 3 tests in 1 suite passed`
+
+```bash
+bash scripts/run-swift-test-filter.sh LibGit2PackagingScriptTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 6 tests in 1 suite passed`
+
+```bash
+bash scripts/run-swift-test-filter.sh SystemGitRemoteClientTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 6 tests in 1 suite passed`
+- live auth test reported skipped because `AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_SMOKE` was not set
+
+```bash
+bash scripts/verify-live-remote-auth.sh
+```
+
+Exit code: 2
+
+Result:
+
+- verifier reported `AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL is required for the live HTTPS credential-helper remote/auth gate`
+
+```bash
+AGENTSTUDIO_GIT_LIVE_REMOTE_SMOKE=1 AGENTSTUDIO_GIT_LIVE_REMOTE_URL=https://legacy.example.invalid/org/repo.git AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL=git@example.com:org/repo.git AGENTSTUDIO_GIT_LIVE_SSH_REMOTE_URL=git@example.com:org/repo.git bash scripts/verify-live-remote-auth.sh
+```
+
+Exit code: 2
+
+Result:
+
+- verifier rejected the HTTPS lane before running tests: `AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL must be an expected https remote URL for the live HTTPS credential-helper remote/auth gate`
+- no configured remote URL value was printed
+
+```bash
+mise run format
+```
+
+Exit code: 0
+
+Result:
+
+- formatted Swift sources
+
+```bash
+mise run lint
+```
+
+Exit code: 0
+
+Result:
+
+- `swift-format lint` passed
+- SwiftLint found 0 violations in 54 files
+
+```bash
+swift test
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 79 tests in 18 suites passed`
+- live auth test reported skipped because `AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_SMOKE` was not set
+
+```bash
+mise run check
+```
+
+First run exit code: 1
+
+Result:
+
+- `verify-libgit2`, `swift build`, and lint passed
+- `swift test` failed once in existing `runner terminates descendant processes after timeout`; the failed child PID was gone by inspection and focused `GitProcessRunnerTests` passed immediately afterward
+
+```bash
+bash scripts/run-swift-test-filter.sh GitProcessRunnerTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 6 tests in 1 suite passed`
+
+```bash
+mise run check
+```
+
+Second run exit code: 0
+
+Result:
+
+- rebuilt and verified `Artifacts/CLibGit2Local.xcframework`
+- `swift build` completed
+- `mise run lint` passed with 0 SwiftLint violations in 54 files
+- `mise run test` passed with `Test run with 79 tests in 18 suites passed`
+
+Known external proof limits after this checkpoint:
+
+- The full live HTTPS credential-helper and SSH-agent smoke is executable, but still requires disposable writeable remotes configured through `AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL` and `AGENTSTUDIO_GIT_LIVE_SSH_REMOTE_URL`.
+- A real hosted `CLibGit2Local.xcframework.zip` URL is still required before claiming actual remote artifact download proof.

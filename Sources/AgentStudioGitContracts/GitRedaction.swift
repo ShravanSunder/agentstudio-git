@@ -4,6 +4,16 @@ public enum GitRedaction {
     public static func redact(_ value: String) -> String {
         var redactedValue = replacingMatches(
             in: value,
+            pattern: #"ssh://[^\s'"]+"#,
+            template: "<redacted-ssh-remote>"
+        )
+        redactedValue = replacingMatches(
+            in: redactedValue,
+            pattern: #"(^|[\s'"])[A-Za-z0-9._%+-]+@[^:\s'"]+:[^\s'"]+"#,
+            template: "$1<redacted-ssh-remote>"
+        )
+        redactedValue = replacingMatches(
+            in: redactedValue,
             pattern: #"([A-Za-z][A-Za-z0-9+.-]*://)[^/\s@]+@"#,
             template: "$1<redacted>@"
         )

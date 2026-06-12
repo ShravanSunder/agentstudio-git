@@ -41,4 +41,25 @@ struct GitRedactionTests {
         #expect(!redacted.contains("id_rsa"))
         #expect(redacted.contains("<redacted-private-key-path>"))
     }
+
+    @Test("remote process failures redact SSH remote values")
+    func remoteProcessFailuresRedactSSHRemoteValues() {
+        let failure = GitRemoteProcessFailure.redacting(
+            executable: "git",
+            arguments: [
+                "clone",
+                "git@internal.example.com:team/smoke.git",
+                "ssh://git@internal.example.com/team/smoke.git",
+            ],
+            exitCode: 128,
+            stderr:
+                "fatal: could not read from git@internal.example.com:team/smoke.git or ssh://git@internal.example.com/team/smoke.git"
+        )
+
+        let redactedOutput = ([failure.redactedStderr] + failure.redactedArguments).joined(separator: " ")
+        #expect(!redactedOutput.contains("internal.example.com"))
+        #expect(!redactedOutput.contains("team/smoke.git"))
+        #expect(!redactedOutput.contains("git@"))
+        #expect(redactedOutput.contains("<redacted-ssh-remote>"))
+    }
 }

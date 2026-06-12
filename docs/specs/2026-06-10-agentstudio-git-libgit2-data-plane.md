@@ -247,7 +247,7 @@ Remote/auth tests:
 - fake system-Git tests cover clone, fetch, push, remote reference discovery, command construction, environment policy, prompt policy, timeout behavior, protocol restrictions, parser output, and redaction
 - timeout tests cover both the top-level Git process and spawned descendants
 - opt-in live smoke records whether HTTPS and SSH auth paths were exercised against the user's configured environment
-- live authenticated remote smoke requires disposable writeable HTTPS and SSH remotes; it creates and deletes temporary refs under `refs/heads/agentstudio-git-live-smoke/` while exercising clone, fetch, push, and remote reference discovery through `SystemGitRemoteClient`
+- live authenticated remote smoke requires disposable writeable HTTPS and SSH remotes; it enforces protocol-specific lanes, clears older live-smoke env while running, avoids printing configured remote URL values, and creates/deletes temporary refs under `refs/heads/agentstudio-git-live-smoke/` while exercising clone, fetch, push, and remote reference discovery through `SystemGitRemoteClient`
 
 Do not add wall-clock sleeps. Wait for exact filesystem/process state when necessary.
 

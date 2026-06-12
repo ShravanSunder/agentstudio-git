@@ -22,19 +22,54 @@ EOF
   fi
 }
 
+is_ssh_remote() {
+  local remote_url="$1"
+  [[ "$remote_url" == ssh://* || "$remote_url" =~ ^[^/:[:space:]]+@[^:[:space:]]+:.+ ]]
+}
+
+require_remote_protocol() {
+  local variable_name="$1"
+  local expected_protocol="$2"
+  local label="$3"
+  local remote_url="${!variable_name:-}"
+  require_remote "$variable_name" "$label"
+  case "$expected_protocol" in
+    https)
+      if [[ "$remote_url" != https://* ]]; then
+        echo "$variable_name must be an expected https remote URL for the live $label remote/auth gate." >&2
+        exit 2
+      fi
+      ;;
+    ssh)
+      if ! is_ssh_remote "$remote_url"; then
+        echo "$variable_name must be an expected ssh remote URL for the live $label remote/auth gate." >&2
+        exit 2
+      fi
+      ;;
+    *)
+      echo "Unsupported live remote/auth protocol gate: $expected_protocol" >&2
+      exit 2
+      ;;
+  esac
+}
+
 run_remote_auth_smoke() {
   local label="$1"
-  local remote_url="$2"
+  local expected_protocol="$2"
+  local remote_url="$3"
   echo "--- live $label remote/auth smoke ---"
   echo "remote: configured $label URL (value not printed)"
-  AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_SMOKE=1 \
+  env -u AGENTSTUDIO_GIT_LIVE_REMOTE_SMOKE \
+    -u AGENTSTUDIO_GIT_LIVE_REMOTE_URL \
+    AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_SMOKE=1 \
     AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_LABEL="$label" \
+    AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_PROTOCOL="$expected_protocol" \
     AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_URL="$remote_url" \
     bash "$ROOT_DIR/scripts/run-swift-test-filter.sh" SystemGitRemoteClientTests
 }
 
-require_remote AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL "HTTPS credential-helper"
-require_remote AGENTSTUDIO_GIT_LIVE_SSH_REMOTE_URL "SSH-agent"
+require_remote_protocol AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL "https" "HTTPS credential-helper"
+require_remote_protocol AGENTSTUDIO_GIT_LIVE_SSH_REMOTE_URL "ssh" "SSH-agent"
 
-run_remote_auth_smoke "https" "$AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL"
-run_remote_auth_smoke "ssh" "$AGENTSTUDIO_GIT_LIVE_SSH_REMOTE_URL"
+run_remote_auth_smoke "https" "https" "$AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL"
+run_remote_auth_smoke "ssh" "ssh" "$AGENTSTUDIO_GIT_LIVE_SSH_REMOTE_URL"

@@ -106,3 +106,4 @@ bash scripts/verify-live-remote-auth.sh
 ```
 
 The full gate uses `SystemGitRemoteClient` for clone, fetch, push, and remote reference discovery. It creates and deletes temporary refs under `refs/heads/agentstudio-git-live-smoke/`; use a disposable smoke repository, not an important application repo.
+The verifier enforces lane-specific URL shapes (`https://` for the HTTPS lane and SSH URL/scp syntax for the SSH lane), clears the older read-only live-smoke environment while it runs, and does not print configured remote URL values.

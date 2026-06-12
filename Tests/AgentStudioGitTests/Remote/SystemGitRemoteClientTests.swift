@@ -123,19 +123,29 @@ struct SystemGitRemoteClientTests {
         #expect(!references.isEmpty)
     }
 
-    @Test("live authenticated remote smoke covers clone fetch push and remote refs")
+    @Test(
+        "live authenticated remote smoke covers clone fetch push and remote refs",
+        .enabled(
+            if: ProcessInfo.processInfo.environment["AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_SMOKE"] == "1",
+            "requires AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_SMOKE=1"
+        )
+    )
     func liveAuthenticatedRemoteSmokeCoversCloneFetchPushAndRemoteRefs() async throws {
         let environment = ProcessInfo.processInfo.environment
-        guard environment["AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_SMOKE"] == "1" else {
-            return
-        }
         guard let remoteURL = environment["AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_URL"], !remoteURL.isEmpty else {
             Issue.record("AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_URL is required when live remote auth smoke is enabled")
             return
         }
+        guard let expectedProtocolName = environment["AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_PROTOCOL"],
+            let expectedProtocol = GitRemoteProtocol(rawValue: expectedProtocolName)
+        else {
+            Issue.record("AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_PROTOCOL is required when live remote auth smoke is enabled")
+            return
+        }
 
         let label = environment["AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_LABEL"] ?? "remote"
-        let client = SystemGitRemoteClient(configuration: .init(operationTimeoutSeconds: 180))
+        let client = SystemGitRemoteClient(
+            configuration: .init(allowedProtocols: [expectedProtocol], operationTimeoutSeconds: 180))
         let smokeID = UUID().uuidString.lowercased()
         let refName = "refs/heads/agentstudio-git-live-smoke/\(label)-\(smokeID)"
         let tempRoot = FileManager.default.temporaryDirectory
@@ -157,7 +167,7 @@ struct SystemGitRemoteClientTests {
                 atomically: true,
                 encoding: .utf8
             )
-            try git.run("add", markerPath)
+            try git.run("add", "-f", markerPath)
             try git.run("commit", "-m", "agentstudio-git live auth smoke \(label)")
 
             _ = try await client.push(

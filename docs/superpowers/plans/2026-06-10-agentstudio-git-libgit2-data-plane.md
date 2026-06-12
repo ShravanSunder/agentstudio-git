@@ -834,6 +834,13 @@ scripts/run-swift-test-filter.sh SystemGitRemoteClientTests
 scripts/run-swift-test-filter.sh GitProcessRunnerTests
 scripts/run-swift-test-filter.sh GitRemoteOutputParserTests
 swift test
+```
+
+- [ ] **External gate: Run full HTTPS/SSH live auth proof**
+
+Pending until disposable writeable remotes are configured:
+
+```bash
 AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL=<https-writeable-remote> AGENTSTUDIO_GIT_LIVE_SSH_REMOTE_URL=<ssh-writeable-remote> bash scripts/verify-live-remote-auth.sh
 ```
 
@@ -908,6 +915,13 @@ swift test --sanitize address
 swift test --sanitize thread
 bash scripts/verify-package-consumer.sh
 AGENTSTUDIO_GIT_AGENTSTUDIO_PATH=/path/to/agent-studio bash scripts/verify-agentstudio-compatibility.sh
+```
+
+- [ ] **External gate: Run final HTTPS/SSH live auth validation**
+
+Pending until disposable writeable remotes are configured:
+
+```bash
 AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL=<https-writeable-remote> AGENTSTUDIO_GIT_LIVE_SSH_REMOTE_URL=<ssh-writeable-remote> bash scripts/verify-live-remote-auth.sh
 ```
 
