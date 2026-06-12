@@ -878,6 +878,8 @@ swift test --sanitize thread
 bash scripts/verify-package-consumer.sh
 ```
 
+GitHub push run `27414489143` failed in `mise run check` before package build because `check.yml` used `macos-15`, whose default Xcode/Swift tools were 16.4 / 6.1. The package declares Swift tools 6.2, so CI and the artifact workflow now use `macos-26`, which GitHub marks generally available and whose current image carries Xcode 26.x / Swift 6.2-capable tooling. Packaging tests pin both workflow labels.
+
 - [x] **Step 2: Publish or simulate the distributable artifact path**
 
 Before AgentStudio consumption, prove the manifest strategy that downstream SwiftPM will use:

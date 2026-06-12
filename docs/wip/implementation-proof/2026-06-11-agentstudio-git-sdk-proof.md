@@ -2359,6 +2359,123 @@ Known external proof limits after this checkpoint:
 - The full live HTTPS/SSH remote-auth gate remains unchecked until SSH auth works in the host environment.
 - A real hosted `CLibGit2Local.xcframework.zip` URL is still required before claiming actual remote artifact download proof.
 
+## GitHub CI Runner Fix
+
+Date: 2026-06-12
+
+Status: local fix implemented; remote rerun pending after push.
+
+Failure:
+
+```bash
+gh run watch 27414489143 --repo ShravanSunder/agentstudio-git --exit-status
+```
+
+Exit code: 1
+
+Result:
+
+- GitHub `Check` run `27414489143` failed during `Run package checks`.
+- `mise run check` built and verified `Artifacts/CLibGit2Local.xcframework`.
+- The subsequent `swift build` failed because the workflow used `macos-15` with Swift tools `6.1.0`, while `Package.swift` declares Swift tools `6.2.0`.
+
+Fix:
+
+- `.github/workflows/check.yml` now uses `runs-on: macos-26`.
+- `.github/workflows/libgit2-artifact.yml` now uses `runs-on: macos-26`.
+- `LibGit2PackagingScriptTests` now pins both workflow runner labels.
+
+Red evidence:
+
+```bash
+bash scripts/run-swift-test-filter.sh LibGit2PackagingScriptTests
+```
+
+Exit code: 1
+
+Result before fix:
+
+- `artifact workflow runs on Swift 6.2 capable macOS image` failed because `libgit2-artifact.yml` still contained `runs-on: macos-15`.
+- `check workflow runs sanitizer and consumer gates` failed because `check.yml` still contained `runs-on: macos-15`.
+
+Green proof:
+
+```bash
+bash scripts/run-swift-test-filter.sh LibGit2PackagingScriptTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 10 tests in 1 suite passed`.
+
+```bash
+mise run format
+```
+
+Exit code: 0
+
+Result:
+
+- formatted Swift sources.
+
+```bash
+mise run lint
+```
+
+Exit code: 0
+
+Result:
+
+- `swift-format lint` passed.
+- SwiftLint found 0 violations in 54 files.
+
+```bash
+swift test
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 83 tests in 18 suites passed`.
+- live auth test reported skipped because `AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_SMOKE` was not set.
+
+```bash
+mise run check
+```
+
+Exit code: 0
+
+Result:
+
+- rebuilt and verified `Artifacts/CLibGit2Local.xcframework`.
+- `swift build` completed.
+- `mise run lint` passed with 0 SwiftLint violations in 54 files.
+- `mise run test` passed with `Test run with 83 tests in 18 suites passed`.
+
+GitHub artifact workflow:
+
+```bash
+gh workflow run libgit2-artifact.yml --repo ShravanSunder/agentstudio-git --ref main
+gh run watch 27414501145 --repo ShravanSunder/agentstudio-git --exit-status
+```
+
+Exit code: 0
+
+Result:
+
+- `libgit2 Artifact` run `27414501145` passed.
+- Build, verification, and artifact upload all completed.
+- Uploaded artifacts include `CLibGit2Local.xcframework.zip` and `CLibGit2Local.xcframework.zip.checksum`.
+
+Known external proof limits after this checkpoint:
+
+- The `Check` workflow must be rerun after the `macos-26` fix is pushed.
+- GitHub Actions uploaded artifacts are CI artifacts, not a stable public SwiftPM binary-target URL. A real hosted `CLibGit2Local.xcframework.zip` URL is still required before claiming actual hosted artifact download proof.
+- The full live HTTPS/SSH remote-auth gate remains unchecked until SSH auth works in the host environment.
+
 ## Hosted libgit2 Artifact Gate
 
 Date: 2026-06-12

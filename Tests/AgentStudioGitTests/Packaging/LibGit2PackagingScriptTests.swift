@@ -68,12 +68,20 @@ struct LibGit2PackagingScriptTests {
     func checkWorkflowRunsSanitizerAndConsumerGates() throws {
         let contents = try readFile(".github/workflows/check.yml")
 
+        #expect(contents.contains("runs-on: macos-26"))
         #expect(contents.contains("mise run check"))
         #expect(contents.contains("mise run test-asan"))
         #expect(contents.contains("mise run test-tsan"))
         #expect(contents.contains("bash scripts/verify-package-consumer.sh"))
         #expect(contents.contains("AgentStudio compatibility requires AGENTSTUDIO_GIT_AGENTSTUDIO_PATH"))
         #expect(contents.contains("bash scripts/verify-agentstudio-compatibility.sh"))
+    }
+
+    @Test("artifact workflow runs on Swift 6.2 capable macOS image")
+    func artifactWorkflowRunsOnSwift62CapableMacOSImage() throws {
+        let contents = try readFile(".github/workflows/libgit2-artifact.yml")
+
+        #expect(contents.contains("runs-on: macos-26"))
     }
 
     @Test("live remote auth verifier requires HTTPS and SSH smoke remotes")
