@@ -12,11 +12,11 @@ Plan:
 
 ## Current Scope
 
-Tasks 0-7: spec/tooling, public contracts, repository identity/runtime lanes, libgit2 artifact packaging, libgit2 runtime/session wrappers, safe worktree operations, app enrichment status/branch/origin facts, and Bridge review data operations.
+Tasks 0-8: spec/tooling, public contracts, repository identity/runtime lanes, libgit2 artifact packaging, libgit2 runtime/session wrappers, safe worktree operations, app enrichment status/branch/origin facts, Bridge review data operations, and system Git remote/auth operations.
 
 ## Coverage
 
-- Plan line count: 949; read in chunks 1-240, 241-480, 481-720, 721-949.
+- Plan line count: 952; read in chunks 1-240, 241-480, 481-720, 721-952.
 - Spec line count: 262; read 1-262.
 - Goal contract line count: 156; read 1-156.
 - Plan review line count: 125; read 1-125.
@@ -674,6 +674,183 @@ Result:
 - `swift-format lint` passed
 - `swiftlint` found 0 violations in 46 files
 - `swift test` passed with 57 tests in 15 suites
+
+## Task 8: Remote/Auth Seam Using System Git
+
+Status: implemented and verified.
+
+Files changed:
+
+- `Sources/AgentStudioGitContracts/GitRemoteContracts.swift`
+- `Sources/AgentStudioGitRemote/SystemGitRemoteClient.swift`
+- `Sources/AgentStudioGitRemote/GitExecutableLocator.swift`
+- `Sources/AgentStudioGitRemote/GitProcessRunner.swift`
+- `Sources/AgentStudioGitRemote/GitRemoteOutputParser.swift`
+- `Tests/AgentStudioGitTests/Contracts/GitPublicContractTests.swift`
+- `Tests/AgentStudioGitTests/Remote/SystemGitRemoteClientTests.swift`
+- `Tests/AgentStudioGitTests/Remote/GitProcessRunnerTests.swift`
+- `Tests/AgentStudioGitTests/Remote/GitRemoteOutputParserTests.swift`
+- `docs/superpowers/plans/2026-06-10-agentstudio-git-libgit2-data-plane.md`
+- `docs/wip/implementation-proof/2026-06-11-agentstudio-git-sdk-proof.md`
+
+Research basis:
+
+- Official Git docs checked for `git clone`, `git fetch`, `git push`, `git ls-remote --symref`, credential-helper behavior, and protocol allow config.
+- Local system Git help checked on this machine: `git version 2.50.1 (Apple Git-155)`.
+
+Red evidence:
+
+```bash
+scripts/run-swift-test-filter.sh SystemGitRemoteClientTests && scripts/run-swift-test-filter.sh GitProcessRunnerTests && scripts/run-swift-test-filter.sh GitRemoteOutputParserTests
+```
+
+Exit code: 1
+
+Result before implementation:
+
+- compile failed because `SystemGitRemoteClient`, `GitProcessRunner`, `GitRemoteOutputParser`, and `GitRemoteProtocol` did not exist
+- compile failed because `GitCloneRequest.remoteURL` and `GitRemoteReferencesRequest.remoteURL` were `URL`, which cannot represent normal scp-style SSH remotes such as `git@github.com:org/repo.git`
+- compile failed because `GitRemoteReference` did not carry `symrefTarget`
+
+Additional red evidence after review:
+
+```bash
+scripts/run-swift-test-filter.sh SystemGitRemoteClientTests
+```
+
+Exit code: 1
+
+Result before the validation fix:
+
+- `option-shaped remote strings are rejected before process launch` failed because `-oProxyCommand=bad:repo.git` was classified as scp-style SSH and launched fake git
+- fake-git invocation log was not empty, proving the process boundary was crossed before rejection
+
+Implementation notes:
+
+- Remote request locations are Git remote strings, not `URL`, so HTTPS URLs, `ssh://` URLs, and normal scp-style SSH remotes are representable.
+- `SystemGitRemoteClient.Configuration` owns executable selection, inherited environment behavior, prompt policy, protocol allowlist, and trusted additional environment. Public request values cannot choose executables or environment policy.
+- Default configuration inherits the user's environment, strips `GIT_TRACE*` and `GIT_CURL_VERBOSE`, sets `LC_ALL=C`, sets `GIT_TERMINAL_PROMPT=0`, and allows HTTPS plus SSH protocols.
+- Trusted interactive mode is explicit and sets `GIT_TERMINAL_PROMPT=1`.
+- `GitExecutableLocator` invokes either a trusted configured executable URL or `/usr/bin/env git`, preserving the normal user `PATH` for production.
+- `GitProcessRunner` uses `Process` argument arrays only, captures stdout/stderr through temp files to avoid pipe deadlocks, and constructs public failures through `GitRemoteProcessFailure.redacting`.
+- Every system Git invocation prefixes protocol config with `-c protocol.allow=never` plus configured `protocol.<name>.allow=always` entries.
+- Clone, fetch, push, and ls-remote commands delimit untrusted remote/ref/path operands with `--` where Git supports separators. Fetch and push use `--porcelain`.
+- Remote strings beginning with `-` are rejected before process launch so option-shaped scp-like inputs cannot reach `git ls-remote`.
+- `GitRemoteOutputParser` parses `ls-remote --symref` output, preserving normal refs, symrefs, peeled tags, and malformed-output failures.
+- The opt-in live smoke ran against the repository's HTTPS `origin` remote. SSH live smoke was not exercised because no SSH smoke URL was configured in this checkout; SSH syntax and protocol allow behavior are covered by fake-git tests.
+
+Green proof:
+
+```bash
+scripts/run-swift-test-filter.sh SystemGitRemoteClientTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 5 tests in 1 suite passed`
+- covered clone, fetch, push, ls-remote argument construction; protocol config; scp-style SSH remote strings; fake remote reference parsing; protocol allowlist refusal before process launch; option-shaped remote refusal before process launch; and default skipped live smoke path
+
+```bash
+scripts/run-swift-test-filter.sh GitProcessRunnerTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 3 tests in 1 suite passed`
+- covered scrubbed test environment, prompt suppression, trusted interactive prompt opt-in, stdout capture, and process-failure redaction
+
+```bash
+scripts/run-swift-test-filter.sh GitRemoteOutputParserTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 2 tests in 1 suite passed`
+- covered normal refs, symrefs, peeled tags, and malformed lines
+
+```bash
+AGENTSTUDIO_GIT_LIVE_REMOTE_SMOKE=1 AGENTSTUDIO_GIT_LIVE_REMOTE_URL="$(git remote get-url origin)" scripts/run-swift-test-filter.sh SystemGitRemoteClientTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 5 tests in 1 suite passed`
+- live HTTPS `ls-remote --symref` succeeded against `https://github.com/ShravanSunder/agentstudio-git.git` through `SystemGitRemoteClient`
+
+```bash
+swift test
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 67 tests in 18 suites passed`
+
+```bash
+swift test --sanitize address
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 67 tests in 18 suites passed`
+- sanitizer applies to Swift wrapper/test code; Task 3 did not build a sanitizer-specific libgit2 artifact
+
+```bash
+swift test --sanitize thread
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 67 tests in 18 suites passed`
+- sanitizer applies to Swift wrapper/test code; Task 3 did not build a sanitizer-specific libgit2 artifact
+
+```bash
+mise run format
+```
+
+Exit code: 0
+
+Result:
+
+- formatted Swift sources
+
+```bash
+mise run lint
+```
+
+Exit code: 0
+
+Result:
+
+- `swift-format lint` passed
+- `swiftlint` found 0 violations in 53 files
+
+```bash
+mise run check
+```
+
+Exit code: 0
+
+Result:
+
+- `verify-libgit2` rebuilt and verified `Artifacts/CLibGit2Local.xcframework`
+- `swift build` passed
+- `swift-format lint` passed
+- `swiftlint` found 0 violations in 53 files
+- `swift test` passed with 67 tests in 18 suites
 
 ## Task 4: libgit2 Runtime, Errors, And Sessions
 

@@ -77,10 +77,10 @@ struct GitPublicContractTests {
         #expect(decodedFile.newMode == 0o100755)
     }
 
-    @Test("URL request fields encode as strings")
-    func urlRequestFieldsEncodeAsStrings() throws {
+    @Test("remote and path request fields encode as strings")
+    func remoteAndPathRequestFieldsEncodeAsStrings() throws {
         let request = GitCloneRequest(
-            remoteURL: URL(string: "ssh://git@example.com/org/repo.git")!,
+            remoteURL: "git@example.com:org/repo.git",
             destinationPath: URL(fileURLWithPath: "/tmp/checkout"),
             checkoutBranch: "main"
         )
@@ -88,7 +88,7 @@ struct GitPublicContractTests {
         let jsonObject = try JSONSerialization.jsonObject(with: JSONEncoder().encode(request))
         let dictionary = try #require(jsonObject as? [String: Any])
 
-        #expect(dictionary["remoteURL"] as? String == "ssh://git@example.com/org/repo.git")
+        #expect(dictionary["remoteURL"] as? String == "git@example.com:org/repo.git")
         #expect(dictionary["destinationPath"] as? String == "file:///tmp/checkout")
     }
 

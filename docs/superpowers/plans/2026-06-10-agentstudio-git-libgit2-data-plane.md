@@ -758,15 +758,18 @@ git commit -m "feat: implement Git review data operations"
 ### Task 8: Remote/Auth Seam Using System Git
 
 **Files:**
+- Modify: `Sources/AgentStudioGitContracts/GitRemoteContracts.swift`
 - Create: `Sources/AgentStudioGitRemote/SystemGitRemoteClient.swift`
 - Create: `Sources/AgentStudioGitRemote/GitExecutableLocator.swift`
 - Create: `Sources/AgentStudioGitRemote/GitProcessRunner.swift`
 - Create: `Sources/AgentStudioGitRemote/GitRemoteOutputParser.swift`
+- Modify: `Tests/AgentStudioGitTests/Contracts/GitPublicContractTests.swift`
 - Create: `Tests/AgentStudioGitTests/Remote/SystemGitRemoteClientTests.swift`
 - Create: `Tests/AgentStudioGitTests/Remote/GitProcessRunnerTests.swift`
 - Create: `Tests/AgentStudioGitTests/Remote/GitRemoteOutputParserTests.swift`
+- Modify: `docs/wip/implementation-proof/2026-06-11-agentstudio-git-sdk-proof.md`
 
-- [ ] **Step 1: Define trusted process policy**
+- [x] **Step 1: Define trusted process policy**
 
 Move executable selection, inherited environment behavior, protocol allowlist, and prompt behavior into trusted client configuration. Public request values do not choose arbitrary executables or environment allowlists.
 
@@ -778,7 +781,7 @@ Default policy:
 - allow only configured protocols
 - interactive prompting requires trusted opt-in
 
-- [ ] **Step 2: Write fake-git tests**
+- [x] **Step 2: Write fake-git tests**
 
 Cover:
 - clone args
@@ -793,26 +796,26 @@ Cover:
 - redacted argv/stderr for credential-bearing URLs
 - parser tests for normal refs, symrefs, peeled tags, malformed lines, and failures
 
-- [ ] **Step 3: Implement executable locator**
+- [x] **Step 3: Implement executable locator**
 
 Resolve from trusted configuration or normal user path. Do not accept arbitrary untrusted per-request executable paths.
 
-- [ ] **Step 4: Implement process runner**
+- [x] **Step 4: Implement process runner**
 
 Use `Process` argument arrays, never shell string concatenation. Validate or delimit untrusted ref/remote/path values so option-shaped inputs cannot be interpreted as flags where Git supports separators. Capture stdout/stderr. Redact before constructing public errors.
 
-- [ ] **Step 5: Implement remote client**
+- [x] **Step 5: Implement remote client**
 
 Use parseable output where available:
 - `ls-remote` for `remoteReferences`
 - porcelain/pinned formats for fetch/push where Git version supports them
 - typed fallback errors where the user's Git is too old for a required parseable mode
 
-- [ ] **Step 6: Add opt-in live smoke**
+- [x] **Step 6: Add opt-in live smoke**
 
 Add `AGENTSTUDIO_GIT_LIVE_REMOTE_SMOKE=1`. The final proof artifact must record whether the smoke was run or skipped. Default CI does not require real credentials.
 
-- [ ] **Step 7: Run tests**
+- [x] **Step 7: Run tests**
 
 ```bash
 scripts/run-swift-test-filter.sh SystemGitRemoteClientTests
@@ -821,10 +824,10 @@ scripts/run-swift-test-filter.sh GitRemoteOutputParserTests
 swift test
 ```
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
-git add Sources/AgentStudioGitRemote Tests/AgentStudioGitTests/Remote
+git add Sources/AgentStudioGitContracts Sources/AgentStudioGitRemote Tests/AgentStudioGitTests docs/superpowers/plans docs/wip/implementation-proof
 git commit -m "feat: add system Git remote auth seam"
 ```
 
