@@ -32,9 +32,14 @@ struct LibGit2PackagingScriptTests {
         #expect(packageContents.contains(".binaryTarget("))
         #expect(packageContents.contains("name: \"CLibGit2Local\""))
         #expect(packageContents.contains("path: \"Artifacts/CLibGit2Local.xcframework\""))
-        #expect(packageContents.contains("AGENTSTUDIO_GIT_ALLOW_LIBGIT2_BINARY_URL"))
+        #expect(packageContents.contains("AGENTSTUDIO_GIT_USE_LOCAL_LIBGIT2_ARTIFACT"))
         #expect(packageContents.contains("AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL"))
         #expect(packageContents.contains("AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM"))
+        #expect(
+            packageContents.contains(
+                "https://raw.githubusercontent.com/ShravanSunder/experiments-gh-cli-repo-public/aa2c8b9/agentstudio-git/libgit2/2026-06-12/CLibGit2Local.xcframework.zip"
+            ))
+        #expect(packageContents.contains("33a995b26dafeaf0b73ef2d65371653c0e35042d55344fef4acea1b059c2740d"))
         #expect(packageContents.contains("url: binaryURL"))
         #expect(packageContents.contains("checksum: binaryChecksum"))
         #expect(packageContents.contains(".linkedLibrary(\"z\")"))
@@ -53,30 +58,28 @@ struct LibGit2PackagingScriptTests {
         #expect(contents.contains("import AgentStudioGitRemote"))
         #expect(contents.contains(".product(name: \"AgentStudioGit\""))
         #expect(contents.contains(".product(name: \"AgentStudioGitContracts\""))
-        #expect(contents.contains(".package(path:"))
+        #expect(contents.contains(".package(name: \"agentstudio-git\", path:"))
         #expect(contents.contains(".product(name: \"AgentStudioGitRemote\""))
         #expect(contents.contains("swift run --package-path"))
+        #expect(contents.contains("without hosted artifact overrides"))
         #expect(contents.contains("env -u AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL"))
         #expect(contents.contains("-u AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM"))
         #expect(contents.contains("-u AGENTSTUDIO_GIT_ALLOW_LIBGIT2_BINARY_URL"))
-        #expect(contents.contains("AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL"))
-        #expect(contents.contains("AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM"))
-        #expect(contents.contains("AGENTSTUDIO_GIT_ALLOW_LIBGIT2_BINARY_URL=1"))
+        #expect(contents.contains("-u AGENTSTUDIO_GIT_USE_LOCAL_LIBGIT2_ARTIFACT"))
         #expect(contents.contains("swift package dump-package"))
-        #expect(contents.contains("CLibGit2Local.xcframework.zip.checksum"))
+        #expect(!contents.contains("CLibGit2Local.xcframework.zip.checksum"))
         #expect(!contents.contains("mise run"))
     }
 
-    @Test("package gates hosted libgit2 binary URL behind explicit opt-in")
-    func packageGatesHostedLibGit2BinaryURLBehindExplicitOptIn() throws {
+    @Test("package defaults to hosted libgit2 binary URL without environment")
+    func packageDefaultsToHostedLibGit2BinaryURLWithoutEnvironment() throws {
         let packageContents = try readFile("Package.swift")
 
-        #expect(
-            packageContents.contains(
-                "Context.environment[\"AGENTSTUDIO_GIT_ALLOW_LIBGIT2_BINARY_URL\"] == \"1\""
-            ))
-        #expect(packageContents.contains("if hostedBinaryURLModeEnabled,"))
-        #expect(packageContents.contains("let binaryURL = Context.environment[\"AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL\"]"))
+        #expect(packageContents.contains("let hostedLibGit2BinaryURL ="))
+        #expect(packageContents.contains("let hostedLibGit2BinaryChecksum ="))
+        #expect(packageContents.contains("AGENTSTUDIO_GIT_USE_LOCAL_LIBGIT2_ARTIFACT"))
+        #expect(!packageContents.contains("hostedBinaryURLModeEnabled"))
+        #expect(packageContents.contains("nonEmptyEnvironmentValue(\"AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL\")"))
     }
 
     @Test("check workflow runs sanitizer and consumer gates")
@@ -213,7 +216,7 @@ struct LibGit2PackagingScriptTests {
 
         #expect(scriptContents.contains("AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL"))
         #expect(scriptContents.contains("AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM"))
-        #expect(scriptContents.contains("AGENTSTUDIO_GIT_ALLOW_LIBGIT2_BINARY_URL=1"))
+        #expect(!scriptContents.contains("AGENTSTUDIO_GIT_ALLOW_LIBGIT2_BINARY_URL=1"))
         #expect(scriptContents.contains("must be an https URL"))
         #expect(scriptContents.contains(".package(path:"))
         #expect(scriptContents.contains("import AgentStudioGitLocal"))
@@ -228,7 +231,9 @@ struct LibGit2PackagingScriptTests {
         #expect(miseContents.contains("[tasks.verify-hosted-libgit2-artifact]"))
         #expect(miseContents.contains("bash scripts/verify-hosted-libgit2-artifact.sh"))
         #expect(guideContents.contains("verify-hosted-libgit2-artifact.sh"))
+        #expect(guideContents.contains("AGENTSTUDIO_GIT_USE_LOCAL_LIBGIT2_ARTIFACT=1 swift build"))
         #expect(guideContents.contains("AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL"))
+        #expect(!guideContents.contains("AGENTSTUDIO_GIT_ALLOW_LIBGIT2_BINARY_URL=1"))
         #expect(guideContents.contains("mise run test-asan"))
         #expect(guideContents.contains("mise run test-tsan"))
         #expect(!guideContents.contains("swift test --sanitize address"))

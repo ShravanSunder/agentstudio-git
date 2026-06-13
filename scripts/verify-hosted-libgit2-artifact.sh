@@ -254,8 +254,7 @@ echo "artifact: configured HTTPS URL (value not printed)"
 echo "checksum: configured SwiftPM checksum"
 
 swift_output="$SCRATCH_DIR/swift-output.txt"
-if AGENTSTUDIO_GIT_ALLOW_LIBGIT2_BINARY_URL=1 \
-  AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL="$binary_url" \
+if AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL="$binary_url" \
   AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM="$binary_checksum" \
   swift run \
     --package-path "$SCRATCH_DIR" \

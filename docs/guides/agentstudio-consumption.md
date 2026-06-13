@@ -14,7 +14,19 @@ AgentStudio should import the narrowest product it needs:
 
 ## Artifact Modes
 
-Local development uses the generated XCFramework path:
+Default downstream consumption uses the hosted HTTPS binary target embedded in
+`Package.swift`. AgentStudio and other SwiftPM consumers should not need a
+neighboring `Artifacts/` directory or artifact environment variables to resolve
+the SDK.
+
+Local artifact development is an explicit opt-in for rebuilding or inspecting
+the generated XCFramework:
+
+```bash
+AGENTSTUDIO_GIT_USE_LOCAL_LIBGIT2_ARTIFACT=1 swift build
+```
+
+That opt-in switches the manifest to:
 
 ```swift
 .binaryTarget(
@@ -23,16 +35,7 @@ Local development uses the generated XCFramework path:
 )
 ```
 
-Release consumption uses an HTTPS binary target with a checksum:
-
-```bash
-AGENTSTUDIO_GIT_ALLOW_LIBGIT2_BINARY_URL=1 \
-AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL="https://<release-host>/CLibGit2Local.xcframework.zip" \
-AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM="<swift-package-compute-checksum>" \
-swift package dump-package
-```
-
-The release zip is created with:
+The hosted zip is created with:
 
 ```bash
 AGENTSTUDIO_GIT_CREATE_LIBGIT2_ZIP=1 mise run build-libgit2
@@ -43,19 +46,26 @@ Publish both:
 - `Artifacts/CLibGit2Local.xcframework.zip`
 - `Artifacts/CLibGit2Local.xcframework.zip.checksum`
 
-SwiftPM requires HTTPS for URL binary targets. Local `file://` URL binary targets are rejected, so the package keeps a local path mode for development and an explicit HTTPS/checksum mode for release manifest proof.
-The manifest only enters URL-binary-target mode when `AGENTSTUDIO_GIT_ALLOW_LIBGIT2_BINARY_URL=1`; ambient URL/checksum variables alone are ignored so ordinary local builds cannot silently switch to a remote artifact.
+SwiftPM requires HTTPS for URL binary targets. Local `file://` URL binary
+targets are rejected, so the package defaults to the public HTTPS/checksum
+artifact and keeps local path mode only for explicit development use.
 
-After publishing the release zip to a public HTTPS location, prove that SwiftPM can download and link the hosted artifact:
+To verify an alternate hosted artifact before changing the package default,
+provide an override URL and checksum:
 
 ```bash
-AGENTSTUDIO_GIT_ALLOW_LIBGIT2_BINARY_URL=1 \
 AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL="https://<release-host>/CLibGit2Local.xcframework.zip" \
 AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM="<swift-package-checksum>" \
 bash scripts/verify-hosted-libgit2-artifact.sh
 ```
 
-The hosted-artifact verifier builds and runs a scratch SwiftPM consumer that imports `AgentStudioGitLocal` while the package manifest is forced into URL-binary-target mode. It does not run repo-local `mise` tasks inside the consumer. It uses an isolated SwiftPM cache/scratch path so a pass requires resolving the current hosted artifact, suppresses raw SwiftPM output so configured URLs do not leak into proof logs, rejects loopback/private artifact hosts, and asserts the pinned libgit2 version `1.9.4`.
+The hosted-artifact verifier builds and runs a scratch SwiftPM consumer that
+imports `AgentStudioGitLocal` while the package manifest uses the configured
+URL/checksum override. It does not run repo-local `mise` tasks inside the
+consumer. It uses an isolated SwiftPM cache/scratch path so a pass requires
+resolving the current hosted artifact, suppresses raw SwiftPM output so
+configured URLs do not leak into proof logs, rejects loopback/private artifact
+hosts, and asserts the pinned libgit2 version `1.9.4`.
 
 ## Remote/Auth Policy
 
@@ -95,13 +105,20 @@ mise run check
 mise run test-asan
 mise run test-tsan
 bash scripts/verify-package-consumer.sh
-AGENTSTUDIO_GIT_ALLOW_LIBGIT2_BINARY_URL=1 AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL="https://<release-host>/CLibGit2Local.xcframework.zip" AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM="<swift-package-checksum>" bash scripts/verify-hosted-libgit2-artifact.sh
+AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL="https://<release-host>/CLibGit2Local.xcframework.zip" AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM="<swift-package-checksum>" bash scripts/verify-hosted-libgit2-artifact.sh
 AGENTSTUDIO_GIT_AGENTSTUDIO_PATH=/path/to/agent-studio bash scripts/verify-agentstudio-compatibility.sh
 ```
 
-The consumer verifier builds a scratch SwiftPM package with two consumers: one imports only the `AgentStudioGit` umbrella product, and one imports all public leaf products: `AgentStudioGitContracts`, `AgentStudioGitLocal`, and `AgentStudioGitRemote`. It clears ambient release-artifact environment variables during local-path proof, then evaluates the HTTPS/checksum release-manifest mode. A real hosted artifact URL is still required before claiming an actual remote artifact download proof.
+The consumer verifier builds a scratch SwiftPM package with two consumers: one
+imports only the `AgentStudioGit` umbrella product, and one imports all public
+leaf products: `AgentStudioGitContracts`, `AgentStudioGitLocal`, and
+`AgentStudioGitRemote`. It clears ambient artifact override variables and the
+local-artifact opt-in so the proof exercises the default hosted artifact path,
+then evaluates explicit URL/checksum override manifest shape.
 
-The hosted-artifact verifier is the external gate for that final download proof. It requires a real public HTTPS URL and the matching SwiftPM checksum, so it is not run by default CI.
+The hosted-artifact verifier is the external gate for alternate hosted artifact
+download proof. It requires a real public HTTPS URL and the matching SwiftPM
+checksum, so it is not run by default CI.
 
 The AgentStudio compatibility verifier requires `AGENTSTUDIO_GIT_AGENTSTUDIO_PATH` because this repository cannot prove the app seams from an isolated checkout.
 

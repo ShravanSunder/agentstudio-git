@@ -4,14 +4,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRATCH_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentstudio-git-consumer.XXXXXX")"
 trap 'rm -rf "$SCRATCH_DIR"' EXIT
-ZIP_CHECKSUM_PATH="$ROOT_DIR/Artifacts/CLibGit2Local.xcframework.zip.checksum"
-RELEASE_ARTIFACT_URL="https://artifact.invalid/CLibGit2Local.xcframework.zip"
-
-if [ ! -f "$ZIP_CHECKSUM_PATH" ]; then
-  AGENTSTUDIO_GIT_CREATE_LIBGIT2_ZIP=1 bash "$ROOT_DIR/scripts/build-libgit2-xcframework.sh"
-fi
-
-libgit2_checksum="$(tr -d '[:space:]' <"$ZIP_CHECKSUM_PATH")"
+PUBLIC_LIBGIT2_ARTIFACT_URL="https://raw.githubusercontent.com/ShravanSunder/experiments-gh-cli-repo-public/aa2c8b9/agentstudio-git/libgit2/2026-06-12/CLibGit2Local.xcframework.zip"
+PUBLIC_LIBGIT2_ARTIFACT_CHECKSUM="33a995b26dafeaf0b73ef2d65371653c0e35042d55344fef4acea1b059c2740d"
+OVERRIDE_ARTIFACT_URL="https://artifact.invalid/CLibGit2Local.xcframework.zip"
 
 mkdir -p "$SCRATCH_DIR/Sources/UmbrellaConsumer"
 mkdir -p "$SCRATCH_DIR/Sources/LeafConsumer"
@@ -30,7 +25,7 @@ mkdir -p "$SCRATCH_DIR/Sources/LeafConsumer"
   printf '%s\n' '        .executable(name: "leaf-consumer", targets: ["LeafConsumer"]),'
   printf '%s\n' '    ],'
   printf '%s\n' '    dependencies: ['
-  printf '        .package(path: "%s"),\n' "$ROOT_DIR"
+  printf '        .package(name: "agentstudio-git", path: "%s"),\n' "$ROOT_DIR"
   printf '%s\n' '    ],'
   printf '%s\n' '    targets: ['
   printf '%s\n' '        .executableTarget('
@@ -81,23 +76,33 @@ mkdir -p "$SCRATCH_DIR/Sources/LeafConsumer"
   printf '%s\n' 'print("leaf \(version.major).\(version.minor).\(version.revision) \(type(of: remoteClient)) \(statusOptions.includeUntracked) \(promptPolicy.rawValue) \(remoteProtocol.rawValue) \(unsupported)")'
 } >"$SCRATCH_DIR/Sources/LeafConsumer/main.swift"
 
+echo "--- downstream consumer proof without hosted artifact overrides ---"
 env -u AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL \
   -u AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM \
   -u AGENTSTUDIO_GIT_ALLOW_LIBGIT2_BINARY_URL \
+  -u AGENTSTUDIO_GIT_USE_LOCAL_LIBGIT2_ARTIFACT \
   swift build --package-path "$SCRATCH_DIR"
 env -u AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL \
   -u AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM \
   -u AGENTSTUDIO_GIT_ALLOW_LIBGIT2_BINARY_URL \
+  -u AGENTSTUDIO_GIT_USE_LOCAL_LIBGIT2_ARTIFACT \
   swift run --package-path "$SCRATCH_DIR" umbrella-consumer
 env -u AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL \
   -u AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM \
   -u AGENTSTUDIO_GIT_ALLOW_LIBGIT2_BINARY_URL \
+  -u AGENTSTUDIO_GIT_USE_LOCAL_LIBGIT2_ARTIFACT \
   swift run --package-path "$SCRATCH_DIR" leaf-consumer
 
-AGENTSTUDIO_GIT_ALLOW_LIBGIT2_BINARY_URL=1 \
-  AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL="$RELEASE_ARTIFACT_URL" \
-  AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM="$libgit2_checksum" \
-  swift package dump-package --package-path "$ROOT_DIR" >"$SCRATCH_DIR/release-package.json"
+env -u AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL \
+  -u AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM \
+  -u AGENTSTUDIO_GIT_ALLOW_LIBGIT2_BINARY_URL \
+  -u AGENTSTUDIO_GIT_USE_LOCAL_LIBGIT2_ARTIFACT \
+  swift package dump-package --package-path "$ROOT_DIR" >"$SCRATCH_DIR/default-package.json"
+grep -q "$PUBLIC_LIBGIT2_ARTIFACT_URL" "$SCRATCH_DIR/default-package.json"
+grep -q "$PUBLIC_LIBGIT2_ARTIFACT_CHECKSUM" "$SCRATCH_DIR/default-package.json"
 
-grep -q "$RELEASE_ARTIFACT_URL" "$SCRATCH_DIR/release-package.json"
-grep -q "$libgit2_checksum" "$SCRATCH_DIR/release-package.json"
+AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL="$OVERRIDE_ARTIFACT_URL" \
+  AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM="$PUBLIC_LIBGIT2_ARTIFACT_CHECKSUM" \
+  swift package dump-package --package-path "$ROOT_DIR" >"$SCRATCH_DIR/override-package.json"
+grep -q "$OVERRIDE_ARTIFACT_URL" "$SCRATCH_DIR/override-package.json"
+grep -q "$PUBLIC_LIBGIT2_ARTIFACT_CHECKSUM" "$SCRATCH_DIR/override-package.json"
