@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRATCH_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentstudio-git-consumer.XXXXXX")"
 trap 'rm -rf "$SCRATCH_DIR"' EXIT
+PACKAGE_IDENTITY="$(basename "$ROOT_DIR" | tr '[:upper:]' '[:lower:]')"
 PUBLIC_LIBGIT2_ARTIFACT_URL="https://github.com/ShravanSunder/agentstudio-git/releases/download/libgit2-1.9.4-agentstudio.1/CLibGit2Local.xcframework.zip"
 PUBLIC_LIBGIT2_ARTIFACT_CHECKSUM="a14247dbdd4e228c2c07436c908f10e293993e0c7b8d30a22d9a2f8f6daeac84"
 OVERRIDE_ARTIFACT_URL="https://artifact.invalid/CLibGit2Local.xcframework.zip"
@@ -25,22 +26,22 @@ mkdir -p "$SCRATCH_DIR/Sources/LeafConsumer"
   printf '%s\n' '        .executable(name: "leaf-consumer", targets: ["LeafConsumer"]),'
   printf '%s\n' '    ],'
   printf '%s\n' '    dependencies: ['
-  printf '        .package(name: "agentstudio-git", path: "%s"),\n' "$ROOT_DIR"
+  printf '        .package(path: "%s"),\n' "$ROOT_DIR"
   printf '%s\n' '    ],'
   printf '%s\n' '    targets: ['
   printf '%s\n' '        .executableTarget('
   printf '%s\n' '            name: "UmbrellaConsumer",'
   printf '%s\n' '            dependencies: ['
-  printf '%s\n' '                .product(name: "AgentStudioGit", package: "agentstudio-git"),'
+  printf '                .product(name: "AgentStudioGit", package: "%s"),\n' "$PACKAGE_IDENTITY"
   printf '%s\n' '            ]'
   printf '%s\n' '        ),'
   printf '%s\n' '        .executableTarget('
   printf '%s\n' '            name: "LeafConsumer",'
   printf '%s\n' '            dependencies: ['
-  printf '%s\n' '                .product(name: "AgentStudioGit", package: "agentstudio-git"),'
-  printf '%s\n' '                .product(name: "AgentStudioGitContracts", package: "agentstudio-git"),'
-  printf '%s\n' '                .product(name: "AgentStudioGitLocal", package: "agentstudio-git"),'
-  printf '%s\n' '                .product(name: "AgentStudioGitRemote", package: "agentstudio-git"),'
+  printf '                .product(name: "AgentStudioGit", package: "%s"),\n' "$PACKAGE_IDENTITY"
+  printf '                .product(name: "AgentStudioGitContracts", package: "%s"),\n' "$PACKAGE_IDENTITY"
+  printf '                .product(name: "AgentStudioGitLocal", package: "%s"),\n' "$PACKAGE_IDENTITY"
+  printf '                .product(name: "AgentStudioGitRemote", package: "%s"),\n' "$PACKAGE_IDENTITY"
   printf '%s\n' '            ]'
   printf '%s\n' '        ),'
   printf '%s\n' '    ]'
