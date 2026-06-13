@@ -1,7 +1,20 @@
-name: libgit2 Artifact
+name: libgit2 Artifact Release
 
 on:
   workflow_dispatch:
+    inputs:
+      artifact_tag:
+        description: "Release tag for this libgit2 artifact, for example libgit2-1.9.4-agentstudio.1"
+        required: true
+        type: string
+      prerelease:
+        description: "Mark the artifact release as a prerelease"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
 
 jobs:
   build-libgit2-artifact:
@@ -21,10 +34,87 @@ jobs:
       - name: Verify libgit2 artifact
         run: mise run verify-libgit2
 
-      - name: Upload libgit2 artifact
+      - name: Compute artifact metadata
+        id: artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          artifact_tag="${{ inputs.artifact_tag }}"
+          if [[ ! "$artifact_tag" =~ ^libgit2-[A-Za-z0-9._-]+$ ]]; then
+            echo "artifact_tag must start with libgit2- and contain only letters, numbers, dots, underscores, or hyphens" >&2
+            exit 2
+          fi
+
+          checksum="$(tr -d '[:space:]' < Artifacts/CLibGit2Local.xcframework.zip.checksum)"
+          if [[ ! "$checksum" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "libgit2 artifact checksum must be 64 lowercase hex characters" >&2
+            exit 2
+          fi
+
+          {
+            echo "artifact_tag=$artifact_tag"
+            echo "checksum=$checksum"
+            echo "artifact_url=https://github.com/${{ github.repository }}/releases/download/$artifact_tag/CLibGit2Local.xcframework.zip"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload libgit2 artifact for workflow diagnostics
         uses: actions/upload-artifact@v4
         with:
           name: CLibGit2Local.xcframework
           path: |
             Artifacts/CLibGit2Local.xcframework.zip
             Artifacts/CLibGit2Local.xcframework.zip.checksum
+
+      - name: Publish libgit2 GitHub release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_TAG: ${{ steps.artifact.outputs.artifact_tag }}
+          AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL: ${{ steps.artifact.outputs.artifact_url }}
+          AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM: ${{ steps.artifact.outputs.checksum }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if gh release view "$ARTIFACT_TAG" >/dev/null 2>&1; then
+            echo "release already exists: $ARTIFACT_TAG" >&2
+            exit 2
+          fi
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$ARTIFACT_TAG" >/dev/null 2>&1; then
+            echo "remote tag already exists without a release: $ARTIFACT_TAG" >&2
+            exit 2
+          fi
+
+          release_flags=()
+          if [ "${{ inputs.prerelease }}" = "true" ]; then
+            release_flags+=(--prerelease)
+          fi
+
+          release_created=0
+          cleanup_release_on_failure() {
+            if [ "$release_created" = "1" ]; then
+              gh release delete "$ARTIFACT_TAG" --yes --cleanup-tag
+            fi
+          }
+          trap cleanup_release_on_failure ERR
+
+          gh release create "$ARTIFACT_TAG" \
+            --target "$GITHUB_SHA" \
+            --title "$ARTIFACT_TAG" \
+            --notes "libgit2 SwiftPM binary artifact built from $GITHUB_SHA." \
+            "${release_flags[@]}" \
+            Artifacts/CLibGit2Local.xcframework.zip \
+            Artifacts/CLibGit2Local.xcframework.zip.checksum
+
+          release_created=1
+          for attempt in 1 2 3 4 5; do
+            if bash scripts/verify-hosted-libgit2-artifact.sh; then
+              trap - ERR
+              exit 0
+            fi
+            sleep "$((attempt * 5))"
+          done
+
+          echo "hosted release artifact verification failed after retries" >&2
+          exit 1

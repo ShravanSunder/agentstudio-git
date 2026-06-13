@@ -41,10 +41,28 @@ The hosted zip is created with:
 AGENTSTUDIO_GIT_CREATE_LIBGIT2_ZIP=1 mise run build-libgit2
 ```
 
-Publish both:
+The distribution path is the `libgit2 Artifact Release` GitHub Actions
+workflow. Dispatch it with an explicit immutable artifact tag, for example:
+
+```bash
+gh workflow run libgit2-artifact.yml \
+  --repo ShravanSunder/agentstudio-git \
+  -f artifact_tag=libgit2-1.9.4-agentstudio.1 \
+  -f prerelease=true
+```
+
+The workflow publishes both release assets:
 
 - `Artifacts/CLibGit2Local.xcframework.zip`
 - `Artifacts/CLibGit2Local.xcframework.zip.checksum`
+
+It also keeps a temporary Actions artifact for workflow diagnostics, but that
+artifact is not a SwiftPM distribution surface. SwiftPM consumers should resolve
+from the public GitHub Release URL:
+
+```text
+https://github.com/ShravanSunder/agentstudio-git/releases/download/<artifact-tag>/CLibGit2Local.xcframework.zip
+```
 
 SwiftPM requires HTTPS for URL binary targets. Local `file://` URL binary
 targets are rejected, so the package defaults to the public HTTPS/checksum
@@ -66,6 +84,25 @@ consumer. It uses an isolated SwiftPM cache/scratch path so a pass requires
 resolving the current hosted artifact, suppresses raw SwiftPM output so
 configured URLs do not leak into proof logs, rejects loopback/private artifact
 hosts, and asserts the pinned libgit2 version `1.9.4`.
+
+## Updating The SwiftPM Package Artifact
+
+Binary artifact publication and source package tagging are separate steps:
+
+1. Dispatch the `libgit2 Artifact Release` workflow with a new immutable
+   `libgit2-...` artifact tag.
+2. Wait for the workflow's `Verify hosted release artifact` step to pass.
+3. Update the embedded `hostedLibGit2BinaryURL` and
+   `hostedLibGit2BinaryChecksum` constants in `Package.swift`.
+4. Run the local package gates from this guide, including the consumer verifier
+   and AgentStudio compatibility verifier.
+5. Open and merge the package PR.
+6. Tag the source package version that AgentStudio will pin.
+
+Do not make AgentStudio CI provide `AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL` or
+`AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM`. Those are verification and
+development overrides. A released SDK version should be self-contained in
+`Package.swift`.
 
 ## Remote/Auth Policy
 

@@ -148,6 +148,91 @@ struct GitWorkingTreeStatusCompatibilityTests {
     func adapterHarnessTypechecksAgainstCheckedOutAgentStudioSeam() throws {
         try AgentStudioStatusAdapterCompileHarness().typecheck()
     }
+
+    @Test("compatibility harness resolves hosted libgit2 headers by default")
+    func compatibilityHarnessResolvesHostedLibGit2HeadersByDefault() throws {
+        let fixture = try LibGit2HeaderSearchPathFixture.make()
+        defer { fixture.remove() }
+
+        let resolvedPath = try AgentStudioCompatibilityHarnessSupport.libGit2HeaderSearchPath(
+            packageRoot: fixture.packageRoot,
+            debugBuildPath: fixture.debugBuildPath,
+            environment: [:]
+        )
+
+        #expect(resolvedPath.standardizedFileURL == fixture.hostedHeadersPath.standardizedFileURL)
+    }
+
+    @Test("compatibility harness uses local libgit2 headers only in local artifact mode")
+    func compatibilityHarnessUsesLocalLibGit2HeadersOnlyInLocalArtifactMode() throws {
+        let fixture = try LibGit2HeaderSearchPathFixture.make()
+        defer { fixture.remove() }
+
+        let resolvedPath = try AgentStudioCompatibilityHarnessSupport.libGit2HeaderSearchPath(
+            packageRoot: fixture.packageRoot,
+            debugBuildPath: fixture.debugBuildPath,
+            environment: ["AGENTSTUDIO_GIT_USE_LOCAL_LIBGIT2_ARTIFACT": "1"]
+        )
+
+        #expect(resolvedPath.standardizedFileURL == fixture.localHeadersPath.standardizedFileURL)
+    }
+}
+
+private struct LibGit2HeaderSearchPathFixture {
+    let root: URL
+    let packageRoot: URL
+    let debugBuildPath: URL
+    let hostedHeadersPath: URL
+    let localHeadersPath: URL
+
+    static func make() throws -> Self {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: "agentstudio-git-header-search-\(UUID().uuidString)")
+        let packageRoot = root.appending(path: "agentstudio-git")
+        let debugBuildPath = packageRoot.appending(path: ".build/arm64-apple-macosx/debug")
+        let hostedHeadersPath = packageRoot.appending(
+            path: ".build/artifacts/agentstudio-git/CLibGit2Local/CLibGit2Local.xcframework/macos-arm64_x86_64/Headers")
+        let localHeadersPath = packageRoot.appending(
+            path: "Artifacts/CLibGit2Local.xcframework/macos-arm64_x86_64/Headers")
+        let unrelatedHeadersPath = packageRoot.appending(
+            path: ".build/artifacts/other/Other.xcframework/macos-arm64_x86_64/Headers")
+
+        try writeLibGit2Headers(at: hostedHeadersPath)
+        try writeLibGit2Headers(at: localHeadersPath)
+        try writeUnrelatedHeaders(at: unrelatedHeadersPath)
+        try FileManager.default.createDirectory(
+            at: debugBuildPath,
+            withIntermediateDirectories: true
+        )
+
+        return Self(
+            root: root,
+            packageRoot: packageRoot,
+            debugBuildPath: debugBuildPath,
+            hostedHeadersPath: hostedHeadersPath,
+            localHeadersPath: localHeadersPath
+        )
+    }
+
+    func remove() {
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    private static func writeLibGit2Headers(at headersPath: URL) throws {
+        try FileManager.default.createDirectory(at: headersPath, withIntermediateDirectories: true)
+        try "module CLibGit2Local { header \"git2.h\" }\n"
+            .write(to: headersPath.appending(path: "module.modulemap"), atomically: true, encoding: .utf8)
+        try "int git_libgit2_version(int *major, int *minor, int *rev);\n"
+            .write(to: headersPath.appending(path: "git2.h"), atomically: true, encoding: .utf8)
+    }
+
+    private static func writeUnrelatedHeaders(at headersPath: URL) throws {
+        try FileManager.default.createDirectory(at: headersPath, withIntermediateDirectories: true)
+        try "module Other { header \"git2.h\" }\n"
+            .write(to: headersPath.appending(path: "module.modulemap"), atomically: true, encoding: .utf8)
+        try "int git_libgit2_version(int *major, int *minor, int *rev);\n"
+            .write(to: headersPath.appending(path: "git2.h"), atomically: true, encoding: .utf8)
+    }
 }
 
 private struct AgentStudioStatusAdapterCompileHarness {
@@ -287,8 +372,10 @@ private struct AgentStudioStatusAdapterCompileHarness {
 
     private func runSwiftTypecheck(harnessFile: URL, moduleSearchPath: URL, packageRoot: URL) throws {
         let debugBuildPath = moduleSearchPath.deletingLastPathComponent()
-        let cHeaderSearchPath = packageRoot.appending(
-            path: "Artifacts/CLibGit2Local.xcframework/macos-arm64_x86_64/Headers")
+        let cHeaderSearchPath = try AgentStudioCompatibilityHarnessSupport.libGit2HeaderSearchPath(
+            packageRoot: packageRoot,
+            debugBuildPath: debugBuildPath
+        )
         let moduleCachePath = debugBuildPath.appending(path: "ModuleCache")
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")

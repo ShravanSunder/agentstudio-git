@@ -181,6 +181,48 @@ struct LibGit2PackagingScriptTests {
         #expect(contents.contains("runs-on: macos-26"))
     }
 
+    @Test("artifact workflow publishes immutable GitHub release asset")
+    func artifactWorkflowPublishesImmutableGitHubReleaseAsset() throws {
+        let contents = try readFile(".github/workflows/libgit2-artifact.yml")
+
+        #expect(contents.contains("name: libgit2 Artifact Release"))
+        #expect(contents.contains("permissions:\n  contents: write"))
+        #expect(contents.contains("artifact_tag:"))
+        #expect(contents.contains("type: string"))
+        #expect(contents.contains("prerelease:"))
+        #expect(contents.contains("type: boolean"))
+        #expect(contents.contains("GH_TOKEN: ${{ github.token }}"))
+        #expect(contents.contains("gh release view \"$ARTIFACT_TAG\""))
+        #expect(contents.contains("git ls-remote --exit-code --tags origin \"refs/tags/$ARTIFACT_TAG\""))
+        #expect(contents.contains("release already exists"))
+        #expect(contents.contains("release_created=1"))
+        #expect(contents.contains("gh release delete \"$ARTIFACT_TAG\" --yes --cleanup-tag"))
+        #expect(!contents.contains("--clobber"))
+        #expect(contents.contains("gh release create \"$ARTIFACT_TAG\""))
+        #expect(contents.contains("--target \"$GITHUB_SHA\""))
+        #expect(contents.contains("Artifacts/CLibGit2Local.xcframework.zip"))
+        #expect(contents.contains("Artifacts/CLibGit2Local.xcframework.zip.checksum"))
+        #expect(contents.contains("actions/upload-artifact@v4"))
+    }
+
+    @Test("artifact workflow verifies public SwiftPM release URL")
+    func artifactWorkflowVerifiesPublicSwiftPMReleaseURL() throws {
+        let contents = try readFile(".github/workflows/libgit2-artifact.yml")
+
+        #expect(
+            contents.contains(
+                "artifact_url=https://github.com/${{ github.repository }}/releases/download/$artifact_tag/CLibGit2Local.xcframework.zip"
+            ))
+        #expect(
+            contents.contains("checksum=\"$(tr -d '[:space:]' < Artifacts/CLibGit2Local.xcframework.zip.checksum)\""))
+        #expect(contents.contains("[[ ! \"$checksum\" =~ ^[0-9a-f]{64}$ ]]"))
+        #expect(contents.contains("AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL: ${{ steps.artifact.outputs.artifact_url }}"))
+        #expect(contents.contains("AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM: ${{ steps.artifact.outputs.checksum }}"))
+        #expect(contents.contains("bash scripts/verify-hosted-libgit2-artifact.sh"))
+        #expect(contents.contains("for attempt in 1 2 3 4 5"))
+        #expect(contents.contains("sleep \"$((attempt * 5))\""))
+    }
+
     @Test("live remote auth verifier requires HTTPS and SSH smoke remotes")
     func liveRemoteAuthVerifierRequiresHTTPSAndSSHSmokeRemotes() throws {
         let scriptContents = try readFile("scripts/verify-live-remote-auth.sh")
