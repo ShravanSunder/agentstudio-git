@@ -3,8 +3,8 @@ import PackageDescription
 
 let libGit2BinaryTarget: Target
 let hostedLibGit2BinaryURL =
-    "https://raw.githubusercontent.com/ShravanSunder/experiments-gh-cli-repo-public/aa2c8b9/agentstudio-git/libgit2/2026-06-12/CLibGit2Local.xcframework.zip"
-let hostedLibGit2BinaryChecksum = "33a995b26dafeaf0b73ef2d65371653c0e35042d55344fef4acea1b059c2740d"
+    "https://github.com/ShravanSunder/agentstudio-git/releases/download/libgit2-1.9.4-agentstudio.1/CLibGit2Local.xcframework.zip"
+let hostedLibGit2BinaryChecksum = "a14247dbdd4e228c2c07436c908f10e293993e0c7b8d30a22d9a2f8f6daeac84"
 let localLibGit2ArtifactModeEnabled = Context.environment["AGENTSTUDIO_GIT_USE_LOCAL_LIBGIT2_ARTIFACT"] == "1"
 
 func nonEmptyEnvironmentValue(_ name: String) -> String? {

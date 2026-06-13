@@ -223,7 +223,7 @@ mkdir -p "$SCRATCH_DIR/swift-cache" "$SCRATCH_DIR/swift-scratch"
   printf '%s\n' '        .executable(name: "hosted-artifact-consumer", targets: ["HostedArtifactConsumer"]),'
   printf '%s\n' '    ],'
   printf '%s\n' '    dependencies: ['
-  printf '        .package(path: "%s"),\n' "$ROOT_DIR"
+  printf '        .package(name: "agentstudio-git", path: "%s"),\n' "$ROOT_DIR"
   printf '%s\n' '    ],'
   printf '%s\n' '    targets: ['
   printf '%s\n' '        .executableTarget('

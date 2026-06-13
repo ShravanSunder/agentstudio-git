@@ -4,8 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRATCH_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentstudio-git-consumer.XXXXXX")"
 trap 'rm -rf "$SCRATCH_DIR"' EXIT
-PUBLIC_LIBGIT2_ARTIFACT_URL="https://raw.githubusercontent.com/ShravanSunder/experiments-gh-cli-repo-public/aa2c8b9/agentstudio-git/libgit2/2026-06-12/CLibGit2Local.xcframework.zip"
-PUBLIC_LIBGIT2_ARTIFACT_CHECKSUM="33a995b26dafeaf0b73ef2d65371653c0e35042d55344fef4acea1b059c2740d"
+PUBLIC_LIBGIT2_ARTIFACT_URL="https://github.com/ShravanSunder/agentstudio-git/releases/download/libgit2-1.9.4-agentstudio.1/CLibGit2Local.xcframework.zip"
+PUBLIC_LIBGIT2_ARTIFACT_CHECKSUM="a14247dbdd4e228c2c07436c908f10e293993e0c7b8d30a22d9a2f8f6daeac84"
 OVERRIDE_ARTIFACT_URL="https://artifact.invalid/CLibGit2Local.xcframework.zip"
 
 mkdir -p "$SCRATCH_DIR/Sources/UmbrellaConsumer"
