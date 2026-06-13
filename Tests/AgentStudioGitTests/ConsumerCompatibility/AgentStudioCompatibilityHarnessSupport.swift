@@ -83,6 +83,59 @@ enum AgentStudioCompatibilityHarnessSupport {
         return moduleSearchPath
     }
 
+    static func libGit2HeaderSearchPath(
+        packageRoot: URL,
+        debugBuildPath: URL,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) throws -> URL {
+        let localArtifactHeaders = packageRoot.appending(
+            path: "Artifacts/CLibGit2Local.xcframework/macos-arm64_x86_64/Headers")
+        if environment["AGENTSTUDIO_GIT_USE_LOCAL_LIBGIT2_ARTIFACT"] == "1",
+            isLibGit2HeaderSearchPath(localArtifactHeaders)
+        {
+            return localArtifactHeaders
+        }
+
+        let artifactsRoot =
+            debugBuildPath
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appending(path: "artifacts")
+        let enumerator = FileManager.default.enumerator(
+            at: artifactsRoot,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )
+        while let candidate = enumerator?.nextObject() as? URL {
+            if candidate.pathExtension == "xcframework",
+                candidate.lastPathComponent != "CLibGit2Local.xcframework"
+            {
+                enumerator?.skipDescendants()
+                continue
+            }
+            guard candidate.pathComponents.contains("CLibGit2Local.xcframework"),
+                candidate.lastPathComponent == "Headers",
+                isLibGit2HeaderSearchPath(candidate)
+            else {
+                continue
+            }
+            return candidate
+        }
+
+        throw AgentStudioCompatibilityHarnessSupportError.missingLibGit2Headers(artifactsRoot.path)
+    }
+
+    private static func isLibGit2HeaderSearchPath(_ headersPath: URL) -> Bool {
+        let moduleMap = headersPath.appending(path: "module.modulemap")
+        let gitHeader = headersPath.appending(path: "git2.h")
+        guard FileManager.default.fileExists(atPath: gitHeader.path),
+            let moduleMapContents = try? String(contentsOf: moduleMap, encoding: .utf8)
+        else {
+            return false
+        }
+        return moduleMapContents.contains("module CLibGit2Local")
+    }
+
     private static func runCapturedProcess(arguments: [String]) throws -> CapturedProcessResult {
         let outputRoot = FileManager.default.temporaryDirectory
             .appending(path: "agentstudio-git-process-output-\(UUID().uuidString)")
@@ -133,4 +186,5 @@ enum AgentStudioCompatibilityHarnessSupport {
 enum AgentStudioCompatibilityHarnessSupportError: Error {
     case buildPathDiscoveryFailed(Int32)
     case missingBuiltModule(String)
+    case missingLibGit2Headers(String)
 }
