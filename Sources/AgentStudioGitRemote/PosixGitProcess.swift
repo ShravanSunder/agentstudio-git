@@ -1,0 +1,135 @@
+import Darwin
+import Foundation
+
+struct PosixGitProcess {
+    let pid: pid_t
+
+    var processGroupID: pid_t {
+        pid
+    }
+
+    static func spawn(
+        executableURL: URL,
+        arguments: [String],
+        environment: [String: String],
+        currentDirectory: URL?,
+        stdoutDescriptor: Int32,
+        stderrDescriptor: Int32
+    ) throws -> Self {
+        var fileActions: posix_spawn_file_actions_t?
+        try checkPOSIX(posix_spawn_file_actions_init(&fileActions), operation: "posix_spawn_file_actions_init")
+        defer { posix_spawn_file_actions_destroy(&fileActions) }
+
+        try addOpenFileAction(&fileActions, descriptor: STDIN_FILENO, path: "/dev/null", flags: O_RDONLY, mode: 0)
+        try addDuplicateFileAction(
+            &fileActions,
+            sourceDescriptor: stdoutDescriptor,
+            targetDescriptor: STDOUT_FILENO
+        )
+        try addDuplicateFileAction(
+            &fileActions,
+            sourceDescriptor: stderrDescriptor,
+            targetDescriptor: STDERR_FILENO
+        )
+        try addCloseFileAction(&fileActions, descriptor: stdoutDescriptor)
+        try addCloseFileAction(&fileActions, descriptor: stderrDescriptor)
+        if let currentDirectory {
+            try currentDirectory.path.withCString { directoryPath in
+                try checkPOSIX(
+                    posix_spawn_file_actions_addchdir_np(&fileActions, directoryPath),
+                    operation: "posix_spawn_file_actions_addchdir_np"
+                )
+            }
+        }
+
+        var attributes: posix_spawnattr_t?
+        try checkPOSIX(posix_spawnattr_init(&attributes), operation: "posix_spawnattr_init")
+        defer { posix_spawnattr_destroy(&attributes) }
+        try checkPOSIX(
+            posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP)),
+            operation: "posix_spawnattr_setflags"
+        )
+        try checkPOSIX(posix_spawnattr_setpgroup(&attributes, 0), operation: "posix_spawnattr_setpgroup")
+
+        let argv = [executableURL.path] + arguments
+        let environmentVariables = environment.map { "\($0.key)=\($0.value)" }.sorted()
+        var pid = pid_t()
+        let spawnResult = executableURL.path.withCString { executablePath in
+            withCStringArray(argv) { argvPointer in
+                withCStringArray(environmentVariables) { environmentPointer in
+                    posix_spawn(&pid, executablePath, &fileActions, &attributes, argvPointer, environmentPointer)
+                }
+            }
+        }
+        try checkPOSIX(spawnResult, operation: "posix_spawn")
+        return Self(pid: pid)
+    }
+
+    private static func addOpenFileAction(
+        _ fileActions: inout posix_spawn_file_actions_t?,
+        descriptor: Int32,
+        path: String,
+        flags: Int32,
+        mode: mode_t
+    ) throws {
+        try path.withCString { pathPointer in
+            try checkPOSIX(
+                posix_spawn_file_actions_addopen(&fileActions, descriptor, pathPointer, flags, mode),
+                operation: "posix_spawn_file_actions_addopen"
+            )
+        }
+    }
+
+    private static func addDuplicateFileAction(
+        _ fileActions: inout posix_spawn_file_actions_t?,
+        sourceDescriptor: Int32,
+        targetDescriptor: Int32
+    ) throws {
+        try checkPOSIX(
+            posix_spawn_file_actions_adddup2(&fileActions, sourceDescriptor, targetDescriptor),
+            operation: "posix_spawn_file_actions_adddup2"
+        )
+    }
+
+    private static func addCloseFileAction(
+        _ fileActions: inout posix_spawn_file_actions_t?,
+        descriptor: Int32
+    ) throws {
+        try checkPOSIX(
+            posix_spawn_file_actions_addclose(&fileActions, descriptor),
+            operation: "posix_spawn_file_actions_addclose"
+        )
+    }
+
+    private static func withCStringArray<ReturnValue>(
+        _ values: [String],
+        _ body: (UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>) throws -> ReturnValue
+    ) rethrows -> ReturnValue {
+        let cStrings: [UnsafeMutablePointer<CChar>] = values.map { strdup($0) }
+        defer {
+            for cString in cStrings {
+                free(cString)
+            }
+        }
+        var pointers: [UnsafeMutablePointer<CChar>?] = cStrings.map { $0 }
+        pointers.append(nil)
+        return try pointers.withUnsafeMutableBufferPointer { buffer in
+            try body(buffer.baseAddress!)
+        }
+    }
+
+    private static func checkPOSIX(_ result: Int32, operation: String) throws {
+        guard result == 0 else {
+            throw PosixGitProcessError(operation: operation, code: result)
+        }
+    }
+}
+
+struct PosixGitProcessError: Error, CustomStringConvertible {
+    let operation: String
+    let code: Int32
+
+    var description: String {
+        "\(operation) failed with errno \(code): \(String(cString: strerror(code)))"
+    }
+}

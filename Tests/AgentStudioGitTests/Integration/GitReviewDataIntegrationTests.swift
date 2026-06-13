@@ -164,6 +164,34 @@ struct GitReviewDataIntegrationTests {
             )
         }
     }
+
+    @Test("review APIs report missing repositories consistently")
+    func reviewAPIsReportMissingRepositoriesConsistently() async {
+        let missingRepositoryPath = FileManager.default.temporaryDirectory
+            .appending(path: "agentstudio-git-missing-review-\(UUID().uuidString)")
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
+            _ = try await client.resolveRevision(
+                GitRevisionResolutionRequest(repositoryPath: missingRepositoryPath, target: .named("HEAD"))
+            )
+        }
+        await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
+            _ = try await client.readTree(
+                GitTreeReadRequest(repositoryPath: missingRepositoryPath, revision: .named("HEAD"), path: nil)
+            )
+        }
+        await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
+            _ = try await client.diff(
+                GitDiffRequest(repositoryPath: missingRepositoryPath, base: .head, compare: .workingTree)
+            )
+        }
+        await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
+            _ = try await client.content(
+                GitContentRequest(repositoryPath: missingRepositoryPath, target: .head, path: "README.md")
+            )
+        }
+    }
 }
 
 private struct ReviewDataFixture {

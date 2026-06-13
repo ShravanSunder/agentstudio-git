@@ -46,6 +46,57 @@ public enum GitOriginResolution: Codable, Equatable, Hashable, Sendable {
     case awaitingResolution
     case confirmedAbsent
     case resolved(GitRemoteSnapshot)
+
+    private enum CodingKeys: String, CodingKey {
+        case state
+        case remote
+    }
+
+    private enum State: String, Codable {
+        case awaitingResolution
+        case confirmedAbsent
+        case resolved
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let state = try container.decode(State.self, forKey: .state)
+        switch state {
+        case .awaitingResolution:
+            if container.contains(.remote) {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .remote,
+                    in: container,
+                    debugDescription: "awaiting origin resolution must not carry a remote payload"
+                )
+            }
+            self = .awaitingResolution
+        case .confirmedAbsent:
+            if container.contains(.remote) {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .remote,
+                    in: container,
+                    debugDescription: "absent origin resolution must not carry a remote payload"
+                )
+            }
+            self = .confirmedAbsent
+        case .resolved:
+            self = .resolved(try container.decode(GitRemoteSnapshot.self, forKey: .remote))
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .awaitingResolution:
+            try container.encode(State.awaitingResolution, forKey: .state)
+        case .confirmedAbsent:
+            try container.encode(State.confirmedAbsent, forKey: .state)
+        case .resolved(let remote):
+            try container.encode(State.resolved, forKey: .state)
+            try container.encode(remote, forKey: .remote)
+        }
+    }
 }
 
 public struct GitStatusSummary: Codable, Equatable, Hashable, Sendable {

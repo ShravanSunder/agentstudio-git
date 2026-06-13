@@ -31,25 +31,14 @@ struct LibGit2RepositorySessionTests {
         #expect(paths.commonDirectory == fixture.repositoryPath.standardizedFileURL)
     }
 
-    @Test("repository session maps open failure to typed libgit2 failure")
-    func repositorySessionMapsOpenFailureToTypedLibGit2Failure() {
+    @Test("repository session maps missing repositories to repository-not-found")
+    func repositorySessionMapsMissingRepositoriesToRepositoryNotFound() {
         let session = LibGit2RepositorySession()
         let missingPath = FileManager.default.temporaryDirectory
             .appending(path: "agentstudio-git-missing-\(UUID().uuidString)")
 
-        do {
+        #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingPath)) {
             _ = try session.repositoryPaths(at: missingPath)
-            Issue.record("repository open unexpectedly succeeded")
-        } catch let error as GitDataPlaneError {
-            guard case .libgit2Failure(let code, let klass, let message) = error else {
-                Issue.record("expected libgit2 failure, got \(error)")
-                return
-            }
-            #expect(code < 0)
-            #expect(klass >= 0)
-            #expect(!message.isEmpty)
-        } catch {
-            Issue.record("expected GitDataPlaneError, got \(error)")
         }
     }
 

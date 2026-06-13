@@ -2,6 +2,10 @@
 
 Date: 2026-06-11
 
+Current final proof report:
+
+- `docs/wip/implementation-proof/2026-06-12-agentstudio-git-sdk-final-proof.md`
+
 Goal:
 
 - `docs/wip/goals/2026-06-11-agentstudio-git-sdk-goal.md`
@@ -732,7 +736,7 @@ Implementation notes:
 - `SystemGitRemoteClient.Configuration` owns executable selection, inherited environment behavior, prompt policy, protocol allowlist, and trusted additional environment. Public request values cannot choose executables or environment policy.
 - Default configuration inherits the user's environment, strips `GIT_TRACE*` and `GIT_CURL_VERBOSE`, sets `LC_ALL=C`, sets `GIT_TERMINAL_PROMPT=0`, and allows HTTPS plus SSH protocols.
 - Trusted interactive mode is explicit and sets `GIT_TERMINAL_PROMPT=1`.
-- `GitExecutableLocator` invokes either a trusted configured executable URL or `/usr/bin/env git`, preserving the normal user `PATH` for production.
+- `GitExecutableLocator` invokes either a trusted configured executable URL or `/usr/bin/git`; user Git credentials still come from the inherited system environment, but executable lookup is not `PATH`-controlled by default.
 - `GitProcessRunner` uses `Process` argument arrays only, captures stdout/stderr through temp files to avoid pipe deadlocks, and constructs public failures through `GitRemoteProcessFailure.redacting`.
 - Every system Git invocation prefixes protocol config with `-c protocol.allow=never` plus configured `protocol.<name>.allow=always` entries.
 - Clone, fetch, push, and ls-remote commands delimit untrusted remote/ref/path operands with `--` where Git supports separators. Fetch and push use `--porcelain`.
@@ -784,7 +788,7 @@ Exit code: 0
 Result:
 
 - `Test run with 5 tests in 1 suite passed`
-- live HTTPS `ls-remote --symref` succeeded against `https://github.com/ShravanSunder/agentstudio-git.git` through `SystemGitRemoteClient`
+- live HTTPS `ls-remote --symref` succeeded against `<https-smoke-remote>` through `SystemGitRemoteClient`
 
 ```bash
 swift test
@@ -2244,6 +2248,300 @@ Known external proof limits after this checkpoint:
 - The full live HTTPS credential-helper and SSH-agent smoke is executable, but still requires disposable writeable remotes configured through `AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL` and `AGENTSTUDIO_GIT_LIVE_SSH_REMOTE_URL`.
 - A real hosted `CLibGit2Local.xcframework.zip` URL is still required before claiming actual remote artifact download proof.
 
+## 2026-06-12 Current Final Proof Pointer
+
+The current final proof report lives at `docs/wip/implementation-proof/2026-06-12-agentstudio-git-sdk-final-proof.md`.
+
+Current status:
+
+- local implementation gates are green
+- downstream package-consumer proof is green
+- AgentStudio seam compatibility proof is green
+- hosted libgit2 artifact download/link proof is green
+- live HTTPS remote-auth proof is green
+- live SSH remote-auth proof is green
+- goal proof gates are current and green
+
+## Checkpoint: Review-swarm correctness fixes
+
+Scope:
+
+- Accepted implementation-review findings for remote trust boundaries, status-origin redaction, cancellation cleanup, hosted artifact host validation, error decoding, and Bridge changed-file hash proof.
+- Follow-up closed in the final proof slice: stdout/stderr capture now uses bounded pipe readers instead of temp-file polling, so captured process output is capped in memory and no process output temp files are created.
+
+Implementation notes:
+
+- `LibGit2BranchReader` now redacts all HTTPS query values in origin snapshots, not only selected credential-ish names, so signed URLs such as `X-Amz-Signature` cannot leak through `GitStatusSnapshot`.
+- `GitProcessRunner` now escalates cancellation through `terminateProcessGroup` even when the parent exits first, so TERM-resistant descendants do not survive task cancellation until the operation timeout.
+- `SystemGitRemoteClient.Configuration.processEnvironment()` strips inherited `GIT_CONFIG*`, `GIT_SSL_NO_VERIFY`, `GIT_EXEC_PATH`, repository path override variables, and Git proxy command overrides before adding trusted SDK-provided environment values. User credentials remain available through normal inherited `HOME`, credential helpers, keychain-backed Git config, `SSH_AUTH_SOCK`, inherited `GIT_SSH_COMMAND` with forced batch mode, and custom TLS CA/client-cert variables.
+- `verify-hosted-libgit2-artifact.sh` classifies literal IP hosts after parsing and rejects loopback/private IPv4, IPv6, and IPv4-mapped IPv6 spellings before invoking SwiftPM.
+- `GitDataPlaneError` decoding now rejects zero-case and multi-case wire payloads.
+- The Bridge compatibility harness now maps changed-file old/new content hashes from `GitDiffFile` instead of the content payload loaded for preview sizing, and asserts those hashes survive the adapter.
+- `docs/guides/agentstudio-consumption.md` now points consumers at `mise run test-asan` and `mise run test-tsan` rather than raw `swift test --sanitize ...`.
+
+Focused validation:
+
+```bash
+bash scripts/run-swift-test-filter.sh GitProcessRunnerTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 13 tests in 1 suite passed`
+- new coverage: inherited Git config/transport override scrub, preserved inherited Git auth/trust environment, and cancelled TERM-resistant descendant cleanup
+
+```bash
+bash scripts/run-swift-test-filter.sh GitStatusIntegrationTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 11 tests in 1 suite passed`
+- new coverage: arbitrary HTTPS query value redaction in origin snapshots
+
+```bash
+bash scripts/run-swift-test-filter.sh GitInvalidDecodeTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 4 tests in 1 suite passed`
+- new coverage: ambiguous multi-case `GitDataPlaneError` payload rejection
+
+```bash
+bash scripts/run-swift-test-filter.sh LibGit2PackagingScriptTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 16 tests in 1 suite passed`
+- new coverage: dotted and hex IPv4-mapped loopback/private IPv6 artifact URL rejection and consumer-guide sanitizer command assertions
+
+Follow-up reviewer pass:
+
+- Finding accepted: inherited auth/trust env was initially scrubbed too aggressively. Fix preserves inherited `GIT_SSH_COMMAND`, `GIT_SSL_CAINFO`, `GIT_SSL_CERT`, `GIT_SSL_KEY`, and harmless `GIT_HTTP*` knobs while still stripping `GIT_CONFIG*`, `GIT_SSL_NO_VERIFY`, repository path overrides, `GIT_EXEC_PATH`, and `GIT_PROXY_COMMAND`.
+- Finding accepted: hosted artifact host validation initially missed hex IPv4-mapped IPv6 literals. Fix uses parsed IP classification and adds `::ffff:7f00:1` / `::ffff:c0a8:1` regressions.
+- Focused revalidation:
+  - `bash scripts/run-swift-test-filter.sh GitProcessRunnerTests`: exit 0, `Test run with 13 tests in 1 suite passed`
+  - `bash scripts/run-swift-test-filter.sh LibGit2PackagingScriptTests`: exit 0, `Test run with 16 tests in 1 suite passed`
+
+```bash
+AGENTSTUDIO_GIT_AGENTSTUDIO_PATH=/Users/shravansunder/Documents/dev/project-dev/agent-studio.bridge-start bash scripts/run-swift-test-filter.sh BridgeReviewSourceCompatibilityTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 2 tests in 1 suite passed`
+- new coverage: Bridge adapter preserves changed-file old/new content hashes from the SDK diff payload
+
+```bash
+bash scripts/run-swift-test-filter.sh GitPublicContractTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 9 tests in 1 suite passed`
+
+```bash
+bash scripts/run-swift-test-filter.sh GitRedactionTests
+```
+
+Exit code: 0
+
+Result:
+
+- `Test run with 4 tests in 1 suite passed`
+
+## 2026-06-12 Current Post-Review Checkpoint
+
+Scope:
+
+- fixed accepted implementation-review findings around system-git executable trust, ambient SSH command preservation with noninteractive batch mode, output/cancellation bounds, binary-artifact opt-in, wire contract stability, decode validation, redaction, missing-repo error taxonomy, and Bridge compatibility coverage
+- added regression coverage for the reviewed `/tmp` versus `/private/tmp` writer-lane concern; current Swift URL standardization keeps those paths on one repository lane
+- did not claim app integration or external network artifact/auth completion from harness-only or unconfigured proof
+
+Changed surface at this checkpoint:
+
+- `Package.swift`
+- `Sources/AgentStudioGitContracts/*`
+- `Sources/AgentStudioGitLocal/LibGit2/LibGit2RepositorySession.swift`
+- `Sources/AgentStudioGitLocal/Review/LibGit2ReviewSupport.swift`
+- `Sources/AgentStudioGitRemote/*`
+- `Tests/AgentStudioGitTests/*`
+- `docs/guides/agentstudio-consumption.md`
+- `scripts/verify-hosted-libgit2-artifact.sh`
+- `scripts/verify-package-consumer.sh`
+
+```bash
+mise run check
+```
+
+Exit code: 0
+
+Result:
+
+- rebuilt and verified `Artifacts/CLibGit2Local.xcframework`
+- `swift build` completed
+- `mise run lint` passed
+- `mise run test` ran the guarded Swift Testing suite list through `scripts/run-swift-test-suites.sh`
+- the filtered suite list reported 18 suites and 104 tests; the live remote auth test was skipped because `AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_SMOKE` was not set
+- visible filtered suites passed:
+  - `GitWireEnumSnapshotTests`: 1 test
+  - `GitPublicContractTests`: 9 tests
+  - `GitInvalidDecodeTests`: 4 tests
+  - `GitRedactionTests`: 4 tests
+  - `LibGit2RuntimeTests`: 2 tests
+  - `LibGit2RepositorySessionTests`: 4 tests
+  - `LibGit2ErrorCaptureTests`: 2 tests
+  - `GitRepositoryIdentityTests`: 3 tests
+  - `GitRepositoryWriterRegistryTests`: 3 tests
+  - `GitProcessRunnerTests`: 13 tests
+  - `SystemGitRemoteClientTests`: 6 tests, including the opt-in live-auth test reported skipped because `AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_SMOKE` was not set
+  - `GitRemoteOutputParserTests`: 2 tests
+  - `LibGit2PackagingScriptTests`: 16 tests
+  - `GitStatusIntegrationTests`: 11 tests
+  - `GitWorktreeIntegrationTests`: 13 tests
+  - `GitReviewDataIntegrationTests`: 5 tests
+  - `GitWorkingTreeStatusCompatibilityTests`: 5 tests
+  - `BridgeReviewSourceCompatibilityTests`: 2 tests
+
+```bash
+mise run test-asan
+```
+
+Exit code: 0
+
+Result:
+
+- AddressSanitizer wrapper lane passed through the guarded suite list
+- the filtered suite list reported 18 suites and 104 tests; the live remote auth test was skipped because `AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_SMOKE` was not set
+- sanitizer scope is Swift wrapper/process/libgit2-call-site coverage over the prebuilt libgit2 artifact; this is not a claim that libgit2 itself was rebuilt with ASan
+- final visible compatibility suites passed:
+  - `GitWorkingTreeStatusCompatibilityTests`: 5 tests
+  - `BridgeReviewSourceCompatibilityTests`: 2 tests
+
+```bash
+mise run test-tsan
+```
+
+Exit code: 0
+
+Result:
+
+- ThreadSanitizer wrapper lane passed through the guarded suite list
+- the filtered suite list reported 18 suites and 104 tests; the live remote auth test was skipped because `AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_SMOKE` was not set
+- sanitizer scope is Swift wrapper/process/libgit2-call-site coverage over the prebuilt libgit2 artifact; this is not a claim that libgit2 itself was rebuilt with TSan
+- final visible compatibility suites passed:
+  - `GitWorkingTreeStatusCompatibilityTests`: 5 tests
+  - `BridgeReviewSourceCompatibilityTests`: 2 tests
+
+```bash
+bash scripts/verify-package-consumer.sh
+```
+
+Exit code: 0
+
+Result:
+
+- built a clean downstream SwiftPM consumer outside the repo
+- built and ran the umbrella product consumer
+- built and ran the leaf product consumer
+- both consumers reported libgit2 `1.9.4`, `SystemGitRemoteClient true`, and `noninteractive https unsupported(message: "consumer smoke")`
+- local consumer build clears ambient hosted-binary env; release-manifest mode now requires `AGENTSTUDIO_GIT_ALLOW_LIBGIT2_BINARY_URL=1`
+
+```bash
+AGENTSTUDIO_GIT_AGENTSTUDIO_PATH=/Users/shravansunder/Documents/dev/project-dev/agent-studio.bridge-start bash scripts/verify-agentstudio-compatibility.sh
+```
+
+Exit code: 0
+
+Result:
+
+- built the package and ran compatibility suites against the checked-out AgentStudio seam
+- `Git working tree status compatibility`: 5 tests passed
+- `Bridge review source compatibility`: 2 tests passed
+- total verifier result: `Test run with 7 tests in 2 suites passed`
+- this proves status and Bridge adapter seam compatibility; it is not the separate future app-side migration/replacement plan
+
+```bash
+AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL=<https-smoke-remote> AGENTSTUDIO_GIT_LIVE_SSH_REMOTE_URL=<ssh-smoke-remote> bash scripts/verify-live-remote-auth.sh
+```
+
+Exit code: 0
+
+Result:
+
+- remote values were intentionally omitted from this artifact
+- HTTPS credential-helper lane: `Test run with 6 tests in 1 suite passed`
+- SSH-agent lane: `Test run with 6 tests in 1 suite passed`
+- both lanes exercised clone, fetch, push, remote reference discovery, and temporary branch cleanup through `SystemGitRemoteClient`
+
+```bash
+git ls-remote --heads <https-smoke-remote> 'refs/heads/agentstudio-git-live-smoke/*'
+git ls-remote --heads <ssh-smoke-remote> 'refs/heads/agentstudio-git-live-smoke/*'
+```
+
+Exit code: 0 for both commands
+
+Result:
+
+- no leftover `refs/heads/agentstudio-git-live-smoke/*` refs were reported for either smoke remote
+
+```bash
+curl -L --fail --max-time 60 --output /tmp/agentstudio-git-libgit2-raw-probe.zip <public-raw-artifact-url>
+```
+
+Exit code: 0
+
+Result:
+
+- downloaded the public 1.8 MB `CLibGit2Local.xcframework.zip` artifact
+- SHA-256 matched `33a995b26dafeaf0b73ef2d65371653c0e35042d55344fef4acea1b059c2740d`
+
+```bash
+AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL=<public-raw-artifact-url> AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM=33a995b26dafeaf0b73ef2d65371653c0e35042d55344fef4acea1b059c2740d bash scripts/verify-hosted-libgit2-artifact.sh
+```
+
+Exit code: 0
+
+Result:
+
+- artifact URL was intentionally omitted from this artifact
+- hosted verifier used isolated SwiftPM cache/scratch paths
+- hosted verifier reported `hosted libgit2 artifact linked successfully`
+- public artifact branch commit: `aa2c8b9`
+- the public artifact directory contains `CLibGit2Local.xcframework.zip`, checksum, and README
+
+```bash
+git diff --check
+```
+
+Exit code: 0
+
+Result:
+
+- no whitespace errors in the current diff
+
+Current completion status:
+
+- local implementation gates are green after the review-fix pass
+- downstream package-consumer proof is green
+- AgentStudio seam compatibility proof is green
+- external live HTTPS and SSH auth proof is green against disposable smoke remotes, with remote values intentionally omitted from this artifact
+- external hosted artifact download proof is green against a public raw artifact URL, with the URL intentionally omitted from this artifact
+
 ## Sanitizer CI Runner Fix
 
 Date: 2026-06-12
@@ -2253,7 +2551,7 @@ Status: local sanitizer runner and process-timeout fixes implemented; remote CI 
 Remote CI failure:
 
 ```bash
-gh run watch 27417839524 --repo ShravanSunder/agentstudio-git --exit-status
+gh run watch 27417839524 --repo <github-owner>/<github-repo> --exit-status
 ```
 
 Exit code: 1
@@ -2267,7 +2565,7 @@ Result:
 Follow-up remote CI failure:
 
 ```bash
-gh run watch 27419694602 --repo ShravanSunder/agentstudio-git --exit-status
+gh run watch 27419694602 --repo <github-owner>/<github-repo> --exit-status
 ```
 
 Exit code: 1
@@ -2435,7 +2733,7 @@ Result:
 Remote CI proof after the suite-runner fix:
 
 ```bash
-gh run watch 27420453537 --repo ShravanSunder/agentstudio-git --exit-status
+gh run watch 27420453537 --repo <github-owner>/<github-repo> --exit-status
 ```
 
 Exit code: 0
@@ -2468,6 +2766,10 @@ Remote target:
 
 Preflight evidence:
 
+Historical note:
+
+- This subsection records a transient host SSH-agent failure observed earlier on 2026-06-12. It is superseded by the later successful HTTPS/SSH live-auth gate recorded in `docs/wip/implementation-proof/2026-06-12-agentstudio-git-sdk-final-proof.md`.
+
 ```bash
 git remote -v
 ```
@@ -2476,7 +2778,7 @@ Exit code: 0
 
 Result:
 
-- `origin` fetch and push point at `https://github.com/ShravanSunder/agentstudio-git.git`.
+- `origin` fetch and push point at `<https-smoke-remote>`.
 
 ```bash
 gh auth status
@@ -2486,7 +2788,7 @@ Exit code: 0
 
 Result:
 
-- GitHub CLI is logged in as `ShravanSunder`.
+- GitHub CLI is logged in to the account that owns `<https-smoke-remote>`.
 - Git operations protocol is `https`.
 - Token scopes include `repo` and `workflow`.
 
@@ -2501,7 +2803,7 @@ Result:
 - The 1Password SSH agent listed a GitHub SSH authentication key.
 
 ```bash
-git ls-remote --heads https://github.com/ShravanSunder/agentstudio-git.git 'refs/heads/agentstudio-git-live-smoke/*'
+git ls-remote --heads <https-smoke-remote> 'refs/heads/agentstudio-git-live-smoke/*'
 ```
 
 Exit code: 0
@@ -2511,7 +2813,7 @@ Result:
 - No pre-existing live-smoke refs were present.
 
 ```bash
-git ls-remote --heads git@github.com:ShravanSunder/agentstudio-git.git 'refs/heads/agentstudio-git-live-smoke/*'
+git ls-remote --heads <ssh-smoke-remote> 'refs/heads/agentstudio-git-live-smoke/*'
 ```
 
 Exit code: 128
@@ -2523,7 +2825,7 @@ Result:
 HTTPS lane proof:
 
 ```bash
-AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_SMOKE=1 AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_LABEL=https AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_PROTOCOL=https AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_URL=https://github.com/ShravanSunder/agentstudio-git.git bash scripts/run-swift-test-filter.sh SystemGitRemoteClientTests
+AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_SMOKE=1 AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_LABEL=https AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_PROTOCOL=https AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_URL=<https-smoke-remote> bash scripts/run-swift-test-filter.sh SystemGitRemoteClientTests
 ```
 
 Exit code: 0
@@ -2537,7 +2839,7 @@ Result:
 SSH lane proof:
 
 ```bash
-AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_SMOKE=1 AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_LABEL=ssh AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_PROTOCOL=ssh AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_URL=git@github.com:ShravanSunder/agentstudio-git.git bash scripts/run-swift-test-filter.sh SystemGitRemoteClientTests
+AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_SMOKE=1 AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_LABEL=ssh AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_PROTOCOL=ssh AGENTSTUDIO_GIT_LIVE_REMOTE_AUTH_URL=<ssh-smoke-remote> bash scripts/run-swift-test-filter.sh SystemGitRemoteClientTests
 ```
 
 Exit code: 1
@@ -2552,7 +2854,7 @@ Result:
 Official wrapper attempt:
 
 ```bash
-AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL=https://github.com/ShravanSunder/agentstudio-git.git AGENTSTUDIO_GIT_LIVE_SSH_REMOTE_URL=git@github.com:ShravanSunder/agentstudio-git.git bash scripts/verify-live-remote-auth.sh
+AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL=<https-smoke-remote> AGENTSTUDIO_GIT_LIVE_SSH_REMOTE_URL=<ssh-smoke-remote> bash scripts/verify-live-remote-auth.sh
 ```
 
 Exit code: 1
@@ -2566,7 +2868,7 @@ Result:
 Post-run cleanup:
 
 ```bash
-git ls-remote --heads https://github.com/ShravanSunder/agentstudio-git.git 'refs/heads/agentstudio-git-live-smoke/*'
+git ls-remote --heads <https-smoke-remote> 'refs/heads/agentstudio-git-live-smoke/*'
 ```
 
 Exit code: 0
@@ -2589,7 +2891,7 @@ Status: local runner/tooling fixes implemented; remote rerun pending after push.
 Failure:
 
 ```bash
-gh run watch 27414489143 --repo ShravanSunder/agentstudio-git --exit-status
+gh run watch 27414489143 --repo <github-owner>/<github-repo> --exit-status
 ```
 
 Exit code: 1
@@ -2679,8 +2981,8 @@ Result:
 GitHub artifact workflow:
 
 ```bash
-gh workflow run libgit2-artifact.yml --repo ShravanSunder/agentstudio-git --ref main
-gh run watch 27414501145 --repo ShravanSunder/agentstudio-git --exit-status
+gh workflow run libgit2-artifact.yml --repo <github-owner>/<github-repo> --ref main
+gh run watch 27414501145 --repo <github-owner>/<github-repo> --exit-status
 ```
 
 Exit code: 0
@@ -2694,7 +2996,7 @@ Result:
 Follow-up CI failure:
 
 ```bash
-gh run watch 27414830257 --repo ShravanSunder/agentstudio-git --exit-status
+gh run watch 27414830257 --repo <github-owner>/<github-repo> --exit-status
 ```
 
 Exit code: 1
@@ -2781,7 +3083,7 @@ Result:
 Second follow-up CI hang:
 
 ```bash
-gh run watch 27415217419 --repo ShravanSunder/agentstudio-git --exit-status
+gh run watch 27415217419 --repo <github-owner>/<github-repo> --exit-status
 ```
 
 Exit code: 1
@@ -2870,7 +3172,7 @@ Result:
 Third follow-up CI timeout:
 
 ```bash
-gh run watch 27416665585 --repo ShravanSunder/agentstudio-git --exit-status
+gh run watch 27416665585 --repo <github-owner>/<github-repo> --exit-status
 ```
 
 Exit code: 1

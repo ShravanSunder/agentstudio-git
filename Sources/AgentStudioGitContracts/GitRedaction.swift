@@ -14,8 +14,18 @@ public enum GitRedaction {
         )
         redactedValue = replacingMatches(
             in: redactedValue,
+            pattern: #"https?://[^\s'"]+"#,
+            template: "<redacted-https-remote>"
+        )
+        redactedValue = replacingMatches(
+            in: redactedValue,
             pattern: #"([A-Za-z][A-Za-z0-9+.-]*://)[^/\s@]+@"#,
             template: "$1<redacted>@"
+        )
+        redactedValue = replacingMatches(
+            in: redactedValue,
+            pattern: #"([?&])([^=\s&#'"]+)=([^&\s#'"]+)"#,
+            template: "$1$2=<redacted>"
         )
         redactedValue = replacingMatches(
             in: redactedValue,

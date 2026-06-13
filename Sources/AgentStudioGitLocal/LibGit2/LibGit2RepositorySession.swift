@@ -51,10 +51,7 @@ public struct LibGit2RepositorySession: Sendable {
         }
 
         guard openResult >= 0, let repositoryPointer else {
-            throw LibGit2ErrorCapture.failure(
-                code: openResult,
-                fallbackMessage: "failed to open repository at \(path.path)"
-            )
+            throw repositoryOpenFailure(code: openResult, path: path)
         }
 
         defer {

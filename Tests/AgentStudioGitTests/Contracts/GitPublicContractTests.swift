@@ -49,6 +49,30 @@ struct GitPublicContractTests {
         #expect(decodedSnapshot.originResolution == snapshot.originResolution)
     }
 
+    @Test("origin resolution encodes an explicit stable wire shape")
+    func originResolutionEncodesExplicitStableWireShape() throws {
+        let resolved = GitOriginResolution.resolved(
+            GitRemoteSnapshot(
+                name: "origin",
+                url: URL(string: "https://github.com/example/repo.git")!,
+                rawURL: "https://github.com/example/repo.git"
+            ))
+
+        let awaitingObject = try jsonDictionary(for: GitOriginResolution.awaitingResolution)
+        let absentObject = try jsonDictionary(for: GitOriginResolution.confirmedAbsent)
+        let resolvedObject = try jsonDictionary(for: resolved)
+        let remoteObject = try #require(resolvedObject["remote"] as? [String: Any])
+
+        #expect(awaitingObject["state"] as? String == "awaitingResolution")
+        #expect(awaitingObject.keys.contains("remote") == false)
+        #expect(absentObject["state"] as? String == "confirmedAbsent")
+        #expect(absentObject.keys.contains("remote") == false)
+        #expect(resolvedObject["state"] as? String == "resolved")
+        #expect(remoteObject["name"] as? String == "origin")
+        #expect(remoteObject["url"] as? String == "https://github.com/example/repo.git")
+        #expect(remoteObject["rawURL"] as? String == "https://github.com/example/repo.git")
+    }
+
     @Test("diff files carry stable file identity and honest content hashes")
     func diffFileCarriesStableIdentityAndContentHashes() throws {
         let diffFile = GitDiffFile(
@@ -156,5 +180,54 @@ struct GitPublicContractTests {
         #expect(payload["redactedArguments"] as? [String] == ["fetch", "origin"])
         #expect(payload["exitCode"] as? Int == -1)
         #expect(payload["redactedStderr"] as? String == "git process timed out after 0.1 seconds")
+    }
+
+    @Test("process cancellation errors carry redacted process failure facts")
+    func processCancellationErrorsCarryRedactedProcessFailureFacts() throws {
+        let error = GitDataPlaneError.processCancelled(
+            GitRemoteProcessFailure(
+                executable: "git",
+                redactedArguments: ["fetch", "origin"],
+                exitCode: -15,
+                redactedStderr: "git process cancelled"
+            ))
+
+        let data = try JSONEncoder().encode(error)
+        let decodedError = try JSONDecoder().decode(GitDataPlaneError.self, from: data)
+        let jsonObject = try JSONSerialization.jsonObject(with: data)
+        let dictionary = try #require(jsonObject as? [String: Any])
+        let payload = try #require(dictionary["processCancelled"] as? [String: Any])
+
+        #expect(decodedError == error)
+        #expect(payload["executable"] as? String == "git")
+        #expect(payload["redactedArguments"] as? [String] == ["fetch", "origin"])
+        #expect(payload["exitCode"] as? Int == -15)
+        #expect(payload["redactedStderr"] as? String == "git process cancelled")
+    }
+
+    @Test("process output limit errors carry stream and size facts")
+    func processOutputLimitErrorsCarryStreamAndSizeFacts() throws {
+        let error = GitDataPlaneError.processOutputTooLarge(
+            stream: .stdout,
+            sizeBytes: 256,
+            maxSizeBytes: 64
+        )
+
+        let data = try JSONEncoder().encode(error)
+        let decodedError = try JSONDecoder().decode(GitDataPlaneError.self, from: data)
+        let jsonObject = try JSONSerialization.jsonObject(with: data)
+        let dictionary = try #require(jsonObject as? [String: Any])
+        let payload = try #require(dictionary["processOutputTooLarge"] as? [String: Any])
+
+        #expect(decodedError == error)
+        #expect(payload["stream"] as? String == "stdout")
+        #expect(payload["sizeBytes"] as? Int == 256)
+        #expect(payload["maxSizeBytes"] as? Int == 64)
+    }
+
+    private func jsonDictionary<T: Encodable>(for value: T) throws -> [String: Any] {
+        let data = try JSONEncoder().encode(value)
+        let jsonObject = try JSONSerialization.jsonObject(with: data)
+        return try #require(jsonObject as? [String: Any])
     }
 }

@@ -194,14 +194,14 @@ struct LibGit2BranchReader: Sendable {
         guard let credentialStrippedURL = components.url else {
             return remoteURL(from: originRawURLForWire(from: rawURL))
         }
-        return remoteURL(from: redactingSensitiveURLQueryValues(in: credentialStrippedURL.absoluteString))
+        return remoteURL(from: redactingURLQueryValues(in: credentialStrippedURL.absoluteString))
     }
 
     private func originRawURLForWire(from rawURL: String) -> String {
         guard let scheme = URLComponents(string: rawURL)?.scheme?.lowercased(),
             ["http", "https"].contains(scheme)
         else {
-            return redactingSensitiveURLQueryValues(in: rawURL)
+            return redactingURLQueryValues(in: rawURL)
         }
 
         let credentialRedactedURL = replacingMatches(
@@ -209,14 +209,14 @@ struct LibGit2BranchReader: Sendable {
             pattern: #"(?i)\b(https?://)[^/\s@]+@"#,
             template: "$1<redacted>@"
         )
-        return redactingSensitiveURLQueryValues(in: credentialRedactedURL)
+        return redactingURLQueryValues(in: credentialRedactedURL)
     }
 
-    private func redactingSensitiveURLQueryValues(in value: String) -> String {
+    private func redactingURLQueryValues(in value: String) -> String {
         replacingMatches(
             in: value,
-            pattern: #"(?i)(token|access_token|password|passwd|secret)=([^&\s]+)"#,
-            template: "$1=<redacted>"
+            pattern: #"([?&])([^=\s&#'"]+)=([^&\s#'"]+)"#,
+            template: "$1$2=<redacted>"
         )
     }
 

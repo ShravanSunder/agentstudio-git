@@ -16,8 +16,8 @@ struct GitWorkingTreeStatusCompatibilityTests {
                     originResolution: .resolved(
                         GitRemoteSnapshot(
                             name: "origin",
-                            url: URL(string: "git@github.com:askluna/agent-studio.git")!,
-                            rawURL: "git@github.com:askluna/agent-studio.git"
+                            url: URL(string: "git@example.com:agentstudio/agent-studio.git")!,
+                            rawURL: "git@example.com:agentstudio/agent-studio.git"
                         )
                     ),
                     summary: GitStatusSummary(
@@ -48,7 +48,7 @@ struct GitWorkingTreeStatusCompatibilityTests {
         #expect(status.summary.behindCount == 2)
         #expect(status.summary.hasUpstream == true)
         #expect(status.branch == "feature/sdk")
-        #expect(status.originResolution == .resolved("git@github.com:askluna/agent-studio.git"))
+        #expect(status.originResolution == .resolved("git@example.com:agentstudio/agent-studio.git"))
     }
 
     @Test("SDK status snapshot preserves current AgentStudio origin and sync optional semantics")

@@ -222,9 +222,9 @@ private struct BridgeReviewSourceAdapterCompileHarness {
                         language: nil,
                         fileExtension: URL(fileURLWithPath: file.path).pathExtension.nonEmpty,
                         sizeBytes: Int(file.sizeBytes ?? Int64(payload.data.count)),
-                        oldContentHash: file.changeKind == .added ? nil : payload.contentHash,
-                        newContentHash: file.changeKind == .deleted ? nil : payload.contentHash,
-                        contentHashAlgorithm: payload.contentHashAlgorithm,
+                        oldContentHash: file.changeKind == .added ? nil : file.oldContentHash,
+                        newContentHash: file.changeKind == .deleted ? nil : file.newContentHash,
+                        contentHashAlgorithm: file.contentHashAlgorithm,
                         additions: file.additions,
                         deletions: file.deletions,
                         isBinary: payload.isBinary,
@@ -418,9 +418,19 @@ private struct BridgeReviewSourceAdapterCompileHarness {
         """
         actor RecordingLocalClient: AgentStudioGitLocalClient {
             private var contentRequests: [GitContentRequest] = []
+            private var diffRequests: [GitDiffRequest] = []
+            private var treeRequests: [GitTreeReadRequest] = []
 
             func recordedContentRequests() -> [GitContentRequest] {
                 contentRequests
+            }
+
+            func recordedDiffRequests() -> [GitDiffRequest] {
+                diffRequests
+            }
+
+            func recordedTreeRequests() -> [GitTreeReadRequest] {
+                treeRequests
             }
 
             func content(_ request: GitContentRequest) async throws(GitDataPlaneError) -> GitContentPayload {
@@ -497,11 +507,42 @@ private struct BridgeReviewSourceAdapterCompileHarness {
             }
 
             func readTree(_ request: GitTreeReadRequest) async throws(GitDataPlaneError) -> GitTreeSnapshot {
-                throw .unsupported(message: "unused")
+                treeRequests.append(request)
+                return GitTreeSnapshot(
+                    revision: GitResolvedRevision(oid: request.revision.name, shortName: nil),
+                    entries: [
+                        GitTreeEntry(
+                            path: "Sources/App.swift",
+                            oid: "tree-entry-oid",
+                            mode: 0o100644,
+                            isTree: false,
+                            sizeBytes: 128
+                        )
+                    ]
+                )
             }
 
             func diff(_ request: GitDiffRequest) async throws(GitDataPlaneError) -> GitDiffSnapshot {
-                throw .unsupported(message: "unused")
+                diffRequests.append(request)
+                return GitDiffSnapshot(
+                    files: [
+                        GitDiffFile(
+                            fileId: "file-Sources/App.swift",
+                            path: "Sources/App.swift",
+                            previousPath: nil,
+                            changeKind: .modified,
+                            oldContentHash: "sha256:old",
+                            newContentHash: "sha256:new",
+                            contentHashAlgorithm: "sha256",
+                            oldMode: 0o100644,
+                            newMode: 0o100644,
+                            additions: 1,
+                            deletions: 1,
+                            isBinary: false,
+                            sizeBytes: 128
+                        )
+                    ]
+                )
             }
         }
 
@@ -534,6 +575,56 @@ private struct BridgeReviewSourceAdapterCompileHarness {
                     contentSetHash: nil,
                     providerIdentity: "abc123"
                 )
+                let headEndpoint = BridgeSourceEndpoint(
+                    endpointId: "head",
+                    kind: .gitRef,
+                    repoId: endpoint.repoId,
+                    worktreeId: endpoint.worktreeId,
+                    label: "head",
+                    createdAtUnixMilliseconds: 0,
+                    contentSetHash: nil,
+                    providerIdentity: "def456"
+                )
+                let query = BridgeReviewQuery(
+                    queryId: "query-1",
+                    queryKind: .compare,
+                    repoId: endpoint.repoId,
+                    worktreeId: endpoint.worktreeId,
+                    baseEndpointId: endpoint.endpointId,
+                    headEndpointId: headEndpoint.endpointId,
+                    comparisonSemantics: .twoDot,
+                    pathScope: ["Sources"],
+                    fileTarget: nil,
+                    viewFilter: BridgeViewFilter(),
+                    grouping: BridgeChangeGrouping(),
+                    provenanceFilter: BridgeProvenanceFilter()
+                )
+                let comparison = try await adapter.compareEndpoints(
+                    BridgeEndpointComparisonRequest(
+                        query: query,
+                        baseEndpoint: endpoint,
+                        headEndpoint: headEndpoint,
+                        reviewGeneration: 7
+                    )
+                )
+                guard comparison.changedFiles.map(\\.path) == ["Sources/App.swift"] else {
+                    throw HarnessFailure.failed("compare did not return synthetic diff file")
+                }
+                guard comparison.changedFiles.map(\\.oldContentHash) == ["sha256:old"],
+                    comparison.changedFiles.map(\\.newContentHash) == ["sha256:new"]
+                else {
+                    throw HarnessFailure.failed("compare did not preserve old/new diff content hashes")
+                }
+                let tree = try await adapter.readTree(
+                    BridgeTreeReadRequest(
+                        endpoint: headEndpoint,
+                        pathScope: ["Sources"],
+                        reviewGeneration: 7
+                    )
+                )
+                guard tree.descriptors.map(\\.headPath) == ["Sources/App.swift"] else {
+                    throw HarnessFailure.failed("tree read did not return synthetic descriptor")
+                }
                 let descriptor = try await adapter.readReviewItemDescriptor(
                     BridgeReviewItemDescriptorRequest(
                         endpoint: endpoint,
@@ -552,8 +643,20 @@ private struct BridgeReviewSourceAdapterCompileHarness {
                     throw HarnessFailure.failed("loaded wrong content: \\(text ?? "nil")")
                 }
                 let requests = await client.recordedContentRequests()
-                guard requests.map(\\.target) == [.commit("abc123"), .commit("abc123")] else {
+                guard requests.map(\\.target) == [.commit("def456"), .commit("abc123"), .commit("abc123")] else {
                     throw HarnessFailure.failed("content requests did not preserve git-ref identity")
+                }
+                let diffRequests = await client.recordedDiffRequests()
+                guard diffRequests.map(\\.base) == [.commit("abc123")],
+                    diffRequests.map(\\.compare) == [.commit("def456")]
+                else {
+                    throw HarnessFailure.failed("compare did not call client.diff with endpoint identities")
+                }
+                let treeRequests = await client.recordedTreeRequests()
+                guard treeRequests.map(\\.revision) == [.named("def456")],
+                    treeRequests.map(\\.path) == ["Sources"]
+                else {
+                    throw HarnessFailure.failed("readTree did not call client.readTree with endpoint identity")
                 }
             }
         }

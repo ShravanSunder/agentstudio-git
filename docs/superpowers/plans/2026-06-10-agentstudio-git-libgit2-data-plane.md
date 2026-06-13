@@ -836,19 +836,19 @@ scripts/run-swift-test-filter.sh GitRemoteOutputParserTests
 swift test
 ```
 
-- [ ] **External gate: Run full HTTPS/SSH live auth proof**
+- [x] **External gate: Run full HTTPS/SSH live auth proof**
 
-Pending until disposable writeable remotes are configured:
+Completed with disposable writeable smoke remotes configured through environment variables:
 
 ```bash
 AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL=<https-writeable-remote> AGENTSTUDIO_GIT_LIVE_SSH_REMOTE_URL=<ssh-writeable-remote> bash scripts/verify-live-remote-auth.sh
 ```
 
-Partial live-auth execution on 2026-06-12 against the real `agentstudio-git` GitHub remote:
+Current live-auth execution on 2026-06-12:
 
 - HTTPS credential-helper lane passed: clone, local commit, push temporary ref, fetch, remote reference discovery, and temporary-ref deletion.
-- SSH-agent lane failed at external host auth: the 1Password SSH agent listed the GitHub auth key but could not sign noninteractively (`sign_and_send_pubkey: signing failed ... communication with agent failed`), so GitHub returned `Permission denied (publickey)`.
-- The full external gate remains unchecked until the SSH-agent lane passes. A post-run `git ls-remote --heads` check found no leftover `refs/heads/agentstudio-git-live-smoke/*` refs.
+- SSH-agent lane passed: clone, local commit, push temporary ref, fetch, remote reference discovery, and temporary-ref deletion.
+- Post-run `git ls-remote --heads` checks found no leftover `refs/heads/agentstudio-git-live-smoke/*` refs on either disposable smoke remote.
 
 - [x] **Step 8: Commit**
 
@@ -926,23 +926,88 @@ bash scripts/verify-package-consumer.sh
 AGENTSTUDIO_GIT_AGENTSTUDIO_PATH=/path/to/agent-studio bash scripts/verify-agentstudio-compatibility.sh
 ```
 
-- [ ] **External gate: Run hosted libgit2 artifact download proof**
+- [x] **External gate: Run hosted libgit2 artifact download proof**
 
-Pending until `CLibGit2Local.xcframework.zip` is published to a real public HTTPS URL. The verifier must use an isolated SwiftPM cache/scratch path, suppress raw SwiftPM output, reject local/private artifact hosts, and assert the pinned libgit2 version:
+Completed with `CLibGit2Local.xcframework.zip` published under a public HTTPS artifact directory. The verifier used an isolated SwiftPM cache/scratch path, suppressed raw SwiftPM output, rejected local/private artifact hosts in regression coverage, and asserted the pinned libgit2 version:
 
 ```bash
 AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL=<https-hosted-CLibGit2Local.xcframework.zip> AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM=<swiftpm-checksum> bash scripts/verify-hosted-libgit2-artifact.sh
 ```
 
-- [ ] **External gate: Run final HTTPS/SSH live auth validation**
+- [x] **External gate: Run final HTTPS/SSH live auth validation**
 
-Pending until disposable writeable remotes are configured:
+Completed with disposable writeable smoke remotes configured through environment variables:
 
 ```bash
 AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL=<https-writeable-remote> AGENTSTUDIO_GIT_LIVE_SSH_REMOTE_URL=<ssh-writeable-remote> bash scripts/verify-live-remote-auth.sh
 ```
 
-Partial live-auth execution on 2026-06-12 proved the HTTPS credential-helper lane against the real `agentstudio-git` GitHub remote. The SSH-agent lane failed before clone because the local 1Password SSH agent could not sign with the GitHub auth key. This gate remains unchecked until SSH auth is usable in the host environment.
+Current live-auth execution on 2026-06-12 proved both HTTPS credential-helper and SSH-agent lanes against disposable remotes. Configured remote values are intentionally omitted from artifacts.
+
+- [x] **Post-review gate: Correct accepted review findings**
+
+Review-swarm findings accepted and fixed:
+
+- arbitrary HTTPS origin query values are redacted before status snapshots cross the SDK boundary
+- task cancellation escalates through process-group cleanup so TERM-resistant descendants are not left running until timeout
+- dangerous inherited Git env overrides are stripped before system Git runs while legitimate auth/trust env such as inherited `GIT_SSH_COMMAND` and custom TLS CA/client-cert variables remain available
+- hosted artifact verification parses literal IP hosts and resolves hostnames before SwiftPM, rejecting loopback/private IPv4, IPv6, and IPv4-mapped IPv6 endpoints
+- `GitDataPlaneError` rejects ambiguous multi-case wire payloads
+- Bridge compatibility proof asserts old/new changed-file hashes survive the SDK adapter
+- consumer guide sanitizer commands use `mise run test-asan` / `mise run test-tsan`
+- remote process failures fully redact plain HTTPS remote values
+- process output capture is bounded through stdout/stderr pipes instead of temp-file polling
+- inherited and explicit `GIT_SSH_COMMAND` values preserve quoted arguments while forcing noninteractive `BatchMode=yes`
+
+Focused proof completed:
+
+```bash
+bash scripts/run-swift-test-filter.sh GitProcessRunnerTests
+bash scripts/run-swift-test-filter.sh GitStatusIntegrationTests
+bash scripts/run-swift-test-filter.sh GitInvalidDecodeTests
+bash scripts/run-swift-test-filter.sh LibGit2PackagingScriptTests
+AGENTSTUDIO_GIT_AGENTSTUDIO_PATH=/Users/shravansunder/Documents/dev/project-dev/agent-studio.bridge-start bash scripts/run-swift-test-filter.sh BridgeReviewSourceCompatibilityTests
+bash scripts/run-swift-test-filter.sh GitPublicContractTests
+bash scripts/run-swift-test-filter.sh GitRedactionTests
+```
+
+All focused commands exited 0. Counts are recorded in `docs/wip/implementation-proof/2026-06-11-agentstudio-git-sdk-proof.md`.
+
+Post-fix reviewer follow-up accepted and fixed:
+
+- `SystemGitRemoteClient.Configuration.processEnvironment()` no longer drops inherited `GIT_SSH_COMMAND`, `GIT_SSL_CAINFO`, `GIT_SSL_CERT`, `GIT_SSL_KEY`, or harmless `GIT_HTTP*` auth/trust knobs. It still strips inherited `GIT_CONFIG*`, `GIT_SSL_NO_VERIFY`, repository path overrides, `GIT_EXEC_PATH`, and `GIT_PROXY_COMMAND`, and it appends `BatchMode=yes` to SSH commands in noninteractive mode.
+- `verify-hosted-libgit2-artifact.sh` now classifies literal IP hosts and resolved host addresses with `Socket.inet_pton` through Perl, so hex IPv4-mapped IPv6 literals such as `::ffff:7f00:1` / `::ffff:c0a8:1` and hostname aliases resolving to private/local IPs are rejected too.
+- Focused proof after this follow-up:
+  - `bash scripts/run-swift-test-filter.sh GitRedactionTests`: exit 0, `Test run with 5 tests in 1 suite passed`
+  - `bash scripts/run-swift-test-filter.sh GitProcessRunnerTests`: exit 0, `Test run with 14 tests in 1 suite passed`
+  - `bash scripts/run-swift-test-filter.sh LibGit2PackagingScriptTests`: exit 0, `Test run with 16 tests in 1 suite passed`
+
+The stdout/stderr output limit is now enforced through bounded pipe readers. Captured bytes are capped in memory and no process output temp files are created.
+
+- [x] **Post-review gate: Re-run full local validation after corrections**
+
+```bash
+mise run check
+mise run test-asan
+mise run test-tsan
+bash scripts/verify-package-consumer.sh
+AGENTSTUDIO_GIT_AGENTSTUDIO_PATH=/Users/shravansunder/Documents/dev/project-dev/agent-studio.bridge-start bash scripts/verify-agentstudio-compatibility.sh
+git diff --check
+```
+
+Post-review full validation completed on 2026-06-12:
+
+- `mise run check`: exit 0; rebuilt and verified `Artifacts/CLibGit2Local.xcframework`, built the package, linted with 0 SwiftLint violations, and ran the guarded suite list.
+- `mise run test-asan`: exit 0; guarded suite list passed under AddressSanitizer wrapper scope.
+- `mise run test-tsan`: exit 0; guarded suite list passed under ThreadSanitizer wrapper scope.
+- `bash scripts/verify-package-consumer.sh`: exit 0; umbrella and leaf consumers built and ran, both reporting libgit2 `1.9.4` and `SystemGitRemoteClient true`.
+- `AGENTSTUDIO_GIT_AGENTSTUDIO_PATH=/Users/shravansunder/Documents/dev/project-dev/agent-studio.bridge-start bash scripts/verify-agentstudio-compatibility.sh`: exit 0; `Test run with 7 tests in 2 suites passed`.
+- `git diff --check`: exit 0.
+- `AGENTSTUDIO_GIT_LIVE_HTTPS_REMOTE_URL=<https-smoke-remote> AGENTSTUDIO_GIT_LIVE_SSH_REMOTE_URL=<ssh-smoke-remote> bash scripts/verify-live-remote-auth.sh`: exit 0; HTTPS credential-helper and SSH-agent lanes each reported `Test run with 6 tests in 1 suite passed`. Smoke remote values are intentionally omitted from artifacts.
+- `git ls-remote --heads <https-smoke-remote> 'refs/heads/agentstudio-git-live-smoke/*'` and `git ls-remote --heads <ssh-smoke-remote> 'refs/heads/agentstudio-git-live-smoke/*'`: exit 0; no leftover smoke refs reported.
+- public hosted artifact branch: commit `aa2c8b9`; artifact directory contains `CLibGit2Local.xcframework.zip`, checksum, and README.
+- `curl -L --fail --max-time 60 --output /tmp/agentstudio-git-libgit2-raw-probe.zip <public-raw-artifact-url>`: exit 0; downloaded 1.8 MB artifact with SHA-256 `33a995b26dafeaf0b73ef2d65371653c0e35042d55344fef4acea1b059c2740d`.
+- `AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL=<public-raw-artifact-url> AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM=33a995b26dafeaf0b73ef2d65371653c0e35042d55344fef4acea1b059c2740d bash scripts/verify-hosted-libgit2-artifact.sh`: exit 0; `hosted libgit2 artifact linked successfully`; artifact URL intentionally omitted from proof output.
 
 - [x] **Step 6: Commit**
 
@@ -1001,4 +1066,4 @@ Pause implementation and update the plan if:
 
 ## Recommended Next Step
 
-Run one focused plan-review pass on this revised plan. If no blockers remain, start Task 0 and Task 1 with TDD.
+Run the final implementation review and completion audit against the current diff. If no blocker remains, commit the SDK/proof changes and proceed to the separate AgentStudio consumption plan.
