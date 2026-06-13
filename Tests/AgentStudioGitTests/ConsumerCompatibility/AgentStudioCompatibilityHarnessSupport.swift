@@ -107,6 +107,12 @@ enum AgentStudioCompatibilityHarnessSupport {
             options: [.skipsHiddenFiles]
         )
         while let candidate = enumerator?.nextObject() as? URL {
+            if candidate.pathExtension == "xcframework",
+                candidate.lastPathComponent != "CLibGit2Local.xcframework"
+            {
+                enumerator?.skipDescendants()
+                continue
+            }
             guard candidate.pathComponents.contains("CLibGit2Local.xcframework"),
                 candidate.lastPathComponent == "Headers",
                 isLibGit2HeaderSearchPath(candidate)
