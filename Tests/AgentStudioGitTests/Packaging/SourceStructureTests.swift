@@ -1,0 +1,70 @@
+import Foundation
+import Testing
+
+@Suite("Source structure contracts")
+struct SourceStructureTests {
+    @Test("production Swift files stay below the local split threshold")
+    func productionSwiftFilesStayBelowTheLocalSplitThreshold() throws {
+        let oversizedFiles = try sourceSwiftFiles().compactMap { filePath -> String? in
+            let lineCount = try lineCount(for: filePath)
+            guard lineCount > 600 else {
+                return nil
+            }
+            return "\(filePath):\(lineCount)"
+        }
+
+        #expect(oversizedFiles.isEmpty)
+    }
+
+    @Test("async git process runner does not block while polling process exit")
+    func asyncGitProcessRunnerDoesNotBlockWhilePollingProcessExit() throws {
+        let pollingSourcePaths = [
+            "Sources/AgentStudioGitRemote/GitProcessOutputCapture.swift",
+            "Sources/AgentStudioGitRemote/GitProcessWaitCoordinator.swift",
+        ]
+        let pollingSources = try pollingSourcePaths.map(sourceContents).joined(separator: "\n")
+
+        #expect(!pollingSources.contains("DispatchGroup"))
+        #expect(!pollingSources.contains("DispatchSemaphore"))
+        #expect(!pollingSources.contains("Task.sleep"))
+        #expect(!pollingSources.contains("Thread.sleep"))
+        #expect(!pollingSources.contains("usleep"))
+        #expect(pollingSources.contains("withCheckedContinuation"))
+        #expect(pollingSources.contains("asyncAfter"))
+    }
+
+    private func sourceSwiftFiles() throws -> [String] {
+        try filePaths(under: "Sources").filter { $0.hasSuffix(".swift") }
+    }
+
+    private func filePaths(under rootPath: String) throws -> [String] {
+        let packageRootURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let rootURL = packageRootURL.appending(path: rootPath)
+        let enumerator = try #require(
+            FileManager.default.enumerator(
+                at: rootURL,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            ))
+        var paths: [String] = []
+        for case let fileURL as URL in enumerator {
+            let values = try fileURL.resourceValues(forKeys: [.isRegularFileKey])
+            guard values.isRegularFile == true else {
+                continue
+            }
+            paths.append(fileURL.path.replacingOccurrences(of: packageRootURL.path + "/", with: ""))
+        }
+        return paths.sorted()
+    }
+
+    private func sourceContents(_ path: String) throws -> String {
+        try String(
+            contentsOf: URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appending(path: path),
+            encoding: .utf8
+        )
+    }
+
+    private func lineCount(for path: String) throws -> Int {
+        try sourceContents(path).split(separator: "\n", omittingEmptySubsequences: false).count
+    }
+}

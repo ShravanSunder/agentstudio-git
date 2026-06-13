@@ -21,6 +21,7 @@ suites=(
   SystemGitRemoteClientTests
   GitRemoteOutputParserTests
   LibGit2PackagingScriptTests
+  SourceStructureTests
   GitStatusIntegrationTests
   GitWorktreeIntegrationTests
   GitReviewDataIntegrationTests
