@@ -262,5 +262,5 @@ Do not add wall-clock sleeps. Wait for exact filesystem/process state when neces
 - Read operations do not write the actual main or linked worktree index.
 - Worktree removal safety is proven for main, linked, dirty, staged, untracked, locked, stale, forced, and partial-failure cases.
 - Remote/auth operations reuse the user's system Git credential path and redact all public failure values.
-- A clean downstream SwiftPM package can consume the local development path, and release HTTPS/checksum manifest mode is evaluated. Actual distributable artifact download proof requires a hosted `CLibGit2Local.xcframework.zip` and `scripts/verify-hosted-libgit2-artifact.sh` using an isolated SwiftPM cache, public HTTPS artifact host, redacted SwiftPM output, and the pinned libgit2 version.
+- A clean downstream SwiftPM package can consume the SDK through the default hosted libgit2 artifact path without a neighboring `Artifacts/` directory, and explicit HTTPS/checksum override manifest mode is evaluated. Alternate hosted artifact download proof uses `scripts/verify-hosted-libgit2-artifact.sh` with an isolated SwiftPM cache, public HTTPS artifact host, redacted SwiftPM output, and the pinned libgit2 version.
 - AgentStudio adapters can consume the package without importing Bridge contracts into `agentstudio-git`.
