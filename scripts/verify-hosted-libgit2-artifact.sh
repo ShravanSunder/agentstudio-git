@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRATCH_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentstudio-git-hosted-artifact.XXXXXX")"
 trap 'rm -rf "$SCRATCH_DIR"' EXIT
+PACKAGE_IDENTITY="$(basename "$ROOT_DIR" | tr '[:upper:]' '[:lower:]')"
 
 require_env() {
   local variable_name="$1"
@@ -229,7 +230,7 @@ mkdir -p "$SCRATCH_DIR/swift-cache" "$SCRATCH_DIR/swift-scratch"
   printf '%s\n' '        .executableTarget('
   printf '%s\n' '            name: "HostedArtifactConsumer",'
   printf '%s\n' '            dependencies: ['
-  printf '%s\n' '                .product(name: "AgentStudioGitLocal", package: "agentstudio-git"),'
+  printf '                .product(name: "AgentStudioGitLocal", package: "%s"),\n' "$PACKAGE_IDENTITY"
   printf '%s\n' '            ]'
   printf '%s\n' '        ),'
   printf '%s\n' '    ]'

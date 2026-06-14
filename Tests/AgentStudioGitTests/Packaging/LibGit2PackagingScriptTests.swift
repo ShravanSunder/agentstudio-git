@@ -37,9 +37,9 @@ struct LibGit2PackagingScriptTests {
         #expect(packageContents.contains("AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM"))
         #expect(
             packageContents.contains(
-                "https://raw.githubusercontent.com/ShravanSunder/experiments-gh-cli-repo-public/aa2c8b9/agentstudio-git/libgit2/2026-06-12/CLibGit2Local.xcframework.zip"
+                "https://github.com/ShravanSunder/agentstudio-git/releases/download/libgit2-1.9.4-agentstudio.1/CLibGit2Local.xcframework.zip"
             ))
-        #expect(packageContents.contains("33a995b26dafeaf0b73ef2d65371653c0e35042d55344fef4acea1b059c2740d"))
+        #expect(packageContents.contains("a14247dbdd4e228c2c07436c908f10e293993e0c7b8d30a22d9a2f8f6daeac84"))
         #expect(packageContents.contains("url: binaryURL"))
         #expect(packageContents.contains("checksum: binaryChecksum"))
         #expect(packageContents.contains(".linkedLibrary(\"z\")"))
@@ -58,7 +58,10 @@ struct LibGit2PackagingScriptTests {
         #expect(contents.contains("import AgentStudioGitRemote"))
         #expect(contents.contains(".product(name: \"AgentStudioGit\""))
         #expect(contents.contains(".product(name: \"AgentStudioGitContracts\""))
-        #expect(contents.contains(".package(name: \"agentstudio-git\", path:"))
+        #expect(contents.contains("PACKAGE_IDENTITY=\"$(basename \"$ROOT_DIR\" | tr '[:upper:]' '[:lower:]')\""))
+        #expect(contents.contains(".package(path:"))
+        #expect(!contents.contains(".package(name: \"agentstudio-git\", path:"))
+        #expect(contents.contains("package: \"%s\""))
         #expect(contents.contains(".product(name: \"AgentStudioGitRemote\""))
         #expect(contents.contains("swift run --package-path"))
         #expect(contents.contains("without hosted artifact overrides"))
@@ -67,6 +70,11 @@ struct LibGit2PackagingScriptTests {
         #expect(contents.contains("-u AGENTSTUDIO_GIT_ALLOW_LIBGIT2_BINARY_URL"))
         #expect(contents.contains("-u AGENTSTUDIO_GIT_USE_LOCAL_LIBGIT2_ARTIFACT"))
         #expect(contents.contains("swift package dump-package"))
+        #expect(
+            contents.contains(
+                "https://github.com/ShravanSunder/agentstudio-git/releases/download/libgit2-1.9.4-agentstudio.1/CLibGit2Local.xcframework.zip"
+            ))
+        #expect(contents.contains("a14247dbdd4e228c2c07436c908f10e293993e0c7b8d30a22d9a2f8f6daeac84"))
         #expect(!contents.contains("CLibGit2Local.xcframework.zip.checksum"))
         #expect(!contents.contains("mise run"))
     }
@@ -260,7 +268,10 @@ struct LibGit2PackagingScriptTests {
         #expect(scriptContents.contains("AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM"))
         #expect(!scriptContents.contains("AGENTSTUDIO_GIT_ALLOW_LIBGIT2_BINARY_URL=1"))
         #expect(scriptContents.contains("must be an https URL"))
+        #expect(scriptContents.contains("PACKAGE_IDENTITY=\"$(basename \"$ROOT_DIR\" | tr '[:upper:]' '[:lower:]')\""))
         #expect(scriptContents.contains(".package(path:"))
+        #expect(!scriptContents.contains(".package(name: \"agentstudio-git\", path:"))
+        #expect(scriptContents.contains("package: \"%s\""))
         #expect(scriptContents.contains("import AgentStudioGitLocal"))
         #expect(scriptContents.contains("LibGit2ImportCanary.version()"))
         #expect(scriptContents.contains("expectedLibGit2MajorVersion = 1"))
