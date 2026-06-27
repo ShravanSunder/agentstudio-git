@@ -32,6 +32,31 @@ struct GitReviewDataIntegrationTests {
         #expect(sourcesTree.entries.contains { $0.path == "Sources/App.swift" && !$0.isTree })
     }
 
+    @Test("tree reads preserve entries when blob size lookup cannot read an object")
+    func treeReadsPreserveEntriesWhenBlobSizeLookupCannotReadAnObject() async throws {
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-tree-missing-blob")
+        defer { fixture.remove() }
+        try fixture.write("MissingBlob.txt", contents: "content\n")
+        try fixture.git.run("add", "MissingBlob.txt")
+        try fixture.git.run("commit", "-m", "seed missing blob")
+        let blobOID = try fixture.git.run("rev-parse", "HEAD:MissingBlob.txt")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let objectPath = fixture.repositoryPath
+            .appending(path: ".git/objects")
+            .appending(path: String(blobOID.prefix(2)))
+            .appending(path: String(blobOID.dropFirst(2)))
+        try FileManager.default.removeItem(at: objectPath)
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        let tree = try await client.readTree(
+            GitTreeReadRequest(repositoryPath: fixture.repositoryPath, revision: .named("HEAD"), path: nil)
+        )
+        let entry = try #require(tree.entries.first { $0.path == "MissingBlob.txt" })
+
+        #expect(entry.oid == blobOID)
+        #expect(entry.sizeBytes == nil)
+    }
+
     @Test("diffs cover commit index and working-tree endpoints")
     func diffsCoverCommitIndexAndWorkingTreeEndpoints() async throws {
         let fixture = try ReviewDataFixture.make()

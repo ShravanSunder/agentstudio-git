@@ -82,10 +82,14 @@ struct LibGit2TreeReader: Sendable {
                 oid: LibGit2ReviewSupport.oidString(git_tree_entry_id(entry)),
                 mode: Int32(git_tree_entry_filemode(entry).rawValue),
                 isTree: isTree,
-                sizeBytes: try isTree ? nil : blobSize(entry: entry, repository: repository)
+                sizeBytes: isTree ? nil : bestEffortBlobSize(entry: entry, repository: repository)
             )
         }
         .sorted { $0.path < $1.path }
+    }
+
+    private func bestEffortBlobSize(entry: OpaquePointer, repository: OpaquePointer) -> Int64? {
+        try? blobSize(entry: entry, repository: repository)
     }
 
     private func blobSize(entry: OpaquePointer, repository: OpaquePointer) throws -> Int64 {
