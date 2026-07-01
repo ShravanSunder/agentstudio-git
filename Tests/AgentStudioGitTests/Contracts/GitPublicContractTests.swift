@@ -72,6 +72,32 @@ struct GitPublicContractTests {
         #expect(decodedSnapshot.entries.map(\.kind) == [.file, .file, .symlink, .submodule])
     }
 
+    @Test("tracked paths contracts encode explicit stable wire keys")
+    func trackedPathsContractsEncodeExplicitStableWireKeys() throws {
+        let snapshot = GitTrackedPathsSnapshot(
+            entries: [
+                GitTrackedPathEntry(path: "Sources/App.swift", kind: .file),
+                GitTrackedPathEntry(path: "Sources/Current", kind: .symlink),
+            ],
+            rawIndexEntryCount: 3
+        )
+        let options = GitTrackedPathsOptions(scopePath: "Sources")
+
+        let optionsObject = try jsonDictionary(for: options)
+        let snapshotObject = try jsonDictionary(for: snapshot)
+        let entries = try #require(snapshotObject["entries"] as? [[String: Any]])
+
+        #expect(optionsObject["scopePath"] as? String == "Sources")
+        #expect(Set(optionsObject.keys) == ["scopePath"])
+        #expect(snapshotObject["rawIndexEntryCount"] as? Int == 3)
+        #expect(snapshotObject.keys.contains("indexEntryCount") == false)
+        #expect(entries.count == 2)
+        #expect(entries[0]["path"] as? String == "Sources/App.swift")
+        #expect(entries[0]["kind"] as? String == "file")
+        #expect(entries[1]["path"] as? String == "Sources/Current")
+        #expect(entries[1]["kind"] as? String == "symlink")
+    }
+
     @Test("origin resolution encodes an explicit stable wire shape")
     func originResolutionEncodesExplicitStableWireShape() throws {
         let resolved = GitOriginResolution.resolved(

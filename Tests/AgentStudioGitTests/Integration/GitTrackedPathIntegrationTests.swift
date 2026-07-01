@@ -70,6 +70,51 @@ struct GitTrackedPathIntegrationTests {
         }
     }
 
+    @Test("tracked paths normalize whole-tree and trailing-slash scopes")
+    func trackedPathsNormalizeWholeTreeAndTrailingSlashScopes() async throws {
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-tracked-paths-scope-normalize")
+        defer { fixture.remove() }
+        try fixture.write("Sources/App.swift", contents: "app\n")
+        try fixture.write("Sources/Nested/View.swift", contents: "view\n")
+        try fixture.write("Sources2/App.swift", contents: "wrong boundary\n")
+        try fixture.git.run(
+            "add",
+            "Sources/App.swift",
+            "Sources/Nested/View.swift",
+            "Sources2/App.swift"
+        )
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        let wholeTreePaths = try await trackedPaths(
+            client: client,
+            repositoryPath: fixture.repositoryPath,
+            scopePath: nil
+        )
+        let emptyScopePaths = try await trackedPaths(
+            client: client,
+            repositoryPath: fixture.repositoryPath,
+            scopePath: ""
+        )
+        let slashOnlyScopePaths = try await trackedPaths(
+            client: client,
+            repositoryPath: fixture.repositoryPath,
+            scopePath: "///"
+        )
+        let trailingSlashScopePaths = try await trackedPaths(
+            client: client,
+            repositoryPath: fixture.repositoryPath,
+            scopePath: "Sources/"
+        )
+
+        #expect(emptyScopePaths == wholeTreePaths)
+        #expect(slashOnlyScopePaths == wholeTreePaths)
+        #expect(
+            trailingSlashScopePaths == [
+                "Sources/App.swift",
+                "Sources/Nested/View.swift",
+            ])
+    }
+
     @Test("tracked paths classify symlinks and submodules")
     func trackedPathsClassifySymlinksAndSubmodules() async throws {
         let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-tracked-paths-kinds")
@@ -188,6 +233,18 @@ struct GitTrackedPathIntegrationTests {
 
     private func samePath(_ first: URL, _ second: URL) -> Bool {
         normalizedPath(first) == normalizedPath(second)
+    }
+
+    private func trackedPaths(
+        client: LibGit2AgentStudioGitLocalClient,
+        repositoryPath: URL,
+        scopePath: String?
+    ) async throws -> [String] {
+        let snapshot = try await client.trackedPaths(
+            for: repositoryPath,
+            options: GitTrackedPathsOptions(scopePath: scopePath)
+        )
+        return snapshot.entries.map(\.path)
     }
 
     private func normalizedPath(_ url: URL) -> String {
