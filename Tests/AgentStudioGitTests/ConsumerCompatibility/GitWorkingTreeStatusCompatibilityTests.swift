@@ -530,6 +530,12 @@ private struct StubLocalClient: AgentStudioGitLocalClient {
         snapshot
     }
 
+    func trackedPaths(for _: URL, options _: GitTrackedPathsOptions) async throws(GitDataPlaneError)
+        -> GitTrackedPathsSnapshot
+    {
+        throw .unsupported(message: "not needed")
+    }
+
     func branches(for _: URL) async throws(GitDataPlaneError) -> [GitBranchSnapshot] {
         throw .unsupported(message: "not needed")
     }

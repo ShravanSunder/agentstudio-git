@@ -496,6 +496,12 @@ private struct BridgeReviewSourceAdapterCompileHarness {
                 throw .unsupported(message: "unused")
             }
 
+            func trackedPaths(for worktreePath: URL, options: GitTrackedPathsOptions) async throws(GitDataPlaneError)
+                -> GitTrackedPathsSnapshot
+            {
+                throw .unsupported(message: "unused")
+            }
+
             func branches(for repositoryPath: URL) async throws(GitDataPlaneError) -> [GitBranchSnapshot] {
                 throw .unsupported(message: "unused")
             }

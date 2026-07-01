@@ -110,6 +110,14 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
         }
     }
 
+    public func trackedPaths(for worktreePath: URL, options: GitTrackedPathsOptions) async throws(GitDataPlaneError)
+        -> GitTrackedPathsSnapshot
+    {
+        try mapSyncGitDataPlaneError {
+            try LibGit2TrackedPathReader().trackedPaths(for: worktreePath, options: options)
+        }
+    }
+
     public func branches(for repositoryPath: URL) async throws(GitDataPlaneError) -> [GitBranchSnapshot] {
         try mapSyncGitDataPlaneError {
             try LibGit2BranchReader().branches(for: repositoryPath)

@@ -49,6 +49,29 @@ struct GitPublicContractTests {
         #expect(decodedSnapshot.originResolution == snapshot.originResolution)
     }
 
+    @Test("tracked paths snapshots round-trip with stable path kinds")
+    func trackedPathsSnapshotRoundTripsWithStablePathKinds() throws {
+        let snapshot = GitTrackedPathsSnapshot(
+            entries: [
+                GitTrackedPathEntry(path: ".gitmodules", kind: .file),
+                GitTrackedPathEntry(path: "Sources/App.swift", kind: .file),
+                GitTrackedPathEntry(path: "Sources/Current", kind: .symlink),
+                GitTrackedPathEntry(path: "Vendor/Library", kind: .submodule),
+            ],
+            rawIndexEntryCount: 4
+        )
+        let options = GitTrackedPathsOptions(scopePath: "Sources")
+
+        let snapshotData = try JSONEncoder().encode(snapshot)
+        let decodedSnapshot = try JSONDecoder().decode(GitTrackedPathsSnapshot.self, from: snapshotData)
+        let optionsData = try JSONEncoder().encode(options)
+        let decodedOptions = try JSONDecoder().decode(GitTrackedPathsOptions.self, from: optionsData)
+
+        #expect(decodedSnapshot == snapshot)
+        #expect(decodedOptions == options)
+        #expect(decodedSnapshot.entries.map(\.kind) == [.file, .file, .symlink, .submodule])
+    }
+
     @Test("origin resolution encodes an explicit stable wire shape")
     func originResolutionEncodesExplicitStableWireShape() throws {
         let resolved = GitOriginResolution.resolved(

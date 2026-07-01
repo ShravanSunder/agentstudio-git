@@ -30,6 +30,7 @@ struct GitWireEnumSnapshotTests {
         #expect(GitRemotePromptPolicy.allCases.map(\.rawValue) == ["noninteractive", "trustedInteractive"])
         #expect(GitRemoteProtocol.allCases.map(\.rawValue) == ["file", "git", "http", "https", "ssh"])
         #expect(GitProcessOutputStream.allCases.map(\.rawValue) == ["stdout", "stderr"])
+        #expect(GitTrackedPathKind.allCases.map(\.rawValue) == ["file", "symlink", "submodule"])
         #expect(GitWorktreePruneRefusalReason.allCases.map(\.rawValue) == ["liveWorktree"])
         #expect(
             GitWorktreeRemovalRefusalReason.allCases.map(\.rawValue) == [
