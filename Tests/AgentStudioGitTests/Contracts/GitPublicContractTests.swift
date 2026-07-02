@@ -49,6 +49,39 @@ struct GitPublicContractTests {
         #expect(decodedSnapshot.originResolution == snapshot.originResolution)
     }
 
+    @Test("status options keep pathspecs off the wire when unset")
+    func statusOptionsKeepPathspecsOffTheWireWhenUnset() throws {
+        let defaultOptions = GitStatusOptions()
+        let scopedOptions = GitStatusOptions(includeUntracked: true, pathspecs: ["src", "docs/README.md"])
+
+        let defaultObject = try jsonDictionary(for: defaultOptions)
+        let scopedObject = try jsonDictionary(for: scopedOptions)
+
+        // Default pathspecs is nil, so the key is omitted — byte-identical to the pre-pathspec wire.
+        #expect(defaultOptions.pathspecs == nil)
+        #expect(Set(defaultObject.keys) == ["includeIgnored", "includeUntracked"])
+        // A non-nil value encodes as an explicit string array.
+        #expect(scopedObject["pathspecs"] as? [String] == ["src", "docs/README.md"])
+
+        // Round-trips preserve both the nil and populated cases.
+        let decodedDefault = try JSONDecoder().decode(
+            GitStatusOptions.self,
+            from: JSONEncoder().encode(defaultOptions)
+        )
+        let decodedScoped = try JSONDecoder().decode(
+            GitStatusOptions.self,
+            from: JSONEncoder().encode(scopedOptions)
+        )
+        #expect(decodedDefault == defaultOptions)
+        #expect(decodedScoped == scopedOptions)
+
+        // Legacy payloads without a pathspecs key decode to nil.
+        let legacyData = Data(#"{"includeIgnored":false,"includeUntracked":true}"#.utf8)
+        let decodedLegacy = try JSONDecoder().decode(GitStatusOptions.self, from: legacyData)
+        #expect(decodedLegacy.pathspecs == nil)
+        #expect(decodedLegacy == GitStatusOptions())
+    }
+
     @Test("tracked paths snapshots round-trip with stable path kinds")
     func trackedPathsSnapshotRoundTripsWithStablePathKinds() throws {
         let snapshot = GitTrackedPathsSnapshot(

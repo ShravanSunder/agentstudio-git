@@ -175,9 +175,32 @@ public struct GitStatusOptions: Codable, Equatable, Hashable, Sendable {
     public let includeIgnored: Bool
     public let includeUntracked: Bool
 
-    public init(includeIgnored: Bool = false, includeUntracked: Bool = true) {
+    /// Repo-relative path patterns that scope the status walk to just those paths.
+    ///
+    /// `nil` (the default) requests a full-worktree status — byte-identical to the
+    /// behavior before this option existed. A non-`nil` value maps to libgit2's
+    /// `git_status_options.pathspec` with fnmatch-style matching enabled, so entries
+    /// are limited to paths matching the patterns. Patterns are repo-relative: a bare
+    /// directory such as `"src"` scopes to that subtree recursively, and wildcards use
+    /// fnmatch semantics. An empty array is treated as `nil` (no restriction), matching
+    /// libgit2's empty-pathspec behavior.
+    ///
+    /// Rename caveat: status keeps rename detection enabled, but a pathspec that matches
+    /// only one side of a rename cannot see the other side. libgit2 then reports the
+    /// visible side as a standalone add (target-only match) or delete (source-only match)
+    /// rather than a paired rename. Consumers folding scoped deltas must treat a
+    /// source-only or target-only entry conservatively; this reader preserves whatever
+    /// libgit2 reports and does not attempt to re-pair renames across pathspec limits.
+    public let pathspecs: [String]?
+
+    public init(
+        includeIgnored: Bool = false,
+        includeUntracked: Bool = true,
+        pathspecs: [String]? = nil
+    ) {
         self.includeIgnored = includeIgnored
         self.includeUntracked = includeUntracked
+        self.pathspecs = pathspecs
     }
 }
 
