@@ -23,6 +23,7 @@ suites=(
   LibGit2PackagingScriptTests
   SourceStructureTests
   GitStatusIntegrationTests
+  GitIgnoreIntegrationTests
   GitTrackedPathIntegrationTests
   GitWorktreeIntegrationTests
   GitReviewDataIntegrationTests

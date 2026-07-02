@@ -15,6 +15,9 @@ public protocol AgentStudioGitLocalClient: Sendable {
     func status(for worktreePath: URL, options: GitStatusOptions) async throws(GitDataPlaneError) -> GitStatusSnapshot
     func trackedPaths(for worktreePath: URL, options: GitTrackedPathsOptions) async throws(GitDataPlaneError)
         -> GitTrackedPathsSnapshot
+    func isPathIgnored(repositoryAt worktreePath: URL, relativePath: String) async throws(GitDataPlaneError) -> Bool
+    func ignoredPaths(repositoryAt worktreePath: URL, relativePaths: [String]) async throws(GitDataPlaneError)
+        -> [GitIgnoreCheck]
     func branches(for repositoryPath: URL) async throws(GitDataPlaneError) -> [GitBranchSnapshot]
     func resolveRevision(_ request: GitRevisionResolutionRequest) async throws(GitDataPlaneError) -> GitResolvedRevision
     func readTree(_ request: GitTreeReadRequest) async throws(GitDataPlaneError) -> GitTreeSnapshot

@@ -536,6 +536,16 @@ private struct StubLocalClient: AgentStudioGitLocalClient {
         throw .unsupported(message: "not needed")
     }
 
+    func isPathIgnored(repositoryAt _: URL, relativePath _: String) async throws(GitDataPlaneError) -> Bool {
+        throw .unsupported(message: "not needed")
+    }
+
+    func ignoredPaths(repositoryAt _: URL, relativePaths _: [String]) async throws(GitDataPlaneError)
+        -> [GitIgnoreCheck]
+    {
+        throw .unsupported(message: "not needed")
+    }
+
     func branches(for _: URL) async throws(GitDataPlaneError) -> [GitBranchSnapshot] {
         throw .unsupported(message: "not needed")
     }

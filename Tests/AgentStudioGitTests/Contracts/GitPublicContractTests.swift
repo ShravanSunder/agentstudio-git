@@ -72,6 +72,20 @@ struct GitPublicContractTests {
         #expect(decodedSnapshot.entries.map(\.kind) == [.file, .file, .symlink, .submodule])
     }
 
+    @Test("ignore checks round-trip with stable relative path decisions")
+    func ignoreChecksRoundTripWithStableRelativePathDecisions() throws {
+        let ignoredCheck = GitIgnoreCheck(relativePath: "ignored-dir/", isIgnored: true)
+        let keptCheck = GitIgnoreCheck(relativePath: "Sources/App.swift", isIgnored: false)
+
+        let ignoredData = try JSONEncoder().encode(ignoredCheck)
+        let keptData = try JSONEncoder().encode(keptCheck)
+        let decodedIgnoredCheck = try JSONDecoder().decode(GitIgnoreCheck.self, from: ignoredData)
+        let decodedKeptCheck = try JSONDecoder().decode(GitIgnoreCheck.self, from: keptData)
+
+        #expect(decodedIgnoredCheck == ignoredCheck)
+        #expect(decodedKeptCheck == keptCheck)
+    }
+
     @Test("tracked paths contracts encode explicit stable wire keys")
     func trackedPathsContractsEncodeExplicitStableWireKeys() throws {
         let snapshot = GitTrackedPathsSnapshot(

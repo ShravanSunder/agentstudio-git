@@ -118,6 +118,31 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
         }
     }
 
+    public func isPathIgnored(repositoryAt worktreePath: URL, relativePath: String) async throws(GitDataPlaneError)
+        -> Bool
+    {
+        try mapSyncGitDataPlaneError {
+            try LibGit2IgnoreReader().isPathIgnored(repositoryAt: worktreePath, relativePath: relativePath)
+        }
+    }
+
+    public func ignoredPaths(repositoryAt worktreePath: URL, relativePaths: [String]) async throws(GitDataPlaneError)
+        -> [GitIgnoreCheck]
+    {
+        try mapSyncGitDataPlaneError {
+            try LibGit2IgnoreReader().ignoredPaths(repositoryAt: worktreePath, relativePaths: relativePaths)
+        }
+    }
+
+    public func withIgnoreSession<ReturnValue: Sendable>(
+        repositoryAt worktreePath: URL,
+        _ body: @Sendable (LibGit2IgnoreSession) throws -> ReturnValue
+    ) async throws(GitDataPlaneError) -> ReturnValue {
+        try mapSyncGitDataPlaneError {
+            try LibGit2IgnoreReader().withIgnoreSession(repositoryAt: worktreePath, body)
+        }
+    }
+
     public func branches(for repositoryPath: URL) async throws(GitDataPlaneError) -> [GitBranchSnapshot] {
         try mapSyncGitDataPlaneError {
             try LibGit2BranchReader().branches(for: repositoryPath)
