@@ -1,5 +1,25 @@
 import Foundation
 
+extension KeyedDecodingContainer {
+    fileprivate func rejectNonSelectedPayloadKeys(
+        _ nonSelectedPayloadKeys: [Key],
+        unionName: String,
+        selectedCase: String
+    ) throws {
+        let presentNonSelectedKeys = nonSelectedPayloadKeys.filter(contains)
+        guard presentNonSelectedKeys.isEmpty else {
+            let keyNames = presentNonSelectedKeys.map(\.stringValue).sorted().joined(separator: ", ")
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(
+                    codingPath: codingPath,
+                    debugDescription:
+                        "\(unionName).\(selectedCase) payload contains non-selected keys: \(keyNames)"
+                )
+            )
+        }
+    }
+}
+
 public protocol AgentStudioGitDiscoveryReadClient: Sendable {
     func readDiscoveryCandidate(_ request: GitDiscoveryReadRequest) async -> GitDiscoveryReadOutcome
 }
@@ -36,10 +56,25 @@ extension GitDiscoveryReadOutcome: Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         switch try container.decode(State.self, forKey: .state) {
         case .validated:
+            try container.rejectNonSelectedPayloadKeys(
+                [.reason, .failure],
+                unionName: "GitDiscoveryReadOutcome",
+                selectedCase: State.validated.rawValue
+            )
             self = try .validated(container.decode(GitDiscoveryReadEvidence.self, forKey: .evidence))
         case .notRepository:
+            try container.rejectNonSelectedPayloadKeys(
+                [.evidence, .failure],
+                unionName: "GitDiscoveryReadOutcome",
+                selectedCase: State.notRepository.rawValue
+            )
             self = try .notRepository(container.decode(GitDiscoveryNotRepositoryReason.self, forKey: .reason))
         case .failed:
+            try container.rejectNonSelectedPayloadKeys(
+                [.evidence, .reason],
+                unionName: "GitDiscoveryReadOutcome",
+                selectedCase: State.failed.rawValue
+            )
             self = try .failed(container.decode(GitDiscoveryReadFailure.self, forKey: .failure))
         }
     }
@@ -125,6 +160,11 @@ extension GitDiscoveryWorktreeRegistration: Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         switch try container.decode(Kind.self, forKey: .kind) {
         case .main:
+            try container.rejectNonSelectedPayloadKeys(
+                [.name, .lockState],
+                unionName: "GitDiscoveryWorktreeRegistration",
+                selectedCase: Kind.main.rawValue
+            )
             self = .main
         case .linked:
             self = try .linked(
@@ -169,8 +209,18 @@ extension GitDiscoveryLinkedWorktreeLockState: Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         switch try container.decode(State.self, forKey: .state) {
         case .unlocked:
+            try container.rejectNonSelectedPayloadKeys(
+                [.reason],
+                unionName: "GitDiscoveryLinkedWorktreeLockState",
+                selectedCase: State.unlocked.rawValue
+            )
             self = .unlocked
         case .lockedWithoutReason:
+            try container.rejectNonSelectedPayloadKeys(
+                [.reason],
+                unionName: "GitDiscoveryLinkedWorktreeLockState",
+                selectedCase: State.lockedWithoutReason.rawValue
+            )
             self = .lockedWithoutReason
         case .locked:
             self = try .locked(reason: container.decode(String.self, forKey: .reason))
