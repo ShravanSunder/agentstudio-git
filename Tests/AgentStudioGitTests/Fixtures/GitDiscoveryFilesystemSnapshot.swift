@@ -18,20 +18,30 @@ struct GitDiscoveryFilesystemSnapshot: Equatable {
 
     static func capture(root: URL) throws -> Self {
         let fileManager = FileManager.default
+        let standardizedRoot = root.standardizedFileURL
+        var enumerationFailure: Error?
         guard
             let enumerator = fileManager.enumerator(
-                at: root,
+                at: standardizedRoot,
                 includingPropertiesForKeys: nil,
                 options: [],
-                errorHandler: { _, _ in false }
+                errorHandler: { _, error in
+                    enumerationFailure = error
+                    return false
+                }
             )
         else {
-            return Self(entries: [])
+            throw GitDiscoveryFilesystemSnapshotError.enumeratorUnavailable(
+                rootPath: standardizedRoot.path
+            )
         }
 
-        let standardizedRoot = root.standardizedFileURL
+        let enumeratedURLs = enumerator.compactMap { $0 as? URL }
+        if let enumerationFailure {
+            throw enumerationFailure
+        }
         let rootPrefix = standardizedRoot.path + "/"
-        let urls = ([standardizedRoot] + enumerator.compactMap { $0 as? URL }).sorted { $0.path < $1.path }
+        let urls = ([standardizedRoot] + enumeratedURLs).sorted { $0.path < $1.path }
         let entries = try urls.map { url in
             let attributes = try fileManager.attributesOfItem(atPath: url.path)
             let kind = attributes[.type] as? FileAttributeType ?? .typeUnknown
@@ -60,6 +70,10 @@ struct GitDiscoveryFilesystemSnapshot: Equatable {
         let standardizedPath = url.standardizedFileURL.path
         return standardizedPath == root.path ? "." : String(standardizedPath.dropFirst(rootPrefix.count))
     }
+}
+
+private enum GitDiscoveryFilesystemSnapshotError: Error {
+    case enumeratorUnavailable(rootPath: String)
 }
 
 final class GitDiscoveryWritePermissionGuard: @unchecked Sendable {
