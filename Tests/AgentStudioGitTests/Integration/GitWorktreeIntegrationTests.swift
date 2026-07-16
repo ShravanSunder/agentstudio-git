@@ -4,6 +4,174 @@ import Testing
 
 @Suite("Git worktree integration", .serialized)
 struct GitWorktreeIntegrationTests {
+    @Test("discovery filesystem snapshots reject incomplete enumeration")
+    func discoveryFilesystemSnapshotsRejectIncompleteEnumeration() throws {
+        let fixtureRoot = FileManager.default.temporaryDirectory
+            .appending(path: "agentstudio-git-discovery-snapshot-errors-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: fixtureRoot) }
+        let unreadableDirectory = fixtureRoot.appending(path: "unreadable")
+        try FileManager.default.createDirectory(at: unreadableDirectory, withIntermediateDirectories: true)
+        try Data("hidden\n".utf8).write(to: unreadableDirectory.appending(path: "hidden.txt"))
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: unreadableDirectory.path)
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o700],
+                ofItemAtPath: unreadableDirectory.path
+            )
+        }
+        let missingRoot = fixtureRoot.appending(path: "missing")
+
+        #expect(throws: (any Error).self) {
+            _ = try GitDiscoveryFilesystemSnapshot.capture(root: missingRoot)
+        }
+        #expect(throws: (any Error).self) {
+            _ = try GitDiscoveryFilesystemSnapshot.capture(root: fixtureRoot)
+        }
+    }
+
+    @Test("discovery filesystem mutation monitor observes a synchronized control write")
+    func discoveryFilesystemMutationMonitorObservesSynchronizedControlWrite() throws {
+        let fixtureRoot = FileManager.default.temporaryDirectory
+            .appending(path: "agentstudio-git-discovery-monitor-control-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: fixtureRoot) }
+        try FileManager.default.createDirectory(at: fixtureRoot, withIntermediateDirectories: true)
+        let controlFile = fixtureRoot.appending(path: "control.txt")
+        try Data("before\n".utf8).write(to: controlFile)
+        let mutationMonitor = try GitDiscoveryFilesystemMutationMonitor.startAndWaitUntilReady(
+            scopeRoot: fixtureRoot,
+            watchedRoots: [fixtureRoot]
+        )
+        defer { mutationMonitor.stop() }
+
+        let fileHandle = try FileHandle(forWritingTo: controlFile)
+        try fileHandle.seekToEnd()
+        try fileHandle.write(contentsOf: Data("after\n".utf8))
+        try fileHandle.synchronize()
+        try fileHandle.close()
+        let mutations = try mutationMonitor.flushAndDrain()
+        mutationMonitor.stop()
+
+        #expect(
+            mutations.contains {
+                $0.path == controlFile.standardizedFileURL.path
+                    && ($0.kinds.contains(.write) || $0.kinds.contains(.extend))
+            },
+            "expected synchronized control write to be observed, got \(mutations)"
+        )
+    }
+
+    @Test("discovery read opens only the exact submitted candidate")
+    func discoveryReadOpensOnlyExactSubmittedCandidate() async throws {
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-discovery-exact")
+        defer { fixture.remove() }
+        let nestedDirectory = fixture.repositoryPath.appending(path: "Sources/Feature")
+        try FileManager.default.createDirectory(at: nestedDirectory, withIntermediateDirectories: true)
+        let client = LibGit2AgentStudioGitDiscoveryReadClient()
+
+        let outcome = await client.readDiscoveryCandidate(
+            GitDiscoveryReadRequest(candidatePath: nestedDirectory)
+        )
+
+        #expect(outcome == .notRepository(.exactCandidateIsNotRepository))
+    }
+
+    @Test("discovery read reports a malformed exact repository as invalid")
+    func discoveryReadReportsMalformedExactRepositoryAsInvalid() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: "agentstudio-git-discovery-invalid-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data("not a git directory pointer\n".utf8).write(to: root.appending(path: ".git"))
+        let client = LibGit2AgentStudioGitDiscoveryReadClient()
+
+        let outcome = await client.readDiscoveryCandidate(
+            GitDiscoveryReadRequest(candidatePath: root)
+        )
+
+        #expect(outcome == .notRepository(.invalidRepository))
+    }
+
+    @Test("discovery read returns main-worktree evidence without mutating read-only Git state")
+    func discoveryReadReturnsMainWorktreeEvidenceWithoutMutation() async throws {
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-discovery-main")
+        defer { fixture.remove() }
+        let gitDirectory = fixture.repositoryPath.appending(path: ".git")
+        let lockSentinel = gitDirectory.appending(path: "index.lock")
+        try Data("pre-existing-lock\n".utf8).write(to: lockSentinel)
+        let before = try GitDiscoveryFilesystemSnapshot.capture(root: gitDirectory)
+        let permissionGuard = try GitDiscoveryWritePermissionGuard.removeWritePermissions(from: gitDirectory)
+        defer { permissionGuard.restore() }
+        let mutationMonitor = try GitDiscoveryFilesystemMutationMonitor.startAndWaitUntilReady(
+            scopeRoot: fixture.root,
+            watchedRoots: [fixture.repositoryPath, gitDirectory]
+        )
+        defer { mutationMonitor.stop() }
+        let client = LibGit2AgentStudioGitDiscoveryReadClient()
+
+        let outcome = await client.readDiscoveryCandidate(
+            GitDiscoveryReadRequest(candidatePath: fixture.repositoryPath)
+        )
+        let mutations = try mutationMonitor.flushAndDrain()
+        mutationMonitor.stop()
+        permissionGuard.restore()
+        let after = try GitDiscoveryFilesystemSnapshot.capture(root: gitDirectory)
+
+        guard case .validated(let evidence) = outcome else {
+            Issue.record("expected validated discovery evidence, got \(outcome)")
+            return
+        }
+        #expect(evidence.canonicalCandidatePath.path == fixture.repositoryPath.standardizedFileURL.path)
+        #expect(evidence.canonicalWorktreePath.path == fixture.repositoryPath.standardizedFileURL.path)
+        #expect(evidence.canonicalGitDirectory.path == gitDirectory.standardizedFileURL.path)
+        #expect(evidence.canonicalCommonDirectory.path == gitDirectory.standardizedFileURL.path)
+        #expect(evidence.repositoryIdentity.canonicalCommonDirectory.path == gitDirectory.standardizedFileURL.path)
+        #expect(evidence.registration == .main)
+        #expect(mutations.isEmpty, "discovery read emitted transient filesystem mutations: \(mutations)")
+        #expect(after == before)
+        #expect(try Data(contentsOf: lockSentinel) == Data("pre-existing-lock\n".utf8))
+    }
+
+    @Test("discovery read reports linked-worktree registration and preserves its lock")
+    func discoveryReadReportsLinkedWorktreeRegistrationAndPreservesLock() async throws {
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-discovery-linked")
+        defer { fixture.remove() }
+        let linkedPath = try fixture.addLinkedWorktree(named: "linked", branch: "feature/discovery-linked")
+        try fixture.git.run("worktree", "lock", "--reason", "external volume", linkedPath.path)
+        let commonGitDirectory = fixture.repositoryPath.appending(path: ".git")
+        let linkedGitFile = linkedPath.appending(path: ".git")
+        let linkedAdministrativeDirectory = commonGitDirectory.appending(path: "worktrees/linked")
+        let before = try GitDiscoveryFilesystemSnapshot.capture(root: commonGitDirectory)
+        let mutationMonitor = try GitDiscoveryFilesystemMutationMonitor.startAndWaitUntilReady(
+            scopeRoot: fixture.root,
+            watchedRoots: [
+                fixture.repositoryPath,
+                commonGitDirectory,
+                linkedPath,
+                linkedGitFile,
+                linkedAdministrativeDirectory,
+            ]
+        )
+        defer { mutationMonitor.stop() }
+        let client = LibGit2AgentStudioGitDiscoveryReadClient()
+
+        let outcome = await client.readDiscoveryCandidate(
+            GitDiscoveryReadRequest(candidatePath: linkedPath)
+        )
+        let mutations = try mutationMonitor.flushAndDrain()
+        mutationMonitor.stop()
+        let after = try GitDiscoveryFilesystemSnapshot.capture(root: commonGitDirectory)
+
+        guard case .validated(let evidence) = outcome else {
+            Issue.record("expected linked discovery evidence, got \(outcome)")
+            return
+        }
+        #expect(evidence.canonicalWorktreePath.path == linkedPath.standardizedFileURL.path)
+        #expect(evidence.canonicalCommonDirectory.path == commonGitDirectory.standardizedFileURL.path)
+        #expect(evidence.registration == .linked(name: "linked", lockState: .locked(reason: "external volume")))
+        #expect(mutations.isEmpty, "linked discovery read emitted transient filesystem mutations: \(mutations)")
+        #expect(after == before)
+    }
+
     @Test("main, linked, and linked-name-main worktrees are listed")
     func mainLinkedAndLinkedNameMainWorktreesAreListed() async throws {
         let fixture = try GitFixtureRepository.makeRepository()

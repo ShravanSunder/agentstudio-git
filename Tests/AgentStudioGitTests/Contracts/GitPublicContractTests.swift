@@ -4,6 +4,42 @@ import Testing
 
 @Suite("Git public contracts")
 struct GitPublicContractTests {
+    @Test("discovery reads round-trip strict request and outcome variants")
+    func discoveryReadsRoundTripStrictRequestAndOutcomeVariants() throws {
+        let request = GitDiscoveryReadRequest(candidatePath: URL(fileURLWithPath: "/tmp/repo"))
+        let identity = GitRepositoryIdentity(
+            id: GitRepositoryID(rawValue: "common:/tmp/repo/.git"),
+            canonicalCommonDirectory: URL(fileURLWithPath: "/tmp/repo/.git"),
+            mainWorktreePath: URL(fileURLWithPath: "/tmp/repo")
+        )
+        let evidence = GitDiscoveryReadEvidence(
+            canonicalCandidatePath: URL(fileURLWithPath: "/tmp/repo"),
+            canonicalWorktreePath: URL(fileURLWithPath: "/tmp/repo"),
+            canonicalGitDirectory: URL(fileURLWithPath: "/tmp/repo/.git"),
+            canonicalCommonDirectory: URL(fileURLWithPath: "/tmp/repo/.git"),
+            repositoryIdentity: identity,
+            registration: .main
+        )
+        let outcomes: [GitDiscoveryReadOutcome] = [
+            .validated(evidence),
+            .notRepository(.exactCandidateIsNotRepository),
+            .notRepository(.invalidRepository),
+            .notRepository(.invalidWorktreeRegistration),
+            .failed(GitDiscoveryReadFailure(code: -1, errorClass: 2, message: "permission denied")),
+        ]
+
+        let decodedRequest = try JSONDecoder().decode(
+            GitDiscoveryReadRequest.self,
+            from: JSONEncoder().encode(request)
+        )
+        let decodedOutcomes = try outcomes.map { outcome in
+            try JSONDecoder().decode(GitDiscoveryReadOutcome.self, from: JSONEncoder().encode(outcome))
+        }
+
+        #expect(decodedRequest == request)
+        #expect(decodedOutcomes == outcomes)
+    }
+
     @Test("status snapshots round-trip with tri-state origin resolution")
     func statusSnapshotRoundTripsWithOriginResolution() throws {
         let snapshot = GitStatusSnapshot(
