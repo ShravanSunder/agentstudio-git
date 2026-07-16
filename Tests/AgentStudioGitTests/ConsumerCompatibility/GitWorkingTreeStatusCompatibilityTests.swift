@@ -283,7 +283,7 @@ private struct AgentStudioStatusAdapterCompileHarness {
         let statusProviderDeclarations = try extractDeclaration(
             from: providerContents,
             start: "enum GitOriginResolution",
-            end: "struct ShellGitWorkingTreeStatusProvider"
+            end: nil
         )
 
         return """
@@ -302,26 +302,43 @@ private struct AgentStudioStatusAdapterCompileHarness {
             {
                 let client: LocalClient
 
-                func status(for rootPath: URL) async -> GitWorkingTreeStatus? {
+                func statusResult(for rootPath: URL, pathspecs: [String]?) async -> GitWorkingTreeStatusResult {
                     do {
-                        let snapshot = try await client.status(for: rootPath, options: GitStatusOptions())
-                        return GitWorkingTreeStatus(
-                            summary: GitWorkingTreeSummary(
-                                changed: snapshot.summary.unstagedFileCount,
-                                staged: snapshot.summary.stagedFileCount,
-                                untracked: snapshot.summary.untrackedFileCount,
-                                linesAdded: snapshot.summary.linesAdded,
-                                linesDeleted: snapshot.summary.linesDeleted,
-                                aheadCount: appAheadCount(snapshot),
-                                behindCount: appBehindCount(snapshot),
-                                hasUpstream: appHasUpstream(snapshot)
+                        let snapshot = try await client.status(
+                            for: rootPath,
+                            options: GitStatusOptions(pathspecs: pathspecs)
+                        )
+                        return .available(
+                            GitWorkingTreeStatus(
+                                summary: GitWorkingTreeSummary(
+                                    changed: snapshot.summary.unstagedFileCount,
+                                    staged: snapshot.summary.stagedFileCount,
+                                    untracked: snapshot.summary.untrackedFileCount,
+                                    linesAdded: snapshot.summary.linesAdded,
+                                    linesDeleted: snapshot.summary.linesDeleted,
+                                    aheadCount: appAheadCount(snapshot),
+                                    behindCount: appBehindCount(snapshot),
+                                    hasUpstream: appHasUpstream(snapshot)
+                                ),
+                                branch: snapshot.head.kind == .branch ? snapshot.head.shortName : nil,
+                                originResolution: appOriginResolution(snapshot.originResolution),
+                                entries: snapshot.entries.map(appEntry)
                             ),
-                            branch: snapshot.head.kind == .branch ? snapshot.head.shortName : nil,
-                            originResolution: appOriginResolution(snapshot.originResolution)
                         )
                     } catch {
-                        return nil
+                        return .unavailable(GitWorkingTreeStatusUnavailable(reason: .sdkError))
                     }
+                }
+
+                private func appEntry(_ entry: GitStatusEntry) -> GitWorkingTreeStatusEntry {
+                    GitWorkingTreeStatusEntry(
+                        path: entry.path,
+                        previousPath: entry.previousPath,
+                        hasStagedChange: entry.indexState != nil,
+                        hasUnstagedChange: entry.worktreeState != nil,
+                        isUntracked: entry.untracked,
+                        isRename: entry.indexState == .renamed || entry.worktreeState == .renamed
+                    )
                 }
 
                 private func appAheadCount(_ snapshot: GitStatusSnapshot) -> Int? {
@@ -352,14 +369,20 @@ private struct AgentStudioStatusAdapterCompileHarness {
             """
     }
 
-    private func extractDeclaration(from source: String, start: String, end: String) throws -> String {
+    private func extractDeclaration(from source: String, start: String, end: String?) throws -> String {
         guard let startRange = source.range(of: start) else {
             throw AgentStudioCompatibilityHarnessError.missingMarker(start)
         }
-        guard let endRange = source[startRange.lowerBound...].range(of: end) else {
-            throw AgentStudioCompatibilityHarnessError.missingMarker(end)
+        let endIndex: String.Index
+        if let end {
+            guard let endRange = source[startRange.lowerBound...].range(of: end) else {
+                throw AgentStudioCompatibilityHarnessError.missingMarker(end)
+            }
+            endIndex = endRange.lowerBound
+        } else {
+            endIndex = source.endIndex
         }
-        return String(source[startRange.lowerBound..<endRange.lowerBound]).trimmingCharacters(
+        return String(source[startRange.lowerBound..<endIndex]).trimmingCharacters(
             in: .whitespacesAndNewlines)
     }
 

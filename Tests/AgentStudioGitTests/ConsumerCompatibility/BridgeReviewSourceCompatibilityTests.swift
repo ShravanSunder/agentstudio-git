@@ -72,6 +72,8 @@ private struct BridgeReviewSourceAdapterCompileHarness {
         ].map { modelRoot.appending(path: $0) } + [
             runtimeRoot.appending(path: "BridgeReviewSourceProvider.swift"),
             runtimeRoot.appending(path: "BridgeGitReviewSourceProvider.swift"),
+            runtimeRoot.appending(path: "BridgeContentLoadObservation.swift"),
+            runtimeRoot.appending(path: "BridgeContentSharedLoad.swift"),
             runtimeRoot.appending(path: "BridgeContentStore.swift"),
         ]
     }
@@ -97,11 +99,23 @@ private struct BridgeReviewSourceAdapterCompileHarness {
 
             \(appDeclarations)
 
-            struct AgentStudioGitBridgeReviewAdapter<LocalClient: AgentStudioGitLocalClient>:
+            actor AgentStudioGitBridgeReviewAdapter<LocalClient: AgentStudioGitLocalClient>:
                 BridgeGitReviewDataClient
             {
+                struct ContentLocator: Sendable {
+                    let target: GitDiffTarget
+                    let path: String
+                    let reviewGeneration: BridgeReviewGeneration
+                }
+
                 let repositoryPath: URL
                 let client: LocalClient
+                var locatorByHandleId: [String: ContentLocator] = [:]
+
+                init(repositoryPath: URL, client: LocalClient) {
+                    self.repositoryPath = repositoryPath
+                    self.client = client
+                }
 
                 func resolveEndpoint(_ request: BridgeEndpointResolutionRequest) async throws
                     -> BridgeSourceEndpoint
@@ -156,14 +170,15 @@ private struct BridgeReviewSourceAdapterCompileHarness {
                 func readReviewItemDescriptor(_ request: BridgeReviewItemDescriptorRequest) async throws
                     -> BridgeReviewItemDescriptor
                 {
+                    let target = try gitTarget(for: request.endpoint)
                     let payload = try await client.content(
                         GitContentRequest(
                             repositoryPath: repositoryPath,
-                            target: try gitTarget(for: request.endpoint),
+                            target: target,
                             path: request.path
                         )
                     )
-                    return descriptor(
+                    let descriptor = descriptor(
                         path: request.path,
                         endpoint: request.endpoint,
                         reviewGeneration: request.reviewGeneration,
@@ -172,6 +187,14 @@ private struct BridgeReviewSourceAdapterCompileHarness {
                         contentHash: payload.contentHash,
                         contentHashAlgorithm: payload.contentHashAlgorithm
                     )
+                    if let handle = descriptor.contentRoles.file {
+                        locatorByHandleId[handle.handleId] = ContentLocator(
+                            target: target,
+                            path: request.path,
+                            reviewGeneration: request.reviewGeneration
+                        )
+                    }
+                    return descriptor
                 }
 
                 func resolveCheckpointEndpoint(_ request: BridgeCheckpointEndpointRequest) async throws
@@ -183,7 +206,17 @@ private struct BridgeReviewSourceAdapterCompileHarness {
                 }
 
                 func loadContent(_ request: BridgeContentLoadRequest) async throws -> BridgeContentLoadResult {
-                    let locator = try contentLocator(from: request.handle)
+                    guard let locator = locatorByHandleId[request.handle.handleId] else {
+                        throw BridgeProviderFailure.missingContent(handleId: request.handle.handleId)
+                    }
+                    guard locator.reviewGeneration == request.requestedGeneration,
+                        request.handle.reviewGeneration == request.requestedGeneration
+                    else {
+                        throw BridgeProviderFailure.staleReviewGeneration(
+                            storedGeneration: locator.reviewGeneration,
+                            requestedGeneration: request.requestedGeneration
+                        )
+                    }
                     let payload = try await client.content(
                         GitContentRequest(
                             repositoryPath: repositoryPath,
@@ -248,7 +281,6 @@ private struct BridgeReviewSourceAdapterCompileHarness {
                         role: .file,
                         endpointId: endpoint.endpointId,
                         reviewGeneration: reviewGeneration,
-                        resourceUrl: contentResourceURL(endpoint: endpoint, path: path),
                         contentHash: contentHash,
                         contentHashAlgorithm: contentHashAlgorithm,
                         cacheKey: "\\(endpoint.endpointId):\\(itemId):\\(contentHash)",
@@ -317,46 +349,6 @@ private struct BridgeReviewSourceAdapterCompileHarness {
                     case .modified, .typeChanged, .unmerged:
                         return .modified
                     }
-                }
-
-                private func contentLocator(from handle: BridgeContentHandle) throws
-                    -> (target: GitDiffTarget, path: String)
-                {
-                    guard let components = URLComponents(string: handle.resourceUrl),
-                        components.scheme == "agentstudio-git",
-                        let path = components.queryItems?.first(where: { $0.name == "path" })?.value,
-                        let targetName = components.queryItems?.first(where: { $0.name == "target" })?.value
-                    else {
-                        throw BridgeProviderFailure.missingContent(handleId: handle.handleId)
-                    }
-                    let identity = components.queryItems?.first(where: { $0.name == "identity" })?.value
-                    let target: GitDiffTarget
-                    switch targetName {
-                    case BridgeSourceEndpoint.Kind.gitRef.rawValue:
-                        guard let identity else {
-                            throw BridgeProviderFailure.missingContent(handleId: handle.handleId)
-                        }
-                        target = .commit(identity)
-                    case BridgeSourceEndpoint.Kind.index.rawValue:
-                        target = .index
-                    case BridgeSourceEndpoint.Kind.workingTree.rawValue:
-                        target = .workingTree
-                    default:
-                        throw BridgeProviderFailure.missingContent(handleId: handle.handleId)
-                    }
-                    return (target, path)
-                }
-
-                private func contentResourceURL(endpoint: BridgeSourceEndpoint, path: String) -> String {
-                    var components = URLComponents()
-                    components.scheme = "agentstudio-git"
-                    components.host = "content"
-                    components.queryItems = [
-                        URLQueryItem(name: "target", value: endpoint.kind.rawValue),
-                        URLQueryItem(name: "identity", value: endpoint.providerIdentity),
-                        URLQueryItem(name: "path", value: path),
-                    ]
-                    return components.string ?? "agentstudio-git://content"
                 }
             }
 
