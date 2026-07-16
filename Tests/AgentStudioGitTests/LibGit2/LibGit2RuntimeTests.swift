@@ -37,6 +37,27 @@ struct LibGit2RuntimeTests {
             Issue.record("expected GitDataPlaneError, got \(error)")
         }
     }
+
+    @Test("discovery client returns typed failure when libgit2 cannot initialize")
+    func discoveryClientReturnsTypedFailureWhenLibGit2CannotInitialize() async {
+        let runtime = LibGit2Runtime(initializeLibGit2: { -123 })
+        let client = LibGit2AgentStudioGitDiscoveryReadClient(runtime: runtime)
+
+        let outcome = await client.readDiscoveryCandidate(
+            GitDiscoveryReadRequest(candidatePath: URL(fileURLWithPath: "/tmp/repo"))
+        )
+
+        #expect(
+            outcome
+                == .failed(
+                    GitDiscoveryReadFailure(
+                        code: -123,
+                        errorClass: 0,
+                        message: "libgit2 initialization failed with code -123"
+                    )
+                )
+        )
+    }
 }
 
 private final class CountingLibGit2Initializer: @unchecked Sendable {
