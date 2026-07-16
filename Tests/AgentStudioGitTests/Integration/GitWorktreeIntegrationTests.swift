@@ -4,6 +4,31 @@ import Testing
 
 @Suite("Git worktree integration", .serialized)
 struct GitWorktreeIntegrationTests {
+    @Test("discovery filesystem snapshots reject incomplete enumeration")
+    func discoveryFilesystemSnapshotsRejectIncompleteEnumeration() throws {
+        let fixtureRoot = FileManager.default.temporaryDirectory
+            .appending(path: "agentstudio-git-discovery-snapshot-errors-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: fixtureRoot) }
+        let unreadableDirectory = fixtureRoot.appending(path: "unreadable")
+        try FileManager.default.createDirectory(at: unreadableDirectory, withIntermediateDirectories: true)
+        try Data("hidden\n".utf8).write(to: unreadableDirectory.appending(path: "hidden.txt"))
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: unreadableDirectory.path)
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o700],
+                ofItemAtPath: unreadableDirectory.path
+            )
+        }
+        let missingRoot = fixtureRoot.appending(path: "missing")
+
+        #expect(throws: (any Error).self) {
+            _ = try GitDiscoveryFilesystemSnapshot.capture(root: missingRoot)
+        }
+        #expect(throws: (any Error).self) {
+            _ = try GitDiscoveryFilesystemSnapshot.capture(root: fixtureRoot)
+        }
+    }
+
     @Test("discovery filesystem mutation monitor observes a synchronized control write")
     func discoveryFilesystemMutationMonitorObservesSynchronizedControlWrite() throws {
         let fixtureRoot = FileManager.default.temporaryDirectory
