@@ -4,21 +4,27 @@ import Foundation
 
 public struct LibGit2AgentStudioGitDiscoveryReadClient: AgentStudioGitDiscoveryReadClient {
     private let runtime: LibGit2Runtime
+    private let blockingReadExecutor: LibGit2BlockingReadExecutor
 
     public init() {
-        self.init(runtime: .shared)
+        self.init(runtime: .shared, blockingReadExecutor: .shared)
     }
 
-    init(runtime: LibGit2Runtime) {
+    init(
+        runtime: LibGit2Runtime,
+        blockingReadExecutor: LibGit2BlockingReadExecutor = .shared
+    ) {
         self.runtime = runtime
+        self.blockingReadExecutor = blockingReadExecutor
     }
 
     public func readDiscoveryCandidate(_ request: GitDiscoveryReadRequest) async -> GitDiscoveryReadOutcome {
-        await performDiscoveryRead(request)
+        await blockingReadExecutor.execute {
+            performDiscoveryRead(request)
+        }
     }
 
-    @concurrent
-    private nonisolated func performDiscoveryRead(_ request: GitDiscoveryReadRequest) async -> GitDiscoveryReadOutcome {
+    private nonisolated func performDiscoveryRead(_ request: GitDiscoveryReadRequest) -> GitDiscoveryReadOutcome {
         do {
             try runtime.ensureInitialized()
         } catch {
