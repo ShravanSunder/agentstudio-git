@@ -90,6 +90,86 @@ struct LibGit2BlockingReadExecutorTests {
         #expect(enqueueRecorder.enqueueCount == 1)
     }
 
+    @Test("each local client blocking read API enqueues exactly once", arguments: BlockingReadAPI.allCases)
+    private func eachLocalClientBlockingReadAPIEnqueuesExactlyOnce(blockingReadAPI: BlockingReadAPI) async throws {
+        // Arrange
+        let missingRepositoryPath = FileManager.default.temporaryDirectory
+            .appending(path: "agentstudio-git-missing-blocking-read-\(UUID().uuidString)")
+        let enqueueRecorder = SynchronousEnqueueRecorder()
+        let executor = LibGit2BlockingReadExecutor(enqueue: enqueueRecorder.enqueue)
+        let client = LibGit2AgentStudioGitLocalClient(blockingReadExecutor: executor)
+
+        // Act
+        switch blockingReadAPI {
+        case .worktrees:
+            await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
+                _ = try await client.worktrees(for: missingRepositoryPath)
+            }
+        case .validateWorktree:
+            let validation = try await client.validateWorktree(
+                GitValidateWorktreeRequest(worktreePath: missingRepositoryPath)
+            )
+            #expect(validation == GitWorktreeValidation(snapshot: nil, isValid: false))
+        case .status:
+            await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
+                _ = try await client.status(for: missingRepositoryPath, options: GitStatusOptions())
+            }
+        case .trackedPaths:
+            await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
+                _ = try await client.trackedPaths(for: missingRepositoryPath, options: GitTrackedPathsOptions())
+            }
+        case .isPathIgnored:
+            await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
+                _ = try await client.isPathIgnored(
+                    repositoryAt: missingRepositoryPath,
+                    relativePath: "README.md"
+                )
+            }
+        case .ignoredPaths:
+            await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
+                _ = try await client.ignoredPaths(
+                    repositoryAt: missingRepositoryPath,
+                    relativePaths: ["README.md"]
+                )
+            }
+        case .withIgnoreSession:
+            await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
+                _ = try await client.withIgnoreSession(repositoryAt: missingRepositoryPath) { _ in true }
+            }
+        case .branches:
+            await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
+                _ = try await client.branches(for: missingRepositoryPath)
+            }
+        case .resolveRevision:
+            await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
+                _ = try await client.resolveRevision(
+                    GitRevisionResolutionRequest(repositoryPath: missingRepositoryPath, target: .named("HEAD"))
+                )
+            }
+        case .readTree:
+            await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
+                _ = try await client.readTree(
+                    GitTreeReadRequest(repositoryPath: missingRepositoryPath, revision: .named("HEAD"), path: nil)
+                )
+            }
+        case .diff:
+            await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
+                _ = try await client.diff(
+                    GitDiffRequest(repositoryPath: missingRepositoryPath, base: .head, compare: .workingTree)
+                )
+            }
+        case .content:
+            await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
+                _ = try await client.content(
+                    GitContentRequest(repositoryPath: missingRepositoryPath, target: .head, path: "README.md")
+                )
+            }
+        }
+
+        // Assert
+        #expect(enqueueRecorder.enqueueCount == 1)
+    }
+
     @Test("discovery reads use the blocking executor")
     func discoveryReadsUseTheBlockingExecutor() async {
         let enqueueRecorder = SynchronousEnqueueRecorder()
@@ -111,6 +191,21 @@ struct LibGit2BlockingReadExecutorTests {
 
 private enum BlockingReadTestError: Error, Equatable, Sendable {
     case expected
+}
+
+private enum BlockingReadAPI: String, CaseIterable, Sendable {
+    case worktrees
+    case validateWorktree
+    case status
+    case trackedPaths
+    case isPathIgnored
+    case ignoredPaths
+    case withIgnoreSession
+    case branches
+    case resolveRevision
+    case readTree
+    case diff
+    case content
 }
 
 private final class BlockingReadOperationGate: @unchecked Sendable {
