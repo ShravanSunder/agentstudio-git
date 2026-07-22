@@ -152,6 +152,13 @@ struct GitStatusIntegrationTests {
         let diverged = try await client.status(for: fixture.repositoryPath, options: GitStatusOptions())
         #expect(diverged.summary.aheadCount == 1)
         #expect(diverged.summary.behindCount == 1)
+        let scopedDiverged = try await client.status(
+            for: fixture.repositoryPath,
+            options: GitStatusOptions(pathspecs: ["ahead.txt"])
+        )
+        #expect(scopedDiverged.summary.aheadCount == diverged.summary.aheadCount)
+        #expect(scopedDiverged.summary.behindCount == diverged.summary.behindCount)
+        #expect(scopedDiverged.summary.hasUpstream == diverged.summary.hasUpstream)
 
         try fixture.git.run("reset", "--hard", "origin/main~1")
         let behind = try await client.status(for: fixture.repositoryPath, options: GitStatusOptions())
@@ -303,6 +310,169 @@ struct GitStatusIntegrationTests {
         #expect(main.upstreamName == "refs/remotes/origin/main")
         #expect(!feature.isCurrent)
         #expect(feature.upstreamName == nil)
+    }
+
+    @Test("pathspec status scopes entries to a single matching path")
+    func pathspecStatusScopesEntriesToSingleMatchingPath() async throws {
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-status-pathspec-single")
+        defer { fixture.remove() }
+        try seedPathspecScopeFiles(in: fixture)
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        let scopeOptions = GitStatusOptions(
+            includeIgnored: true,
+            includeUntracked: true,
+            pathspecs: ["modified.txt"]
+        )
+        let scoped = try await client.status(for: fixture.repositoryPath, options: scopeOptions)
+        let full = try await client.status(
+            for: fixture.repositoryPath,
+            options: GitStatusOptions(includeIgnored: true, includeUntracked: true)
+        )
+
+        // Scoped status returns only the entry under the requested pathspec.
+        #expect(scoped.entries.map(\.path) == ["modified.txt"])
+        #expect(scoped.entries.first?.worktreeState == .modified)
+        // The full status observes strictly more changes than the scoped status.
+        #expect(Set(full.entries.map(\.path)).isSuperset(of: ["modified.txt", "untracked.txt", "other.txt"]))
+        // Scoped entries equal the full-status entries filtered to that pathspec.
+        let fullFiltered = full.entries.filter { matches(path: $0.path, pathspec: "modified.txt") }
+        #expect(scoped.entries == fullFiltered)
+        // Pathspecs scope entries and entry-derived file counts only. Line and
+        // branch facts remain full-worktree so AgentStudio can safely fold them.
+        #expect(scoped.summary.changedFileCount == 1)
+        #expect(scoped.summary.stagedFileCount == 0)
+        #expect(scoped.summary.unstagedFileCount == 1)
+        #expect(scoped.summary.untrackedFileCount == 0)
+        #expect(scoped.summary.ignoredFileCount == 0)
+        #expect(scoped.summary.changedFileCount < full.summary.changedFileCount)
+        #expect(scoped.summary.stagedFileCount < full.summary.stagedFileCount)
+        #expect(scoped.summary.unstagedFileCount < full.summary.unstagedFileCount)
+        #expect(scoped.summary.untrackedFileCount < full.summary.untrackedFileCount)
+        #expect(scoped.summary.ignoredFileCount < full.summary.ignoredFileCount)
+        #expect(scoped.summary.linesAdded == full.summary.linesAdded)
+        #expect(scoped.summary.linesDeleted == full.summary.linesDeleted)
+        #expect(scoped.summary.aheadCount == full.summary.aheadCount)
+        #expect(scoped.summary.behindCount == full.summary.behindCount)
+        #expect(scoped.summary.hasUpstream == full.summary.hasUpstream)
+        #expect(scoped.head == full.head)
+        #expect(scoped.originResolution == full.originResolution)
+    }
+
+    @Test("pathspec status scopes entries to a directory subtree")
+    func pathspecStatusScopesEntriesToDirectorySubtree() async throws {
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-status-pathspec-dir")
+        defer { fixture.remove() }
+        try seedPathspecDirectoryFiles(in: fixture)
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        let scoped = try await client.status(
+            for: fixture.repositoryPath,
+            options: GitStatusOptions(includeUntracked: true, pathspecs: ["src"])
+        )
+        let full = try await client.status(
+            for: fixture.repositoryPath,
+            options: GitStatusOptions(includeUntracked: true)
+        )
+
+        // A bare directory pathspec matches the whole subtree recursively, excluding siblings.
+        #expect(scoped.entries.map(\.path) == ["src/a.txt", "src/nested/b.txt"])
+        #expect(!scoped.entries.contains { $0.path == "docs/c.txt" })
+        // Scoped entries equal the full-status entries filtered to the directory prefix.
+        let fullFiltered = full.entries.filter { matches(path: $0.path, pathspec: "src") }
+        #expect(scoped.entries == fullFiltered)
+    }
+
+    @Test("nil pathspecs returns the full unfiltered status")
+    func nilPathspecsReturnsFullUnfilteredStatus() async throws {
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-status-pathspec-nil")
+        defer { fixture.remove() }
+        try seedPathspecScopeFiles(in: fixture)
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        let defaultOptions = GitStatusOptions(includeUntracked: true)
+        let explicitNil = GitStatusOptions(includeUntracked: true, pathspecs: nil)
+        let defaultStatus = try await client.status(for: fixture.repositoryPath, options: defaultOptions)
+        let nilStatus = try await client.status(for: fixture.repositoryPath, options: explicitNil)
+
+        // Default options carry no pathspecs, and nil is a full-worktree walk.
+        #expect(defaultOptions.pathspecs == nil)
+        #expect(defaultStatus.entries.map(\.path) == nilStatus.entries.map(\.path))
+        // The unfiltered walk observes every changed path, not just one pathspec.
+        #expect(nilStatus.entries.map(\.path) == ["modified.txt", "other.txt", "staged.txt", "untracked.txt"])
+    }
+
+    @Test("pathspec status exposes one-sided and paired rename shapes")
+    func pathspecStatusExposesOneSidedAndPairedRenameShapes() async throws {
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-status-pathspec-rename")
+        defer { fixture.remove() }
+        try fixture.write("rename-source.txt", contents: "base\n")
+        try fixture.git.run("add", "rename-source.txt")
+        try fixture.git.run("commit", "-m", "seed pathspec rename")
+        try fixture.git.run("mv", "rename-source.txt", "rename-target.txt")
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        let sourceOnly = try await client.status(
+            for: fixture.repositoryPath,
+            options: GitStatusOptions(pathspecs: ["rename-source.txt"])
+        )
+        let targetOnly = try await client.status(
+            for: fixture.repositoryPath,
+            options: GitStatusOptions(pathspecs: ["rename-target.txt"])
+        )
+        let bothSides = try await client.status(
+            for: fixture.repositoryPath,
+            options: GitStatusOptions(pathspecs: ["rename-source.txt", "rename-target.txt"])
+        )
+
+        #expect(sourceOnly.entries.count == 1)
+        let sourceEntry = try #require(sourceOnly.entries.first)
+        #expect(sourceEntry.path == "rename-source.txt")
+        #expect(sourceEntry.previousPath == nil)
+        #expect(sourceEntry.indexState == .deleted)
+
+        #expect(targetOnly.entries.count == 1)
+        let targetEntry = try #require(targetOnly.entries.first)
+        #expect(targetEntry.path == "rename-target.txt")
+        #expect(targetEntry.previousPath == nil)
+        #expect(targetEntry.indexState == .added)
+
+        #expect(bothSides.entries.count == 1)
+        let pairedEntry = try #require(bothSides.entries.first)
+        #expect(pairedEntry.path == "rename-target.txt")
+        #expect(pairedEntry.previousPath == "rename-source.txt")
+        #expect(pairedEntry.indexState == .renamed)
+    }
+
+    private func seedPathspecScopeFiles(in fixture: GitFixtureRepository) throws {
+        try fixture.write("modified.txt", contents: "base\n")
+        try fixture.write("other.txt", contents: "base\n")
+        try fixture.write("staged.txt", contents: "base\n")
+        try fixture.write("clean.txt", contents: "base\n")
+        try fixture.write(".gitignore", contents: "ignored.txt\n")
+        try fixture.git.run("add", ".")
+        try fixture.git.run("commit", "-m", "seed pathspec scope")
+        try fixture.write("modified.txt", contents: "base\nworktree\n")
+        try fixture.write("other.txt", contents: "base\nworktree\n")
+        try fixture.write("staged.txt", contents: "base\nstaged\n")
+        try fixture.git.run("add", "staged.txt")
+        try fixture.write("untracked.txt", contents: "loose\n")
+        try fixture.write("ignored.txt", contents: "ignored\n")
+    }
+
+    private func seedPathspecDirectoryFiles(in fixture: GitFixtureRepository) throws {
+        try fixture.write("src/a.txt", contents: "base\n")
+        try fixture.write("src/nested/b.txt", contents: "base\n")
+        try fixture.write("docs/c.txt", contents: "base\n")
+        try fixture.git.run("add", ".")
+        try fixture.git.run("commit", "-m", "seed pathspec directory")
+        try fixture.write("src/a.txt", contents: "base\nworktree\n")
+        try fixture.write("src/nested/b.txt", contents: "base\nworktree\n")
+        try fixture.write("docs/c.txt", contents: "base\nworktree\n")
+    }
+
+    private func matches(path: String, pathspec: String) -> Bool {
+        path == pathspec || path.hasPrefix("\(pathspec)/")
     }
 
     private func seedStatusAxisFiles(in fixture: GitFixtureRepository) throws {

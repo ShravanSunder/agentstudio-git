@@ -7,13 +7,15 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
     private let writerRegistry: GitRepositoryWriterRegistry
     private let worktreeReader: LibGit2WorktreeReader
     private let worktreeWriter: LibGit2WorktreeWriter
+    private let blockingReadExecutor: LibGit2BlockingReadExecutor
 
     public init() {
         self.init(
             identityResolver: GitRepositoryIdentityResolver(),
             writerRegistry: .shared,
             worktreeReader: LibGit2WorktreeReader(),
-            worktreeWriter: LibGit2WorktreeWriter()
+            worktreeWriter: LibGit2WorktreeWriter(),
+            blockingReadExecutor: .shared
         )
     }
 
@@ -21,22 +23,26 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
         identityResolver: GitRepositoryIdentityResolver = GitRepositoryIdentityResolver(),
         writerRegistry: GitRepositoryWriterRegistry = .shared,
         worktreeReader: LibGit2WorktreeReader = LibGit2WorktreeReader(),
-        worktreeWriter: LibGit2WorktreeWriter = LibGit2WorktreeWriter()
+        worktreeWriter: LibGit2WorktreeWriter = LibGit2WorktreeWriter(),
+        blockingReadExecutor: LibGit2BlockingReadExecutor = .shared
     ) {
         self.identityResolver = identityResolver
         self.writerRegistry = writerRegistry
         self.worktreeReader = worktreeReader
         self.worktreeWriter = worktreeWriter
+        self.blockingReadExecutor = blockingReadExecutor
     }
 
     public func repositoryIdentity(for worktreePath: URL) async throws(GitDataPlaneError) -> GitRepositoryIdentity {
-        try mapIdentityResolutionError(path: worktreePath) {
-            try identityResolver.identity(for: worktreePath)
+        try await blockingReadExecutor.execute { () throws(GitDataPlaneError) -> GitRepositoryIdentity in
+            try mapIdentityResolutionError(path: worktreePath) {
+                try identityResolver.identity(for: worktreePath)
+            }
         }
     }
 
     public func worktrees(for repositoryPath: URL) async throws(GitDataPlaneError) -> [GitWorktreeSnapshot] {
-        try mapSyncGitDataPlaneError {
+        try await executeBlockingRead {
             try worktreeReader.worktrees(for: repositoryPath)
         }
     }
@@ -44,7 +50,7 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
     public func validateWorktree(_ request: GitValidateWorktreeRequest) async throws(GitDataPlaneError)
         -> GitWorktreeValidation
     {
-        try mapSyncGitDataPlaneError {
+        try await executeBlockingRead {
             try worktreeReader.validateWorktree(request)
         }
     }
@@ -105,13 +111,37 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
     public func status(for worktreePath: URL, options: GitStatusOptions) async throws(GitDataPlaneError)
         -> GitStatusSnapshot
     {
-        try mapSyncGitDataPlaneError {
+        try await executeBlockingRead {
             try LibGit2StatusReader().status(for: worktreePath, options: options)
         }
     }
 
+    public func trackedPaths(for worktreePath: URL, options: GitTrackedPathsOptions) async throws(GitDataPlaneError)
+        -> GitTrackedPathsSnapshot
+    {
+        try await executeBlockingRead {
+            try LibGit2TrackedPathReader().trackedPaths(for: worktreePath, options: options)
+        }
+    }
+
+    public func isPathIgnored(repositoryAt worktreePath: URL, relativePath: String) async throws(GitDataPlaneError)
+        -> Bool
+    {
+        try await executeBlockingRead {
+            try LibGit2IgnoreReader().isPathIgnored(repositoryAt: worktreePath, relativePath: relativePath)
+        }
+    }
+
+    public func ignoredPaths(repositoryAt worktreePath: URL, relativePaths: [String]) async throws(GitDataPlaneError)
+        -> [GitIgnoreCheck]
+    {
+        try await executeBlockingRead {
+            try LibGit2IgnoreReader().ignoredPaths(repositoryAt: worktreePath, relativePaths: relativePaths)
+        }
+    }
+
     public func branches(for repositoryPath: URL) async throws(GitDataPlaneError) -> [GitBranchSnapshot] {
-        try mapSyncGitDataPlaneError {
+        try await executeBlockingRead {
             try LibGit2BranchReader().branches(for: repositoryPath)
         }
     }
@@ -119,34 +149,31 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
     public func resolveRevision(_ request: GitRevisionResolutionRequest) async throws(GitDataPlaneError)
         -> GitResolvedRevision
     {
-        try mapSyncGitDataPlaneError {
+        try await executeBlockingRead {
             try LibGit2RevisionResolver().resolve(request)
         }
     }
 
     public func readTree(_ request: GitTreeReadRequest) async throws(GitDataPlaneError) -> GitTreeSnapshot {
-        try mapSyncGitDataPlaneError {
+        try await executeBlockingRead {
             try LibGit2TreeReader().readTree(request)
         }
     }
 
     public func diff(_ request: GitDiffRequest) async throws(GitDataPlaneError) -> GitDiffSnapshot {
-        try mapSyncGitDataPlaneError {
+        try await executeBlockingRead {
             try LibGit2DiffReader().diff(request)
         }
     }
 
     public func content(_ request: GitContentRequest) async throws(GitDataPlaneError) -> GitContentPayload {
-        try mapSyncGitDataPlaneError {
+        try await executeBlockingRead {
             try LibGit2ContentReader().content(request)
         }
     }
 
     private func writer(for repositoryPath: URL) async throws(GitDataPlaneError) -> GitRepositoryWriterLane {
-        let identity = try mapIdentityResolutionError(path: repositoryPath) {
-            let identity = try identityResolver.identity(for: repositoryPath)
-            return identity
-        }
+        let identity = try await repositoryIdentity(for: repositoryPath)
         return await writerRegistry.writer(for: identity)
     }
 
@@ -183,6 +210,14 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
             throw error
         } catch {
             throw .unsupported(message: String(describing: error))
+        }
+    }
+
+    private func executeBlockingRead<ReturnValue: Sendable>(
+        _ operation: @escaping @Sendable () throws -> ReturnValue
+    ) async throws(GitDataPlaneError) -> ReturnValue {
+        try await blockingReadExecutor.execute { () throws(GitDataPlaneError) -> ReturnValue in
+            try mapSyncGitDataPlaneError(operation)
         }
     }
 

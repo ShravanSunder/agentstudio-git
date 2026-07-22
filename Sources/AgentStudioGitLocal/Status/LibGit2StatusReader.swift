@@ -68,20 +68,53 @@ struct LibGit2StatusReader: Sendable {
             statusOptions.flags |= GIT_STATUS_OPT_RECURSE_IGNORED_DIRS.rawValue
         }
 
-        var statusList: OpaquePointer?
-        let statusResult = git_status_list_new(&statusList, repository, &statusOptions)
-        guard statusResult >= 0, let statusList else {
-            throw LibGit2ErrorCapture.failure(code: statusResult)
-        }
-        defer { git_status_list_free(statusList) }
-
-        return try (0..<git_status_list_entrycount(statusList)).compactMap { index in
-            guard let entryPointer = git_status_byindex(statusList, index) else {
-                return nil
+        // Pathspec matching stays enabled (GIT_STATUS_OPT_DISABLE_PATHSPEC_MATCH is never set),
+        // so a non-nil pathspec limits the walk to matching repo-relative paths.
+        return try withPathspec(options.pathspecs) { pathspec in
+            if let pathspec {
+                statusOptions.pathspec = pathspec
             }
-            return try statusEntry(entryPointer.pointee)
+
+            var statusList: OpaquePointer?
+            let statusResult = git_status_list_new(&statusList, repository, &statusOptions)
+            guard statusResult >= 0, let statusList else {
+                throw LibGit2ErrorCapture.failure(code: statusResult)
+            }
+            defer { git_status_list_free(statusList) }
+
+            return try (0..<git_status_list_entrycount(statusList)).compactMap { index in
+                guard let entryPointer = git_status_byindex(statusList, index) else {
+                    return nil
+                }
+                return try statusEntry(entryPointer.pointee)
+            }
+            .sorted { $0.path < $1.path }
         }
-        .sorted { $0.path < $1.path }
+    }
+
+    /// Runs `body` with an optional `git_strarray` whose backing C strings outlive the call.
+    ///
+    /// A `nil` or empty `pathspecs` yields `nil`, leaving `git_status_options.pathspec` at its
+    /// zero value so libgit2 applies no path restriction. When paths are present, each is
+    /// `strdup`'d into a C string kept alive for the whole `body` scope, so the array remains
+    /// valid across the `git_status_list_new` call that copies it.
+    private func withPathspec<ReturnValue>(
+        _ pathspecs: [String]?,
+        _ body: (git_strarray?) throws -> ReturnValue
+    ) rethrows -> ReturnValue {
+        guard let pathspecs, !pathspecs.isEmpty else {
+            return try body(nil)
+        }
+        var cStrings: [UnsafeMutablePointer<CChar>?] = pathspecs.map { strdup($0) }
+        defer {
+            for cString in cStrings {
+                free(cString)
+            }
+        }
+        return try cStrings.withUnsafeMutableBufferPointer { buffer in
+            let pathspec = git_strarray(strings: buffer.baseAddress, count: pathspecs.count)
+            return try body(pathspec)
+        }
     }
 
     private func statusEntry(_ entry: git_status_entry) throws -> GitStatusEntry {

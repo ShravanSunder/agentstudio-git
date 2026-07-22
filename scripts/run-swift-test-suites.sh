@@ -12,6 +12,7 @@ suites=(
   GitPublicContractTests
   GitInvalidDecodeTests
   GitRedactionTests
+  LibGit2BlockingReadExecutorTests
   LibGit2RuntimeTests
   LibGit2RepositorySessionTests
   LibGit2ErrorCaptureTests
@@ -23,6 +24,8 @@ suites=(
   LibGit2PackagingScriptTests
   SourceStructureTests
   GitStatusIntegrationTests
+  GitIgnoreIntegrationTests
+  GitTrackedPathIntegrationTests
   GitWorktreeIntegrationTests
   GitReviewDataIntegrationTests
   GitWorkingTreeStatusCompatibilityTests
