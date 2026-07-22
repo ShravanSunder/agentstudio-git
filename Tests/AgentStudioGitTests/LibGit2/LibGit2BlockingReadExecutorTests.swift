@@ -132,10 +132,6 @@ struct LibGit2BlockingReadExecutorTests {
                     relativePaths: ["README.md"]
                 )
             }
-        case .withIgnoreSession:
-            await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
-                _ = try await client.withIgnoreSession(repositoryAt: missingRepositoryPath) { _ in true }
-            }
         case .branches:
             await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
                 _ = try await client.branches(for: missingRepositoryPath)
@@ -200,7 +196,6 @@ private enum BlockingReadAPI: String, CaseIterable, Sendable {
     case trackedPaths
     case isPathIgnored
     case ignoredPaths
-    case withIgnoreSession
     case branches
     case resolveRevision
     case readTree

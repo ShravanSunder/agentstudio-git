@@ -33,6 +33,21 @@ struct SourceStructureTests {
         #expect(pollingSources.contains("asyncAfter"))
     }
 
+    @Test("public local client does not expose repository backed ignore sessions")
+    func publicLocalClientDoesNotExposeRepositoryBackedIgnoreSessions() throws {
+        let clientSource = try sourceContents(
+            "Sources/AgentStudioGitLocal/LibGit2AgentStudioGitLocalClient.swift"
+        )
+        let ignoreReaderSource = try sourceContents(
+            "Sources/AgentStudioGitLocal/Status/LibGit2IgnoreReader.swift"
+        )
+
+        #expect(!clientSource.contains("public func withIgnoreSession"))
+        #expect(!ignoreReaderSource.contains("public final class LibGit2IgnoreSession"))
+        #expect(!ignoreReaderSource.contains("LibGit2IgnoreSession: @unchecked Sendable"))
+        #expect(ignoreReaderSource.contains("defer { git_repository_free(repository) }"))
+    }
+
     private func sourceSwiftFiles() throws -> [String] {
         try filePaths(under: "Sources").filter { $0.hasSuffix(".swift") }
     }

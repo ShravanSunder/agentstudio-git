@@ -140,15 +140,6 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
         }
     }
 
-    public func withIgnoreSession<ReturnValue: Sendable>(
-        repositoryAt worktreePath: URL,
-        _ body: @escaping @Sendable (LibGit2IgnoreSession) throws -> ReturnValue
-    ) async throws(GitDataPlaneError) -> ReturnValue {
-        try await executeBlockingRead {
-            try LibGit2IgnoreReader().withIgnoreSession(repositoryAt: worktreePath, body)
-        }
-    }
-
     public func branches(for repositoryPath: URL) async throws(GitDataPlaneError) -> [GitBranchSnapshot] {
         try await executeBlockingRead {
             try LibGit2BranchReader().branches(for: repositoryPath)

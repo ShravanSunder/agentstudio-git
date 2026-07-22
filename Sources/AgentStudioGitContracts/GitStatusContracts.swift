@@ -191,6 +191,12 @@ public struct GitStatusOptions: Codable, Equatable, Hashable, Sendable {
     /// rather than a paired rename. Consumers folding scoped deltas must treat a
     /// source-only or target-only entry conservatively; this reader preserves whatever
     /// libgit2 reports and does not attempt to re-pair renames across pathspec limits.
+    ///
+    /// Pathspecs scope status entries and the entry-derived changed, staged, unstaged,
+    /// untracked, and ignored file counts. Line additions/deletions, head, upstream,
+    /// sync, and origin facts remain full-worktree values. This hybrid shape lets a
+    /// consumer fold scoped entries into a cached full entry set without replacing
+    /// repository-wide summary facts with partial totals.
     public let pathspecs: [String]?
 
     public init(

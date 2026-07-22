@@ -113,60 +113,62 @@ struct GitIgnoreIntegrationTests {
         #expect(checks.map(\.isIgnored) == [true, true, true, false])
     }
 
-    @Test("ignore session handles hot walk query volume without crawling ignored contents")
-    func ignoreSessionHandlesHotWalkQueryVolume() async throws {
-        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-ignore-perf")
+    @Test("batched ignore checks do not enumerate ignored directory contents")
+    func batchedIgnoreChecksDoNotEnumerateIgnoredDirectoryContents() async throws {
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-ignore-no-enumeration")
         defer { fixture.remove() }
         try fixture.write(".gitignore", contents: "ignored-cache/\n")
         let ignoredDirectory = fixture.repositoryPath.appending(path: "ignored-cache")
         try FileManager.default.createDirectory(at: ignoredDirectory, withIntermediateDirectories: true)
-        for index in 0..<100_000 {
-            let shard = ignoredDirectory.appending(path: "shard-\(index / 1000)", directoryHint: .isDirectory)
-            try FileManager.default.createDirectory(at: shard, withIntermediateDirectories: true)
-            let file = shard.appending(path: "generated-\(index).txt")
-            FileManager.default.createFile(atPath: file.path, contents: Data())
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: ignoredDirectory.path)
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o700],
+                ofItemAtPath: ignoredDirectory.path
+            )
+        }
+        #expect(throws: Error.self) {
+            _ = try FileManager.default.contentsOfDirectory(at: ignoredDirectory, includingPropertiesForKeys: nil)
         }
         let client = LibGit2AgentStudioGitLocalClient()
-        let relativePaths = (0..<5000).map { "ignored-cache/generated-\($0).txt" }
-        let clock = ContinuousClock()
+        let relativePaths = (0..<5000).map { "ignored-cache/shard-\($0 / 100)/generated-\($0).txt" }
 
-        let duration = try await clock.measure {
-            let checks = try await client.ignoredPaths(
-                repositoryAt: fixture.repositoryPath,
-                relativePaths: relativePaths
-            )
-            #expect(checks.count == relativePaths.count)
-            #expect(checks.allSatisfy { $0.isIgnored })
-        }
+        let checks = try await client.ignoredPaths(
+            repositoryAt: fixture.repositoryPath,
+            relativePaths: relativePaths
+        )
 
-        #expect(duration < .seconds(1))
+        #expect(checks.count == relativePaths.count)
+        #expect(checks.allSatisfy { $0.isIgnored })
     }
 
-    @Test("ignore session does not read large ignored file contents")
-    func ignoreSessionDoesNotReadLargeIgnoredFileContents() async throws {
-        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-ignore-large-files")
+    @Test("batched ignore checks do not read ignored file contents")
+    func batchedIgnoreChecksDoNotReadIgnoredFileContents() async throws {
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-ignore-unreadable-file")
         defer { fixture.remove() }
         try fixture.write(".gitignore", contents: "large-cache/\n")
         let ignoredDirectory = fixture.repositoryPath.appending(path: "large-cache", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: ignoredDirectory, withIntermediateDirectories: true)
-        let payload = Data(repeating: 0x5A, count: 4 * 1024 * 1024)
-        let relativePaths = (0..<32).map { "large-cache/blob-\($0).bin" }
-        for relativePath in relativePaths {
-            let fileURL = fixture.repositoryPath.appending(path: relativePath)
-            try payload.write(to: fileURL)
+        let relativePath = "large-cache/unreadable.bin"
+        let fileURL = fixture.repositoryPath.appending(path: relativePath)
+        try Data([0x5A]).write(to: fileURL)
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: fileURL.path)
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: fileURL.path
+            )
+        }
+        #expect(throws: Error.self) {
+            _ = try Data(contentsOf: fileURL)
         }
         let client = LibGit2AgentStudioGitLocalClient()
-        let clock = ContinuousClock()
 
-        let duration = try await clock.measure {
-            let checks = try await client.ignoredPaths(
-                repositoryAt: fixture.repositoryPath,
-                relativePaths: relativePaths
-            )
-            #expect(checks.count == relativePaths.count)
-            #expect(checks.allSatisfy { $0.isIgnored })
-        }
+        let checks = try await client.ignoredPaths(
+            repositoryAt: fixture.repositoryPath,
+            relativePaths: [relativePath]
+        )
 
-        #expect(duration < .seconds(1))
+        #expect(checks == [GitIgnoreCheck(relativePath: relativePath, isIgnored: true)])
     }
 }

@@ -39,6 +39,7 @@ struct LibGit2IgnoreReader: Sendable {
         guard openResult >= 0, let repository else {
             throw repositoryOpenFailure(code: openResult, path: worktreePath)
         }
+        defer { git_repository_free(repository) }
 
         let session = LibGit2IgnoreSession(repository: repository)
         return try body(session)
@@ -47,28 +48,21 @@ struct LibGit2IgnoreReader: Sendable {
 
 /// Hot-walk ignore query session.
 ///
-/// Create this through `LibGit2AgentStudioGitLocalClient.withIgnoreSession`;
-/// that shape opens the repository once and then answers many
-/// `git_ignore_path_is_ignored` checks. Directory paths should include a
-/// trailing slash. A `true` result for a directory is prune-safe for filesystem
-/// walks: git has excluded the directory itself, so parent-exclusion semantics
-/// prevent descendants from being published by later negations.
-public final class LibGit2IgnoreSession: @unchecked Sendable {
+/// The reader owns this session for one synchronous repository-open frame and
+/// answers many `git_ignore_path_is_ignored` checks before freeing the handle.
+/// Directory paths should include a trailing slash. A `true` result for a
+/// directory is prune-safe for filesystem walks: git has excluded the directory
+/// itself, so parent-exclusion semantics prevent descendants from being
+/// published by later negations.
+final class LibGit2IgnoreSession {
     private let repository: OpaquePointer
-    private let lock = NSLock()
 
     init(repository: OpaquePointer) {
         self.repository = repository
     }
 
-    deinit {
-        git_repository_free(repository)
-    }
-
-    public func isPathIgnored(relativePath: String) throws -> Bool {
+    func isPathIgnored(relativePath: String) throws -> Bool {
         let normalizedPath = try normalizedIgnorePath(relativePath)
-        lock.lock()
-        defer { lock.unlock() }
 
         var isIgnored: Int32 = 0
         let ignoreResult = normalizedPath.withCString { pathPointer in

@@ -50,6 +50,8 @@ private struct BridgeReviewSourceAdapterCompileHarness {
         let modelRoot = agentStudioRoot.appending(path: "Sources/AgentStudio/Features/Bridge/Models/ReviewFoundation")
         let runtimeRoot = agentStudioRoot.appending(
             path: "Sources/AgentStudio/Features/Bridge/Runtime/ReviewFoundation")
+        let constructionRoot = agentStudioRoot.appending(
+            path: "Sources/AgentStudio/Features/Bridge/Runtime/Construction")
         return [
             "BridgeReviewGeneration.swift",
             "BridgeFileClass.swift",
@@ -73,8 +75,7 @@ private struct BridgeReviewSourceAdapterCompileHarness {
             runtimeRoot.appending(path: "BridgeReviewSourceProvider.swift"),
             runtimeRoot.appending(path: "BridgeGitReviewSourceProvider.swift"),
             runtimeRoot.appending(path: "BridgeContentLoadObservation.swift"),
-            runtimeRoot.appending(path: "BridgeContentSharedLoad.swift"),
-            runtimeRoot.appending(path: "BridgeContentStore.swift"),
+            constructionRoot.appending(path: "BridgeSharedReviewContentBacking.swift"),
         ]
     }
 
@@ -95,6 +96,12 @@ private struct BridgeReviewSourceAdapterCompileHarness {
                     static let contentCacheMaxBytes = 1_048_576
                     static let contentMaxBytesPerItem = 1_048_576
                 }
+            }
+
+            struct BridgeGitReadFreshnessKey: Hashable, Sendable {
+                let token: String
+
+                static let unversioned = Self(token: "unversioned")
             }
 
             \(appDeclarations)
@@ -565,7 +572,6 @@ private struct BridgeReviewSourceAdapterCompileHarness {
                     client: client
                 )
                 let provider = BridgeGitReviewSourceProvider(client: adapter)
-                let store = BridgeContentStore(provider: provider)
                 let endpoint = BridgeSourceEndpoint(
                     endpointId: "base",
                     kind: .gitRef,
@@ -636,9 +642,10 @@ private struct BridgeReviewSourceAdapterCompileHarness {
                 guard let handle = descriptor.contentRoles.file else {
                     throw HarnessFailure.failed("descriptor did not build a file handle")
                 }
-                await store.register(handle)
 
-                let result = try await store.load(handleId: handle.handleId, requestedGeneration: 7)
+                let result = try await provider.loadContent(
+                    BridgeContentLoadRequest(handle: handle, requestedGeneration: 7)
+                )
                 let text = String(data: result.data, encoding: .utf8)
                 guard text == "commit:abc123:Sources/App.swift" else {
                     throw HarnessFailure.failed("loaded wrong content: \\(text ?? "nil")")
