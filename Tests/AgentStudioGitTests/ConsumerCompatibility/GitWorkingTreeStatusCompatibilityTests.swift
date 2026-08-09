@@ -277,12 +277,12 @@ private struct AgentStudioStatusAdapterCompileHarness {
         let eventContents = try String(contentsOf: eventSource, encoding: .utf8)
         let summaryDeclaration = try extractDeclaration(
             from: eventContents,
-            start: "struct GitWorkingTreeSummary",
-            end: "struct GitWorkingTreeSnapshot"
+            start: "package struct GitWorkingTreeSummary",
+            end: "package struct GitWorkingTreeSnapshot"
         )
         let statusProviderDeclarations = try extractDeclaration(
             from: providerContents,
-            start: "enum GitOriginResolution",
+            start: "package enum GitOriginResolution",
             end: nil
         )
 
@@ -406,6 +406,8 @@ private struct AgentStudioStatusAdapterCompileHarness {
             "swiftc",
             "-typecheck",
             "-parse-as-library",
+            "-package-name",
+            "AgentStudio",
             "-I",
             moduleSearchPath.path,
             "-I",
@@ -573,6 +575,10 @@ private struct StubLocalClient: AgentStudioGitLocalClient {
         throw .unsupported(message: "not needed")
     }
 
+    func localDefaultBranch(for _: URL) async throws(GitDataPlaneError) -> GitLocalDefaultBranch? {
+        throw .unsupported(message: "not needed")
+    }
+
     func resolveRevision(_: GitRevisionResolutionRequest) async throws(GitDataPlaneError) -> GitResolvedRevision {
         throw .unsupported(message: "not needed")
     }
@@ -582,6 +588,12 @@ private struct StubLocalClient: AgentStudioGitLocalClient {
     }
 
     func diff(_: GitDiffRequest) async throws(GitDataPlaneError) -> GitDiffSnapshot {
+        throw .unsupported(message: "not needed")
+    }
+
+    func contributionDiff(_: GitContributionDiffRequest) async throws(GitDataPlaneError)
+        -> GitContributionDiffSnapshot
+    {
         throw .unsupported(message: "not needed")
     }
 

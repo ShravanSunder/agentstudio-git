@@ -136,6 +136,10 @@ struct LibGit2BlockingReadExecutorTests {
             await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
                 _ = try await client.branches(for: missingRepositoryPath)
             }
+        case .localDefaultBranch:
+            await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
+                _ = try await client.localDefaultBranch(for: missingRepositoryPath)
+            }
         case .resolveRevision:
             await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
                 _ = try await client.resolveRevision(
@@ -152,6 +156,15 @@ struct LibGit2BlockingReadExecutorTests {
             await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
                 _ = try await client.diff(
                     GitDiffRequest(repositoryPath: missingRepositoryPath, base: .head, compare: .workingTree)
+                )
+            }
+        case .contributionDiff:
+            await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
+                _ = try await client.contributionDiff(
+                    GitContributionDiffRequest(
+                        repositoryPath: missingRepositoryPath,
+                        target: .named("refs/heads/main")
+                    )
                 )
             }
         case .content:
@@ -197,9 +210,11 @@ private enum BlockingReadAPI: String, CaseIterable, Sendable {
     case isPathIgnored
     case ignoredPaths
     case branches
+    case localDefaultBranch
     case resolveRevision
     case readTree
     case diff
+    case contributionDiff
     case content
 }
 

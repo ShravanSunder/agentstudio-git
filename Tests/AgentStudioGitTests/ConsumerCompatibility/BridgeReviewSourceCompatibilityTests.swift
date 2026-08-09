@@ -508,6 +508,12 @@ private struct BridgeReviewSourceAdapterCompileHarness {
                 throw .unsupported(message: "unused")
             }
 
+            func localDefaultBranch(for repositoryPath: URL) async throws(GitDataPlaneError)
+                -> GitLocalDefaultBranch?
+            {
+                throw .unsupported(message: "unused")
+            }
+
             func resolveRevision(_ request: GitRevisionResolutionRequest) async throws(GitDataPlaneError)
                 -> GitResolvedRevision
             {
@@ -551,6 +557,12 @@ private struct BridgeReviewSourceAdapterCompileHarness {
                         )
                     ]
                 )
+            }
+
+            func contributionDiff(_ request: GitContributionDiffRequest) async throws(GitDataPlaneError)
+                -> GitContributionDiffSnapshot
+            {
+                throw .unsupported(message: "unused")
             }
         }
 
@@ -692,6 +704,8 @@ private struct BridgeReviewSourceAdapterCompileHarness {
             "swiftc",
             "-typecheck",
             "-parse-as-library",
+            "-package-name",
+            "AgentStudio",
             "-I",
             moduleSearchPath.path,
             "-module-cache-path",
@@ -727,6 +741,8 @@ private struct BridgeReviewSourceAdapterCompileHarness {
                 "swiftc"
             ] + sanitizerFlags + [
                 "-parse-as-library",
+                "-package-name",
+                "AgentStudio",
                 "-I",
                 moduleSearchPath.path,
                 "-module-cache-path",
@@ -752,7 +768,9 @@ private struct BridgeReviewSourceAdapterCompileHarness {
 
         try runCompiledExecutable(executableFile)
     }
+}
 
+extension BridgeReviewSourceAdapterCompileHarness {
     private func childLinkSanitizerFlags(for objectFiles: [URL]) throws -> [String] {
         if try objectFilesContainMarker("__asan_init", in: objectFiles) {
             return ["-sanitize=address"]

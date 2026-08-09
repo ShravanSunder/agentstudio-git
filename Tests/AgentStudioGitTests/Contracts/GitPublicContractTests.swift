@@ -4,6 +4,74 @@ import Testing
 
 @Suite("Git public contracts")
 struct GitPublicContractTests {
+    @Test("local default branch and contribution snapshots round-trip")
+    func localDefaultBranchAndContributionSnapshotsRoundTrip() throws {
+        let localDefaultBranch = GitLocalDefaultBranch(name: "integration")
+        let request = GitContributionDiffRequest(
+            repositoryPath: URL(fileURLWithPath: "/tmp/repo"),
+            target: .named("refs/heads/integration")
+        )
+        let snapshot = GitContributionDiffSnapshot(
+            resolvedTarget: GitResolvedRevision(oid: "target-oid", shortName: "refs/heads/integration"),
+            reviewedHead: GitResolvedRevision(oid: "head-oid", shortName: "feature/review"),
+            contributionBase: GitResolvedRevision(oid: "base-oid", shortName: nil),
+            diff: GitDiffSnapshot(
+                files: [
+                    GitDiffFile(
+                        fileId: "gitdiff:none:Sources/App.swift:none:new-oid",
+                        path: "Sources/App.swift",
+                        previousPath: nil,
+                        changeKind: .added,
+                        oldContentHash: nil,
+                        newContentHash: "new-oid",
+                        contentHashAlgorithm: "git-blob-sha1",
+                        oldMode: nil,
+                        newMode: 0o100644,
+                        additions: 1,
+                        deletions: 0,
+                        isBinary: false,
+                        sizeBytes: 12
+                    )
+                ]
+            )
+        )
+
+        let decodedLocalDefaultBranch = try JSONDecoder().decode(
+            GitLocalDefaultBranch.self,
+            from: JSONEncoder().encode(localDefaultBranch)
+        )
+        let decodedRequest = try JSONDecoder().decode(
+            GitContributionDiffRequest.self,
+            from: JSONEncoder().encode(request)
+        )
+        let decodedSnapshot = try JSONDecoder().decode(
+            GitContributionDiffSnapshot.self,
+            from: JSONEncoder().encode(snapshot)
+        )
+
+        #expect(decodedLocalDefaultBranch == localDefaultBranch)
+        #expect(decodedLocalDefaultBranch.referenceName == "refs/heads/integration")
+        #expect(decodedRequest == request)
+        #expect(decodedSnapshot == snapshot)
+    }
+
+    @Test("contribution failures round-trip without losing comparison facts")
+    func contributionFailuresRoundTripWithoutLosingComparisonFacts() throws {
+        let failures: [GitDataPlaneError] = [
+            .revisionUnavailable(target: .named("refs/heads/missing")),
+            .headUnavailable,
+            .requiredObjectNotFound(oid: "missing-object-oid"),
+            .noSharedHistory(targetOID: "target-oid", headOID: "head-oid"),
+            .multipleBestMergeBases(targetOID: "target-oid", headOID: "head-oid", count: 2),
+        ]
+
+        let decodedFailures = try failures.map { failure in
+            try JSONDecoder().decode(GitDataPlaneError.self, from: JSONEncoder().encode(failure))
+        }
+
+        #expect(decodedFailures == failures)
+    }
+
     @Test("discovery reads round-trip strict request and outcome variants")
     func discoveryReadsRoundTripStrictRequestAndOutcomeVariants() throws {
         let request = GitDiscoveryReadRequest(candidatePath: URL(fileURLWithPath: "/tmp/repo"))

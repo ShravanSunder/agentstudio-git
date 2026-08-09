@@ -8,6 +8,11 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
     case unsafeWorktreeRemoval(reason: GitWorktreeRemovalRefusalReason)
     case contentTooLarge(path: String, sizeBytes: Int64, maxSizeBytes: Int64)
     case pathEscapesRepository(path: String)
+    case revisionUnavailable(target: GitRevisionTarget)
+    case headUnavailable
+    case requiredObjectNotFound(oid: String)
+    case noSharedHistory(targetOID: String, headOID: String)
+    case multipleBestMergeBases(targetOID: String, headOID: String, count: Int)
     case processFailed(GitRemoteProcessFailure)
     case processTimedOut(GitRemoteProcessFailure)
     case processCancelled(GitRemoteProcessFailure)
@@ -23,6 +28,11 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
         case unsafeWorktreeRemoval
         case contentTooLarge
         case pathEscapesRepository
+        case revisionUnavailable
+        case headUnavailable
+        case requiredObjectNotFound
+        case noSharedHistory
+        case multipleBestMergeBases
         case processFailed
         case processTimedOut
         case processCancelled
@@ -41,6 +51,11 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
         case stream
         case code
         case klass
+        case target
+        case oid
+        case targetOID
+        case headOID
+        case count
     }
 
     public init(from decoder: Decoder) throws {
@@ -84,6 +99,28 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
         } else if container.contains(.pathEscapesRepository) {
             let payload = try container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .pathEscapesRepository)
             self = try .pathEscapesRepository(path: payload.decode(String.self, forKey: .path))
+        } else if container.contains(.revisionUnavailable) {
+            let payload = try container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .revisionUnavailable)
+            self = try .revisionUnavailable(target: payload.decode(GitRevisionTarget.self, forKey: .target))
+        } else if container.contains(.headUnavailable) {
+            _ = try container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .headUnavailable)
+            self = .headUnavailable
+        } else if container.contains(.requiredObjectNotFound) {
+            let payload = try container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .requiredObjectNotFound)
+            self = try .requiredObjectNotFound(oid: payload.decode(String.self, forKey: .oid))
+        } else if container.contains(.noSharedHistory) {
+            let payload = try container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .noSharedHistory)
+            self = try .noSharedHistory(
+                targetOID: payload.decode(String.self, forKey: .targetOID),
+                headOID: payload.decode(String.self, forKey: .headOID)
+            )
+        } else if container.contains(.multipleBestMergeBases) {
+            let payload = try container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .multipleBestMergeBases)
+            self = try .multipleBestMergeBases(
+                targetOID: payload.decode(String.self, forKey: .targetOID),
+                headOID: payload.decode(String.self, forKey: .headOID),
+                count: payload.decode(Int.self, forKey: .count)
+            )
         } else if container.contains(.processFailed) {
             self = try .processFailed(container.decode(GitRemoteProcessFailure.self, forKey: .processFailed))
         } else if container.contains(.processTimedOut) {
@@ -142,6 +179,23 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
         case .pathEscapesRepository(let path):
             var payload = container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .pathEscapesRepository)
             try payload.encode(path, forKey: .path)
+        case .revisionUnavailable(let target):
+            var payload = container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .revisionUnavailable)
+            try payload.encode(target, forKey: .target)
+        case .headUnavailable:
+            _ = container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .headUnavailable)
+        case .requiredObjectNotFound(let oid):
+            var payload = container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .requiredObjectNotFound)
+            try payload.encode(oid, forKey: .oid)
+        case .noSharedHistory(let targetOID, let headOID):
+            var payload = container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .noSharedHistory)
+            try payload.encode(targetOID, forKey: .targetOID)
+            try payload.encode(headOID, forKey: .headOID)
+        case .multipleBestMergeBases(let targetOID, let headOID, let count):
+            var payload = container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .multipleBestMergeBases)
+            try payload.encode(targetOID, forKey: .targetOID)
+            try payload.encode(headOID, forKey: .headOID)
+            try payload.encode(count, forKey: .count)
         case .processFailed(let failure):
             try container.encode(failure, forKey: .processFailed)
         case .processTimedOut(let failure):
