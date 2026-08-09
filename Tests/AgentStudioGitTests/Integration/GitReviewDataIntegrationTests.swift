@@ -5,6 +5,289 @@ import Testing
 
 @Suite("Git review data integration", .serialized)
 struct GitReviewDataIntegrationTests {
+    @Test("repository designation maps symbolic origin HEAD to the matching local branch")
+    func repositoryDesignationMapsSymbolicOriginHeadToMatchingLocalBranch() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-local-default")
+        defer { fixture.remove() }
+        let remoteTipOID = try fixture.git.run("rev-parse", "HEAD").trimmed
+        try fixture.git.run("update-ref", "refs/remotes/origin/main", remoteTipOID)
+        try fixture.git.run("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        try fixture.write("local-only.txt", contents: "local integration work\n")
+        try fixture.git.run("add", "local-only.txt")
+        try fixture.git.run("commit", "-m", "local integration commit")
+        let localTipOID = try fixture.git.run("rev-parse", "refs/heads/main").trimmed
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        // Act
+        let designation = try await client.localDefaultBranch(for: fixture.repositoryPath)
+        let contribution = try await client.contributionDiff(
+            GitContributionDiffRequest(
+                repositoryPath: fixture.repositoryPath,
+                target: .named(try #require(designation?.referenceName))
+            )
+        )
+
+        // Assert
+        #expect(designation == GitLocalDefaultBranch(name: "main"))
+        #expect(remoteTipOID != localTipOID)
+        #expect(contribution.resolvedTarget.oid == localTipOID)
+    }
+
+    @Test("repository designation rejects absent direct malformed and missing-local references")
+    func repositoryDesignationRejectsInvalidReferences() async throws {
+        // Arrange
+        let scenarios = try LocalDefaultBranchDesignationScenario.allCases.map { scenario in
+            (scenario, try scenario.makeFixture())
+        }
+        defer {
+            for (_, fixture) in scenarios {
+                fixture.remove()
+            }
+        }
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        // Act
+        for (scenario, fixture) in scenarios {
+            let designation = try await client.localDefaultBranch(for: fixture.repositoryPath)
+
+            // Assert
+            #expect(designation == nil, "unexpected designation for \(scenario)")
+        }
+    }
+
+    @Test(
+        "contribution capture retains committed and dirty work across history shapes",
+        arguments: ContributionHistoryShape.allCases
+    )
+    func contributionCaptureRetainsCommittedAndDirtyWork(historyShape: ContributionHistoryShape) async throws {
+        // Arrange
+        let fixture = try ContributionHistoryFixture.make(historyShape)
+        defer { fixture.remove() }
+        try fixture.addDirtyWorktreeChanges()
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        // Act
+        let snapshot = try await client.contributionDiff(fixture.request)
+        let files = filesByPath(snapshot.diff.files)
+
+        // Assert
+        #expect(snapshot.resolvedTarget.oid == fixture.targetOID)
+        #expect(snapshot.reviewedHead.oid == fixture.reviewedHeadOID)
+        #expect(snapshot.contributionBase.oid == fixture.expectedBaseOID)
+        #expect(files["target-only.txt"] == nil)
+        #expect(files["staged.txt"]?.changeKind == .added)
+        #expect(files["README.md"]?.changeKind == .modified)
+        #expect(files["untracked.txt"]?.changeKind == .added)
+        #expect((files["feature.txt"] != nil) == historyShape.hasCommittedContribution)
+    }
+
+    @Test("target-only advancement changes target identity without changing contribution")
+    func targetOnlyAdvancementChangesTargetIdentityWithoutChangingContribution() async throws {
+        // Arrange
+        let fixture = try ContributionHistoryFixture.make(.diverged)
+        defer { fixture.remove() }
+        let client = LibGit2AgentStudioGitLocalClient()
+        let expressionRequest = GitContributionDiffRequest(
+            repositoryPath: fixture.request.repositoryPath,
+            target: .named("\(fixture.request.target.name)^{commit}")
+        )
+        let predecessor = try await client.contributionDiff(expressionRequest)
+
+        // Act
+        let advancedTargetOID = try fixture.advanceTargetOnly()
+        let successor = try await client.contributionDiff(expressionRequest)
+
+        // Assert
+        #expect(predecessor.resolvedTarget.oid != successor.resolvedTarget.oid)
+        #expect(successor.resolvedTarget.oid == advancedTargetOID)
+        #expect(predecessor.contributionBase == successor.contributionBase)
+        #expect(predecessor.diff == successor.diff)
+        #expect(filesByPath(successor.diff.files)["target-second.txt"] == nil)
+    }
+
+    @Test(arguments: FortyCharacterTargetScenario.allCases)
+    func fortyCharacterTargetResolution(scenario: FortyCharacterTargetScenario) async throws {
+        // Arrange
+        let fixture = try scenario.makeFixture()
+        defer { fixture.remove() }
+        // Act
+        let snapshot = try await LibGit2AgentStudioGitLocalClient().contributionDiff(fixture.request)
+        // Assert
+        #expect(snapshot.resolvedTarget == fixture.expectedRevision)
+    }
+
+    @Test("contribution capture preserves rename delete and binary facts")
+    func contributionCapturePreservesRenameDeleteAndBinaryFacts() async throws {
+        // Arrange
+        let fixture = try RenameDeleteBinaryFixture.make()
+        defer { fixture.remove() }
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        // Act
+        let snapshot = try await client.contributionDiff(fixture.request)
+        let files = filesByPath(snapshot.diff.files)
+
+        // Assert
+        #expect(files["renamed.txt"]?.changeKind == .renamed)
+        #expect(files["renamed.txt"]?.previousPath == "rename-source.txt")
+        #expect(files["delete-source.txt"]?.changeKind == .deleted)
+        #expect(files["binary.bin"]?.isBinary == true)
+    }
+
+    @Test("contribution capture preserves recreated content after a staged same-path deletion")
+    func contributionCapturePreservesRecreatedContentAfterStagedSamePathDeletion() async throws {
+        // Arrange
+        let fixture = try SamePathOverlapFixture.make()
+        defer { fixture.remove() }
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        // Act
+        let snapshot = try await client.contributionDiff(fixture.request)
+        let overlap = try #require(filesByPath(snapshot.diff.files)["overlap.txt"])
+
+        // Assert
+        #expect(overlap.changeKind == .modified)
+        #expect(overlap.oldContentHash == fixture.originalContentHash)
+        #expect(overlap.newContentHash == fixture.recreatedContentHash)
+    }
+
+    @Test("contribution capture rejects unresolved targets without a snapshot")
+    func contributionCaptureRejectsUnresolvedTargetsWithoutASnapshot() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-unresolved-target")
+        defer { fixture.remove() }
+        let request = GitContributionDiffRequest(
+            repositoryPath: fixture.repositoryPath,
+            target: .named("refs/heads/missing")
+        )
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        // Act / Assert
+        await #expect(throws: GitDataPlaneError.revisionUnavailable(target: request.target)) {
+            _ = try await client.contributionDiff(request)
+        }
+    }
+
+    @Test(
+        "contribution capture preserves target and HEAD failure identity without a snapshot",
+        arguments: ContributionRevisionFailureScenario.allCases
+    )
+    func contributionCapturePreservesRevisionFailureIdentity(
+        scenario: ContributionRevisionFailureScenario
+    ) async throws {
+        // Arrange
+        let fixture = try scenario.makeFixture()
+        defer { fixture.remove() }
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        // Act / Assert
+        await #expect(throws: fixture.expectedError) {
+            _ = try await client.contributionDiff(fixture.request)
+        }
+    }
+
+    @Test("contribution capture rejects unrelated histories without a snapshot")
+    func contributionCaptureRejectsUnrelatedHistoriesWithoutASnapshot() async throws {
+        // Arrange
+        let fixture = try UnrelatedHistoryFixture.make()
+        defer { fixture.remove() }
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        // Act / Assert
+        await #expect(
+            throws: GitDataPlaneError.noSharedHistory(
+                targetOID: fixture.targetOID,
+                headOID: fixture.reviewedHeadOID
+            )
+        ) {
+            _ = try await client.contributionDiff(fixture.request)
+        }
+    }
+
+    @Test("contribution capture rejects missing ancestry without a partial snapshot")
+    func contributionCaptureRejectsMissingAncestryWithoutAPartialSnapshot() async throws {
+        // Arrange
+        let fixture = try MissingAncestryFixture.make()
+        defer { fixture.remove() }
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        // Act / Assert
+        do {
+            _ = try await client.contributionDiff(fixture.request)
+            Issue.record("missing ancestry unexpectedly produced a contribution snapshot")
+        } catch GitDataPlaneError.libgit2Failure(_, _, let message) {
+            #expect(message.contains(fixture.missingCommitOID))
+        } catch {
+            Issue.record("expected libgit2 failure, got \(error)")
+        }
+    }
+
+    @Test("contribution capture rejects multiple best merge bases without a snapshot")
+    func contributionCaptureRejectsMultipleBestMergeBasesWithoutASnapshot() async throws {
+        // Arrange
+        let fixture = try MultipleBestMergeBasesFixture.make()
+        defer { fixture.remove() }
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        // Act / Assert
+        await #expect(
+            throws: GitDataPlaneError.multipleBestMergeBases(
+                targetOID: fixture.targetOID,
+                headOID: fixture.reviewedHeadOID,
+                count: 2
+            )
+        ) {
+            _ = try await client.contributionDiff(fixture.request)
+        }
+    }
+
+    @Test("contribution capture rejects unborn and missing HEAD without a snapshot")
+    func contributionCaptureRejectsUnbornAndMissingHeadWithoutASnapshot() async throws {
+        // Arrange
+        let unbornFixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-unborn-head")
+        let missingFixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-missing-head")
+        defer {
+            unbornFixture.remove()
+            missingFixture.remove()
+        }
+        try unbornFixture.git.run("symbolic-ref", "HEAD", "refs/heads/unborn")
+        try missingFixture.git.run("symbolic-ref", "HEAD", "refs/missing/HEAD")
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        // Act / Assert
+        for fixture in [unbornFixture, missingFixture] {
+            await #expect(throws: GitDataPlaneError.headUnavailable) {
+                _ = try await client.contributionDiff(
+                    GitContributionDiffRequest(
+                        repositoryPath: fixture.repositoryPath,
+                        target: .named("refs/heads/main")
+                    )
+                )
+            }
+        }
+    }
+
+    @Test("contribution capture rejects a missing required tree without a snapshot")
+    func contributionCaptureRejectsMissingRequiredTreeWithoutASnapshot() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-missing-base-tree")
+        defer { fixture.remove() }
+        let treeOID = try fixture.git.run("rev-parse", "HEAD^{tree}").trimmed
+        try FileManager.default.removeItem(at: fixture.looseObjectPath(oid: treeOID))
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        // Act / Assert
+        await #expect(throws: GitDataPlaneError.requiredObjectNotFound(oid: treeOID)) {
+            _ = try await client.contributionDiff(
+                GitContributionDiffRequest(
+                    repositoryPath: fixture.repositoryPath,
+                    target: .named("refs/heads/main")
+                )
+            )
+        }
+    }
+
     @Test("revision resolution and tree reads expose commit backed review data")
     func revisionResolutionAndTreeReadsExposeCommitBackedReviewData() async throws {
         let fixture = try ReviewDataFixture.make()

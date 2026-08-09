@@ -13,6 +13,14 @@ struct LibGit2DiffReader: Sendable {
         }
     }
 
+    func diff(baseTree: OpaquePointer, repository: OpaquePointer) throws -> GitDiffSnapshot {
+        let diff = try treeToWorkdirDiff(oldTree: baseTree, repository: repository)
+        defer { git_diff_free(diff) }
+
+        try findRenames(diff, includingUntracked: true)
+        return GitDiffSnapshot(files: try files(diff: diff, repository: repository))
+    }
+
     private func makeDiff(_ request: GitDiffRequest, repository: OpaquePointer) throws -> OpaquePointer {
         switch (request.base.kind, request.compare.kind) {
         case (.head, .head), (.commit, .commit), (.head, .commit), (.commit, .head):
@@ -85,6 +93,16 @@ struct LibGit2DiffReader: Sendable {
         return diff
     }
 
+    private func treeToWorkdirDiff(oldTree: OpaquePointer, repository: OpaquePointer) throws -> OpaquePointer {
+        var diff: OpaquePointer?
+        var options = try diffOptions()
+        let result = git_diff_tree_to_workdir(&diff, repository, oldTree, &options)
+        guard result >= 0, let diff else {
+            throw LibGit2ErrorCapture.failure(code: result)
+        }
+        return diff
+    }
+
     private func treeToWorkdirWithIndexDiff(oldTree: OpaquePointer, repository: OpaquePointer) throws
         -> OpaquePointer
     {
@@ -120,13 +138,16 @@ struct LibGit2DiffReader: Sendable {
         return options
     }
 
-    private func findRenames(_ diff: OpaquePointer) throws {
+    private func findRenames(_ diff: OpaquePointer, includingUntracked: Bool = false) throws {
         var options = git_diff_find_options()
         let initResult = git_diff_find_options_init(&options, UInt32(GIT_DIFF_FIND_OPTIONS_VERSION))
         guard initResult >= 0 else {
             throw LibGit2ErrorCapture.failure(code: initResult)
         }
         options.flags = GIT_DIFF_FIND_RENAMES.rawValue
+        if includingUntracked {
+            options.flags |= GIT_DIFF_FIND_FOR_UNTRACKED.rawValue
+        }
         let result = git_diff_find_similar(diff, &options)
         guard result >= 0 else {
             throw LibGit2ErrorCapture.failure(code: result)

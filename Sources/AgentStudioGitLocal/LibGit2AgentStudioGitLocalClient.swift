@@ -146,6 +146,14 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
         }
     }
 
+    public func localDefaultBranch(for repositoryPath: URL) async throws(GitDataPlaneError)
+        -> GitLocalDefaultBranch?
+    {
+        try await executeBlockingRead {
+            try LibGit2LocalDefaultBranchReader().localDefaultBranch(for: repositoryPath)
+        }
+    }
+
     public func resolveRevision(_ request: GitRevisionResolutionRequest) async throws(GitDataPlaneError)
         -> GitResolvedRevision
     {
@@ -163,6 +171,14 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
     public func diff(_ request: GitDiffRequest) async throws(GitDataPlaneError) -> GitDiffSnapshot {
         try await executeBlockingRead {
             try LibGit2DiffReader().diff(request)
+        }
+    }
+
+    public func contributionDiff(_ request: GitContributionDiffRequest) async throws(GitDataPlaneError)
+        -> GitContributionDiffSnapshot
+    {
+        try await executeBlockingRead {
+            try LibGit2ContributionDiffReader().contributionDiff(request)
         }
     }
 
