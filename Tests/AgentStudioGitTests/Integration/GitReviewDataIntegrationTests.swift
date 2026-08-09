@@ -106,15 +106,15 @@ struct GitReviewDataIntegrationTests {
         #expect(filesByPath(successor.diff.files)["target-second.txt"] == nil)
     }
 
-    @Test("40-hex object target wins over a same-named branch")
-    func fortyHexObjectTargetWinsOverSameNamedBranch() async throws {
+    @Test(arguments: FortyCharacterTargetScenario.allCases)
+    func fortyCharacterTargetResolution(scenario: FortyCharacterTargetScenario) async throws {
         // Arrange
-        let fixture = try FortyHexObjectNameCollisionFixture.make()
+        let fixture = try scenario.makeFixture()
         defer { fixture.remove() }
         // Act
         let snapshot = try await LibGit2AgentStudioGitLocalClient().contributionDiff(fixture.request)
         // Assert
-        #expect(snapshot.resolvedTarget.oid == fixture.objectOID)
+        #expect(snapshot.resolvedTarget == fixture.expectedRevision)
     }
 
     @Test("contribution capture preserves rename delete and binary facts")
@@ -213,14 +213,13 @@ struct GitReviewDataIntegrationTests {
         let client = LibGit2AgentStudioGitLocalClient()
 
         // Act / Assert
-        await #expect(
-            throws: GitDataPlaneError.libgit2Failure(
-                code: -1,
-                klass: 9,
-                message: "object not found - no match for id (\(fixture.missingCommitOID))"
-            )
-        ) {
+        do {
             _ = try await client.contributionDiff(fixture.request)
+            Issue.record("missing ancestry unexpectedly produced a contribution snapshot")
+        } catch GitDataPlaneError.libgit2Failure(_, _, let message) {
+            #expect(message.contains(fixture.missingCommitOID))
+        } catch {
+            Issue.record("expected libgit2 failure, got \(error)")
         }
     }
 

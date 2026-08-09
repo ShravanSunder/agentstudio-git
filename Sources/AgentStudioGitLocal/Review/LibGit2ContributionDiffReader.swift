@@ -5,12 +5,12 @@ import Foundation
 struct LibGit2ContributionDiffReader: Sendable {
     func contributionDiff(_ request: GitContributionDiffRequest) throws -> GitContributionDiffSnapshot {
         try LibGit2ReviewSupport.withRepository(at: request.repositoryPath) { repository in
-            let targetCommit = try resolveTargetCommit(request.target, repository: repository)
-            defer { git_commit_free(targetCommit) }
+            let resolvedTarget = try resolveTargetCommit(request.target, repository: repository)
+            defer { git_commit_free(resolvedTarget.commit) }
             let reviewedHead = try resolveReviewedHead(repository: repository)
             defer { git_commit_free(reviewedHead.commit) }
 
-            let targetOID = try requiredCommitOID(targetCommit)
+            let targetOID = try requiredCommitOID(resolvedTarget.commit)
             let headOID = try requiredCommitOID(reviewedHead.commit)
             let contributionBaseOID = try uniqueContributionBase(
                 targetOID: targetOID,
@@ -26,7 +26,7 @@ struct LibGit2ContributionDiffReader: Sendable {
             return GitContributionDiffSnapshot(
                 resolvedTarget: GitResolvedRevision(
                     oid: LibGit2ReviewSupport.oidString(targetOID),
-                    shortName: shortName(for: request.target)
+                    shortName: resolvedTarget.shortName
                 ),
                 reviewedHead: GitResolvedRevision(
                     oid: LibGit2ReviewSupport.oidString(headOID),
@@ -44,10 +44,11 @@ struct LibGit2ContributionDiffReader: Sendable {
     private func resolveTargetCommit(
         _ target: GitRevisionTarget,
         repository: OpaquePointer
-    ) throws -> OpaquePointer {
+    ) throws -> (commit: OpaquePointer, shortName: String?) {
         var object: OpaquePointer?
+        var reference: OpaquePointer?
         let revparseResult = target.name.withCString { targetPointer in
-            git_revparse_single(&object, repository, targetPointer)
+            git_revparse_ext(&object, &reference, repository, targetPointer)
         }
         if revparseResult >= 0 {
             guard let object else {
@@ -57,8 +58,12 @@ struct LibGit2ContributionDiffReader: Sendable {
                 )
             }
             defer { git_object_free(object) }
+            defer { git_reference_free(reference) }
 
-            return try peelCommit(object, target: target)
+            return (
+                commit: try peelCommit(object, target: target),
+                shortName: reference == nil ? nil : target.name
+            )
         }
         guard revparseResult == GIT_ENOTFOUND.rawValue else {
             if [GIT_EAMBIGUOUS.rawValue, GIT_EINVALIDSPEC.rawValue].contains(revparseResult) {
@@ -67,7 +72,7 @@ struct LibGit2ContributionDiffReader: Sendable {
             throw LibGit2ErrorCapture.failure(code: revparseResult)
         }
 
-        var reference: OpaquePointer?
+        reference = nil
         let referenceResult = target.name.withCString { targetPointer in
             git_reference_dwim(&reference, repository, targetPointer)
         }
@@ -105,7 +110,7 @@ struct LibGit2ContributionDiffReader: Sendable {
         }
         defer { git_object_free(object) }
 
-        return try peelCommit(object, target: target)
+        return (commit: try peelCommit(object, target: target), shortName: target.name)
     }
 
     private func peelCommit(_ object: OpaquePointer, target: GitRevisionTarget) throws -> OpaquePointer {
@@ -219,9 +224,5 @@ struct LibGit2ContributionDiffReader: Sendable {
             )
         }
         return oidPointer.pointee
-    }
-
-    private func shortName(for target: GitRevisionTarget) -> String? {
-        target.name.count == 40 ? nil : target.name
     }
 }

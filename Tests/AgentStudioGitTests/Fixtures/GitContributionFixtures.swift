@@ -104,29 +104,46 @@ struct ContributionRevisionFailureFixture {
     }
 }
 
-struct FortyHexObjectNameCollisionFixture {
-    let fixture: GitFixtureRepository
-    let request: GitContributionDiffRequest
-    let objectOID: String
+enum FortyCharacterTargetScenario: String, CaseIterable, CustomStringConvertible, Sendable {
+    case exactObject
+    case symbolicReference
 
-    static func make() throws -> Self {
-        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-40-hex-collision")
-        let branchTargetOID = try fixture.git.run("rev-parse", "HEAD").trimmed
-        try fixture.write("object-target.txt", contents: "exact object target\n")
-        try fixture.git.run("add", "object-target.txt")
-        try fixture.git.run("commit", "-m", "create exact object target")
-        let objectOID = try fixture.git.run("rev-parse", "HEAD").trimmed
-        try fixture.git.run("update-ref", "refs/heads/\(objectOID)", branchTargetOID)
+    var description: String { rawValue }
 
-        return Self(
+    func makeFixture() throws -> FortyCharacterTargetFixture {
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-40-character-target")
+        let initialOID = try fixture.git.run("rev-parse", "HEAD").trimmed
+        let target: GitRevisionTarget
+        let expectedRevision: GitResolvedRevision
+
+        switch self {
+        case .exactObject:
+            try fixture.write("object-target.txt", contents: "exact object target\n")
+            try fixture.git.run("add", "object-target.txt")
+            try fixture.git.run("commit", "-m", "create exact object target")
+            let objectOID = try fixture.git.run("rev-parse", "HEAD").trimmed
+            try fixture.git.run("update-ref", "refs/heads/\(objectOID)", initialOID)
+            target = .named(objectOID)
+            expectedRevision = GitResolvedRevision(oid: objectOID, shortName: nil)
+        case .symbolicReference:
+            let referenceName = String(repeating: "r", count: 40)
+            try fixture.git.run("update-ref", "refs/heads/\(referenceName)", initialOID)
+            target = .named(referenceName)
+            expectedRevision = GitResolvedRevision(oid: initialOID, shortName: referenceName)
+        }
+
+        return FortyCharacterTargetFixture(
             fixture: fixture,
-            request: GitContributionDiffRequest(
-                repositoryPath: fixture.repositoryPath,
-                target: .named(objectOID)
-            ),
-            objectOID: objectOID
+            request: GitContributionDiffRequest(repositoryPath: fixture.repositoryPath, target: target),
+            expectedRevision: expectedRevision
         )
     }
+}
+
+struct FortyCharacterTargetFixture {
+    let fixture: GitFixtureRepository
+    let request: GitContributionDiffRequest
+    let expectedRevision: GitResolvedRevision
 
     func remove() {
         fixture.remove()

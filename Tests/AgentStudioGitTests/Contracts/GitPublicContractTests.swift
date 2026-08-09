@@ -6,6 +6,7 @@ import Testing
 struct GitPublicContractTests {
     @Test("local default branch and contribution snapshots round-trip")
     func localDefaultBranchAndContributionSnapshotsRoundTrip() throws {
+        // Arrange
         let localDefaultBranch = GitLocalDefaultBranch(name: "integration")
         let request = GitContributionDiffRequest(
             repositoryPath: URL(fileURLWithPath: "/tmp/repo"),
@@ -36,6 +37,7 @@ struct GitPublicContractTests {
             )
         )
 
+        // Act
         let decodedLocalDefaultBranch = try JSONDecoder().decode(
             GitLocalDefaultBranch.self,
             from: JSONEncoder().encode(localDefaultBranch)
@@ -49,6 +51,7 @@ struct GitPublicContractTests {
             from: JSONEncoder().encode(snapshot)
         )
 
+        // Assert
         #expect(decodedLocalDefaultBranch == localDefaultBranch)
         #expect(decodedLocalDefaultBranch.referenceName == "refs/heads/integration")
         #expect(decodedRequest == request)
@@ -57,6 +60,7 @@ struct GitPublicContractTests {
 
     @Test("contribution failures round-trip without losing comparison facts")
     func contributionFailuresRoundTripWithoutLosingComparisonFacts() throws {
+        // Arrange
         let failures: [GitDataPlaneError] = [
             .revisionUnavailable(target: .named("refs/heads/missing")),
             .headUnavailable,
@@ -65,10 +69,12 @@ struct GitPublicContractTests {
             .multipleBestMergeBases(targetOID: "target-oid", headOID: "head-oid", count: 2),
         ]
 
+        // Act
         let decodedFailures = try failures.map { failure in
             try JSONDecoder().decode(GitDataPlaneError.self, from: JSONEncoder().encode(failure))
         }
 
+        // Assert
         #expect(decodedFailures == failures)
     }
 
