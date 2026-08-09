@@ -37,6 +37,33 @@ struct GitPublicContractTests {
         #expect(decodedCatalog.branches[0].referenceName == "refs/heads/main")
     }
 
+    @Test("review comparison branch targets use stable explicit discriminators")
+    func reviewComparisonBranchTargetsUseStableExplicitDiscriminators() throws {
+        // Arrange
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let localTarget = GitReviewComparisonBranchTarget.local(
+            branchName: "main",
+            oid: "local-oid"
+        )
+        let remoteTarget = GitReviewComparisonBranchTarget.remoteTracking(
+            remoteName: "origin",
+            branchName: "main",
+            oid: "remote-oid"
+        )
+
+        // Act
+        let localJSON = try #require(String(data: encoder.encode(localTarget), encoding: .utf8))
+        let remoteJSON = try #require(String(data: encoder.encode(remoteTarget), encoding: .utf8))
+
+        // Assert
+        #expect(localJSON == #"{"branchName":"main","kind":"local","oid":"local-oid"}"#)
+        #expect(
+            remoteJSON
+                == #"{"branchName":"main","kind":"remoteTracking","oid":"remote-oid","remoteName":"origin"}"#
+        )
+    }
+
     @Test("contribution requests and snapshots round-trip")
     func contributionRequestsAndSnapshotsRoundTrip() throws {
         // Arrange
