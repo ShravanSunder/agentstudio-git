@@ -1,17 +1,5 @@
 import Foundation
 
-public struct GitLocalDefaultBranch: Codable, Equatable, Hashable, Sendable {
-    public let name: String
-
-    public init(name: String) {
-        self.name = name
-    }
-
-    public var referenceName: String {
-        "refs/heads/\(name)"
-    }
-}
-
 public struct GitContributionDiffRequest: Codable, Equatable, Hashable, Sendable {
     public let repositoryPath: URL
     public let target: GitRevisionTarget

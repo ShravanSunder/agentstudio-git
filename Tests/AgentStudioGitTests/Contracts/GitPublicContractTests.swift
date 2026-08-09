@@ -4,10 +4,42 @@ import Testing
 
 @Suite("Git public contracts")
 struct GitPublicContractTests {
-    @Test("local default branch and contribution snapshots round-trip")
-    func localDefaultBranchAndContributionSnapshotsRoundTrip() throws {
+    @Test("review comparison target catalogs preserve branch kinds and resolved revisions")
+    func reviewComparisonTargetCatalogsPreserveBranchKindsAndResolvedRevisions() throws {
         // Arrange
-        let localDefaultBranch = GitLocalDefaultBranch(name: "integration")
+        let catalog = GitReviewComparisonTargetCatalog(
+            defaultTarget: .remoteTracking(
+                remoteName: "origin",
+                branchName: "main",
+                oid: "default-oid"
+            ),
+            branches: [
+                .local(branchName: "main", oid: "local-oid"),
+                .remoteTracking(
+                    remoteName: "origin",
+                    branchName: "main",
+                    oid: "default-oid"
+                ),
+            ]
+        )
+
+        // Act
+        let decodedCatalog = try JSONDecoder().decode(
+            GitReviewComparisonTargetCatalog.self,
+            from: JSONEncoder().encode(catalog)
+        )
+
+        // Assert
+        #expect(decodedCatalog == catalog)
+        #expect(decodedCatalog.defaultTarget?.displayName == "origin/main")
+        #expect(decodedCatalog.defaultTarget?.referenceName == "refs/remotes/origin/main")
+        #expect(decodedCatalog.branches[0].displayName == "main")
+        #expect(decodedCatalog.branches[0].referenceName == "refs/heads/main")
+    }
+
+    @Test("contribution requests and snapshots round-trip")
+    func contributionRequestsAndSnapshotsRoundTrip() throws {
+        // Arrange
         let request = GitContributionDiffRequest(
             repositoryPath: URL(fileURLWithPath: "/tmp/repo"),
             target: .named("refs/heads/integration")
@@ -38,10 +70,6 @@ struct GitPublicContractTests {
         )
 
         // Act
-        let decodedLocalDefaultBranch = try JSONDecoder().decode(
-            GitLocalDefaultBranch.self,
-            from: JSONEncoder().encode(localDefaultBranch)
-        )
         let decodedRequest = try JSONDecoder().decode(
             GitContributionDiffRequest.self,
             from: JSONEncoder().encode(request)
@@ -52,8 +80,6 @@ struct GitPublicContractTests {
         )
 
         // Assert
-        #expect(decodedLocalDefaultBranch == localDefaultBranch)
-        #expect(decodedLocalDefaultBranch.referenceName == "refs/heads/integration")
         #expect(decodedRequest == request)
         #expect(decodedSnapshot == snapshot)
     }
