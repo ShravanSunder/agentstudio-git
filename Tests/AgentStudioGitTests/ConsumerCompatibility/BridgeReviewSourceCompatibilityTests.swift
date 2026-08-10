@@ -508,8 +508,8 @@ private struct BridgeReviewSourceAdapterCompileHarness {
                 throw .unsupported(message: "unused")
             }
 
-            func localDefaultBranch(for repositoryPath: URL) async throws(GitDataPlaneError)
-                -> GitLocalDefaultBranch?
+            func reviewComparisonTargets(for repositoryPath: URL) async throws(GitDataPlaneError)
+                -> GitReviewComparisonTargetCatalog
             {
                 throw .unsupported(message: "unused")
             }

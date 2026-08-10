@@ -1,47 +1,6 @@
 import AgentStudioGit
 import Foundation
 
-enum LocalDefaultBranchDesignationScenario: String, CaseIterable, CustomStringConvertible, Sendable {
-    case absent
-    case direct
-    case malformed
-    case missingLocalBranch
-    case missingLocalObject
-    case nonCommitLocalObject
-    case selfReferential
-
-    var description: String { rawValue }
-
-    func makeFixture() throws -> GitFixtureRepository {
-        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-designation-\(rawValue)")
-        let headOID = try fixture.git.run("rev-parse", "HEAD").trimmed
-        switch self {
-        case .absent:
-            break
-        case .direct:
-            try fixture.git.run("update-ref", "refs/remotes/origin/HEAD", headOID)
-        case .malformed:
-            try fixture.git.run("symbolic-ref", "refs/remotes/origin/HEAD", "refs/heads/main")
-        case .missingLocalBranch:
-            try fixture.git.run("update-ref", "refs/remotes/origin/trunk", headOID)
-            try fixture.git.run("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk")
-        case .missingLocalObject:
-            try fixture.git.run("update-ref", "refs/remotes/origin/main", headOID)
-            try fixture.git.run("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
-            try fixture.write(".git/refs/heads/main", contents: "1111111111111111111111111111111111111111\n")
-        case .nonCommitLocalObject:
-            let treeOID = try fixture.git.run("rev-parse", "HEAD^{tree}").trimmed
-            try fixture.git.run("update-ref", "refs/remotes/origin/main", headOID)
-            try fixture.git.run("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
-            try fixture.write(".git/refs/heads/main", contents: "\(treeOID)\n")
-        case .selfReferential:
-            try fixture.git.run("update-ref", "refs/heads/HEAD", headOID)
-            try fixture.git.run("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/HEAD")
-        }
-        return fixture
-    }
-}
-
 enum ContributionHistoryShape: String, CaseIterable, Sendable {
     case diverged
     case merged

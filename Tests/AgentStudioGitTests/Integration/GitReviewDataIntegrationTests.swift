@@ -5,55 +5,82 @@ import Testing
 
 @Suite("Git review data integration", .serialized)
 struct GitReviewDataIntegrationTests {
-    @Test("repository designation maps symbolic origin HEAD to the matching local branch")
-    func repositoryDesignationMapsSymbolicOriginHeadToMatchingLocalBranch() async throws {
+    @Test("review target catalog designates origin HEAD without substituting divergent local main")
+    func reviewTargetCatalogDesignatesOriginHeadWithoutSubstitutingDivergentLocalMain() async throws {
         // Arrange
-        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-local-default")
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-review-targets")
         defer { fixture.remove() }
-        let remoteTipOID = try fixture.git.run("rev-parse", "HEAD").trimmed
-        try fixture.git.run("update-ref", "refs/remotes/origin/main", remoteTipOID)
+        let remoteMainOID = try fixture.git.run("rev-parse", "HEAD").trimmed
+        try fixture.git.run("update-ref", "refs/remotes/origin/main", remoteMainOID)
         try fixture.git.run("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        try fixture.git.run("update-ref", "refs/remotes/origin/release", remoteMainOID)
+        try fixture.git.run("branch", "stack/base")
         try fixture.write("local-only.txt", contents: "local integration work\n")
         try fixture.git.run("add", "local-only.txt")
         try fixture.git.run("commit", "-m", "local integration commit")
-        let localTipOID = try fixture.git.run("rev-parse", "refs/heads/main").trimmed
+        let localMainOID = try fixture.git.run("rev-parse", "refs/heads/main").trimmed
         let client = LibGit2AgentStudioGitLocalClient()
 
         // Act
-        let designation = try await client.localDefaultBranch(for: fixture.repositoryPath)
-        let contribution = try await client.contributionDiff(
-            GitContributionDiffRequest(
-                repositoryPath: fixture.repositoryPath,
-                target: .named(try #require(designation?.referenceName))
-            )
-        )
+        let catalog = try await client.reviewComparisonTargets(for: fixture.repositoryPath)
 
         // Assert
-        #expect(designation == GitLocalDefaultBranch(name: "main"))
-        #expect(remoteTipOID != localTipOID)
-        #expect(contribution.resolvedTarget.oid == localTipOID)
+        #expect(
+            catalog.defaultTarget
+                == .remoteTracking(remoteName: "origin", branchName: "main", oid: remoteMainOID)
+        )
+        #expect(remoteMainOID != localMainOID)
+        #expect(catalog.branches.contains(.local(branchName: "main", oid: localMainOID)))
+        #expect(catalog.branches.contains(.local(branchName: "stack/base", oid: remoteMainOID)))
+        #expect(
+            catalog.branches.contains(
+                .remoteTracking(remoteName: "origin", branchName: "main", oid: remoteMainOID)
+            )
+        )
+        #expect(
+            catalog.branches.contains(
+                .remoteTracking(remoteName: "origin", branchName: "release", oid: remoteMainOID)
+            )
+        )
+        #expect(!catalog.branches.contains { $0.referenceName == "refs/remotes/origin/HEAD" })
     }
 
-    @Test("repository designation rejects absent direct malformed and missing-local references")
-    func repositoryDesignationRejectsInvalidReferences() async throws {
+    @Test("review target catalog leaves the default absent for unusable origin HEAD references")
+    func reviewTargetCatalogRejectsUnusableOriginHeadReferences() async throws {
         // Arrange
-        let scenarios = try LocalDefaultBranchDesignationScenario.allCases.map { scenario in
-            (scenario, try scenario.makeFixture())
-        }
-        defer {
-            for (_, fixture) in scenarios {
-                fixture.remove()
-            }
-        }
+        let absentFixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-targets-absent")
+        defer { absentFixture.remove() }
+
+        let directFixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-targets-direct")
+        defer { directFixture.remove() }
+        let directOID = try directFixture.git.run("rev-parse", "HEAD").trimmed
+        try directFixture.git.run("update-ref", "refs/remotes/origin/HEAD", directOID)
+
+        let malformedFixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-targets-malformed")
+        defer { malformedFixture.remove() }
+        try malformedFixture.git.run("symbolic-ref", "refs/remotes/origin/HEAD", "refs/heads/main")
+
+        let danglingFixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-targets-dangling")
+        defer { danglingFixture.remove() }
+        try danglingFixture.git.run(
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/missing"
+        )
         let client = LibGit2AgentStudioGitLocalClient()
 
         // Act
-        for (scenario, fixture) in scenarios {
-            let designation = try await client.localDefaultBranch(for: fixture.repositoryPath)
-
-            // Assert
-            #expect(designation == nil, "unexpected designation for \(scenario)")
+        var catalogs: [GitReviewComparisonTargetCatalog] = []
+        for fixture in [absentFixture, directFixture, malformedFixture, danglingFixture] {
+            catalogs.append(try await client.reviewComparisonTargets(for: fixture.repositoryPath))
         }
+
+        // Assert
+        #expect(catalogs.allSatisfy { $0.defaultTarget == nil })
+        #expect(
+            catalogs.allSatisfy { catalog in
+                !catalog.branches.contains { $0.referenceName == "refs/remotes/origin/HEAD" }
+            })
     }
 
     @Test(
