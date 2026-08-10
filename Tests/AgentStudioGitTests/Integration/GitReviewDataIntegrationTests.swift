@@ -397,6 +397,33 @@ struct GitReviewDataIntegrationTests {
         #expect(fullFiles["Docs/RenamedGuide.md"]?.fileId != nil)
     }
 
+    @Test("direct review comparison correlates a selected target with the working tree")
+    func directReviewComparisonCorrelatesSelectedTargetWithWorkingTree() async throws {
+        // Arrange
+        let fixture = try ReviewDataFixture.make()
+        defer { fixture.remove() }
+        try fixture.stageReviewChanges()
+        try fixture.addWorkingTreeOnlyChanges()
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        // Act
+        let snapshot = try await client.directReviewComparison(
+            GitDirectReviewComparisonRequest(
+                repositoryPath: fixture.repositoryPath,
+                target: .named(fixture.baseOID)
+            )
+        )
+        let files = filesByPath(snapshot.diff.files)
+
+        // Assert
+        #expect(snapshot.resolvedTarget.oid == fixture.baseOID)
+        #expect(snapshot.reviewedHead.oid == fixture.headOID)
+        #expect(files["Sources/App.swift"]?.changeKind == .modified)
+        #expect(files["Sources/New.swift"]?.changeKind == .added)
+        #expect(files["worktree-only.txt"]?.changeKind == .added)
+        #expect(files["Docs/RenamedGuide.md"]?.changeKind == .renamed)
+    }
+
     @Test("content reads load commit index and working-tree bytes and enforce size limits")
     func contentReadsLoadCommitIndexAndWorkingTreeBytesAndEnforceSizeLimits() async throws {
         let fixture = try ReviewDataFixture.make()

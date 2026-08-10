@@ -597,6 +597,12 @@ private struct StubLocalClient: AgentStudioGitLocalClient {
         throw .unsupported(message: "not needed")
     }
 
+    func directReviewComparison(_: GitDirectReviewComparisonRequest) async throws(GitDataPlaneError)
+        -> GitDirectReviewComparisonSnapshot
+    {
+        throw .unsupported(message: "not needed")
+    }
+
     func content(_: GitContentRequest) async throws(GitDataPlaneError) -> GitContentPayload {
         throw .unsupported(message: "not needed")
     }

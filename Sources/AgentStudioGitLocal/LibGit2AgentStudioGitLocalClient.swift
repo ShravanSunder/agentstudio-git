@@ -182,6 +182,14 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
         }
     }
 
+    public func directReviewComparison(_ request: GitDirectReviewComparisonRequest) async throws(GitDataPlaneError)
+        -> GitDirectReviewComparisonSnapshot
+    {
+        try await executeBlockingRead {
+            try LibGit2DirectReviewComparisonReader().compare(request)
+        }
+    }
+
     public func content(_ request: GitContentRequest) async throws(GitDataPlaneError) -> GitContentPayload {
         try await executeBlockingRead {
             try LibGit2ContentReader().content(request)

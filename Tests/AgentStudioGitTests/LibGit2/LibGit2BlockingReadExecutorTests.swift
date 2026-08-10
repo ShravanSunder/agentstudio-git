@@ -167,6 +167,15 @@ struct LibGit2BlockingReadExecutorTests {
                     )
                 )
             }
+        case .directReviewComparison:
+            await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
+                _ = try await client.directReviewComparison(
+                    GitDirectReviewComparisonRequest(
+                        repositoryPath: missingRepositoryPath,
+                        target: .named("refs/heads/main")
+                    )
+                )
+            }
         case .content:
             await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
                 _ = try await client.content(
@@ -215,6 +224,7 @@ private enum BlockingReadAPI: String, CaseIterable, Sendable {
     case readTree
     case diff
     case contributionDiff
+    case directReviewComparison
     case content
 }
 

@@ -58,6 +58,34 @@ struct GitPublicContractTests {
         #expect(decodedSnapshot == snapshot)
     }
 
+    @Test("direct review comparison contracts round-trip")
+    func directReviewComparisonContractsRoundTrip() throws {
+        // Arrange
+        let request = GitDirectReviewComparisonRequest(
+            repositoryPath: URL(fileURLWithPath: "/tmp/repo"),
+            target: .named("0123456789abcdef0123456789abcdef01234567")
+        )
+        let snapshot = GitDirectReviewComparisonSnapshot(
+            resolvedTarget: GitResolvedRevision(oid: "target-oid", shortName: nil),
+            reviewedHead: GitResolvedRevision(oid: "head-oid", shortName: "feature/review"),
+            diff: GitDiffSnapshot(files: [])
+        )
+
+        // Act
+        let decodedRequest = try JSONDecoder().decode(
+            GitDirectReviewComparisonRequest.self,
+            from: JSONEncoder().encode(request)
+        )
+        let decodedSnapshot = try JSONDecoder().decode(
+            GitDirectReviewComparisonSnapshot.self,
+            from: JSONEncoder().encode(snapshot)
+        )
+
+        // Assert
+        #expect(decodedRequest == request)
+        #expect(decodedSnapshot == snapshot)
+    }
+
     @Test("contribution failures round-trip without losing comparison facts")
     func contributionFailuresRoundTripWithoutLosingComparisonFacts() throws {
         // Arrange

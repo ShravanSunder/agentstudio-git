@@ -564,6 +564,12 @@ private struct BridgeReviewSourceAdapterCompileHarness {
             {
                 throw .unsupported(message: "unused")
             }
+
+            func directReviewComparison(_ request: GitDirectReviewComparisonRequest) async throws(GitDataPlaneError)
+                -> GitDirectReviewComparisonSnapshot
+            {
+                throw .unsupported(message: "unused")
+            }
         }
 
         enum HarnessFailure: Error {
