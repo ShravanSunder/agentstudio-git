@@ -575,7 +575,9 @@ private struct StubLocalClient: AgentStudioGitLocalClient {
         throw .unsupported(message: "not needed")
     }
 
-    func localDefaultBranch(for _: URL) async throws(GitDataPlaneError) -> GitLocalDefaultBranch? {
+    func reviewComparisonTargets(for _: URL) async throws(GitDataPlaneError)
+        -> GitReviewComparisonTargetCatalog
+    {
         throw .unsupported(message: "not needed")
     }
 
