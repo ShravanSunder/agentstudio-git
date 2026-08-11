@@ -100,6 +100,105 @@ struct GitReviewDataIntegrationTests {
         #expect(capture.rows.filter { $0.canonicalReferenceName == "refs/remotes/origin/main" }.count == 1)
     }
 
+    @Test("bounded review capture canonicalizes branch shorthands before mandatory retention")
+    func boundedReviewCaptureCanonicalizesBranchShorthandsBeforeMandatoryRetention() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-review-current-dwim")
+        defer { fixture.remove() }
+        let oid = try fixture.git.run("rev-parse", "HEAD").trimmed
+        try fixture.git.run("branch", "feature/foo")
+        try fixture.git.run("update-ref", "refs/remotes/origin/archive", oid)
+        let now = unixMilliseconds(Date())
+        let client = LibGit2AgentStudioGitLocalClient()
+        let scenarios: [(input: String, canonical: String, target: GitReviewComparisonBranchTarget)] = [
+            (
+                input: "origin/archive",
+                canonical: "refs/remotes/origin/archive",
+                target: .remoteTracking(remoteName: "origin", branchName: "archive", oid: oid)
+            ),
+            (
+                input: "feature/foo",
+                canonical: "refs/heads/feature/foo",
+                target: .local(branchName: "feature/foo", oid: oid)
+            ),
+            (
+                input: "refs/heads/feature/foo",
+                canonical: "refs/heads/feature/foo",
+                target: .local(branchName: "feature/foo", oid: oid)
+            ),
+        ]
+
+        // Act / Assert
+        for scenario in scenarios {
+            let capture = try await client.captureReviewComparisonTargets(
+                GitReviewComparisonTargetCaptureRequest(
+                    repositoryPath: fixture.repositoryPath,
+                    capturedAt: now + 120_000,
+                    cutoff: now + 60_000,
+                    maximumRows: 10,
+                    currentBranchReference: scenario.input
+                )
+            )
+
+            #expect(capture.currentReferenceName == scenario.canonical)
+            #expect(capture.rows.map(\.canonicalReferenceName) == [scenario.canonical])
+            #expect(capture.rows.first?.target == scenario.target)
+        }
+    }
+
+    @Test("bounded review capture does not retain tags or revision expressions as current branches")
+    func boundedReviewCaptureDoesNotRetainNonBranchCurrentTargets() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-review-current-non-branch")
+        defer { fixture.remove() }
+        try fixture.git.run("tag", "archive-tag")
+        let now = unixMilliseconds(Date())
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        // Act / Assert
+        for currentTarget in ["archive-tag", "main^{commit}"] {
+            let capture = try await client.captureReviewComparisonTargets(
+                GitReviewComparisonTargetCaptureRequest(
+                    repositoryPath: fixture.repositoryPath,
+                    capturedAt: now + 120_000,
+                    cutoff: now + 60_000,
+                    maximumRows: 10,
+                    currentBranchReference: currentTarget
+                )
+            )
+
+            #expect(capture.currentReferenceName == nil)
+            #expect(capture.rows.isEmpty)
+        }
+    }
+
+    @Test("bounded review capture follows DWIM precedence when local and remote branch shorthands collide")
+    func boundedReviewCaptureFollowsDWIMPrecedenceForBranchCollision() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-review-current-collision")
+        defer { fixture.remove() }
+        let oid = try fixture.git.run("rev-parse", "HEAD").trimmed
+        try fixture.git.run("branch", "origin/archive")
+        try fixture.git.run("update-ref", "refs/remotes/origin/archive", oid)
+        let now = unixMilliseconds(Date())
+
+        // Act
+        let capture = try await LibGit2AgentStudioGitLocalClient().captureReviewComparisonTargets(
+            GitReviewComparisonTargetCaptureRequest(
+                repositoryPath: fixture.repositoryPath,
+                capturedAt: now + 120_000,
+                cutoff: now + 60_000,
+                maximumRows: 10,
+                currentBranchReference: "origin/archive"
+            )
+        )
+
+        // Assert
+        #expect(capture.currentReferenceName == "refs/heads/origin/archive")
+        #expect(capture.rows.map(\.canonicalReferenceName) == ["refs/heads/origin/archive"])
+        #expect(capture.rows.first?.target == .local(branchName: "origin/archive", oid: oid))
+    }
+
     @Test("default resolver designates origin HEAD without substituting divergent local main")
     func defaultResolverDesignatesOriginHeadWithoutSubstitutingDivergentLocalMain() async throws {
         // Arrange

@@ -57,8 +57,12 @@ struct LibGit2ReviewComparisonTargetReader: Sendable {
                 referenceName: defaultReferenceName,
                 repository: repository
             )
+            let currentReferenceName = try resolveCurrentBranchReferenceName(
+                request.currentBranchReference,
+                repository: repository
+            )
             let currentRow = try resolveMandatoryRow(
-                referenceName: Self.validBranchReferenceName(request.currentBranchReference),
+                referenceName: currentReferenceName,
                 repository: repository
             )
 
@@ -164,6 +168,37 @@ struct LibGit2ReviewComparisonTargetReader: Sendable {
             rows.append(row)
         }
         return rows
+    }
+
+    private func resolveCurrentBranchReferenceName(
+        _ currentBranchReference: String?,
+        repository: OpaquePointer
+    ) throws -> String? {
+        guard let currentBranchReference else {
+            return nil
+        }
+        if let canonicalReferenceName = Self.validBranchReferenceName(currentBranchReference) {
+            return canonicalReferenceName
+        }
+
+        var reference: OpaquePointer?
+        let result = currentBranchReference.withCString { referenceNamePointer in
+            git_reference_dwim(&reference, repository, referenceNamePointer)
+        }
+        if [GIT_ENOTFOUND.rawValue, GIT_EINVALIDSPEC.rawValue].contains(result) {
+            return nil
+        }
+        guard result >= 0, let reference else {
+            throw LibGit2ErrorCapture.failure(code: result)
+        }
+        defer { git_reference_free(reference) }
+        guard let referenceNamePointer = git_reference_name(reference) else {
+            throw LibGit2ErrorCapture.fallbackFailure(
+                code: -1,
+                message: "libgit2 resolved a shorthand without a reference name"
+            )
+        }
+        return Self.validBranchReferenceName(String(cString: referenceNamePointer))
     }
 
     private func resolveMandatoryRow(
