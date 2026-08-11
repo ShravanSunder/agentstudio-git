@@ -5,8 +5,103 @@ import Testing
 
 @Suite("Git review data integration", .serialized)
 struct GitReviewDataIntegrationTests {
-    @Test("review target catalog designates origin HEAD without substituting divergent local main")
-    func reviewTargetCatalogDesignatesOriginHeadWithoutSubstitutingDivergentLocalMain() async throws {
+    @Test("bounded review capture retains the designated default and reports tip time")
+    func boundedReviewCaptureRetainsDefaultAndTipTime() async throws {
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-review-capture")
+        defer { fixture.remove() }
+        let oid = try fixture.git.run("rev-parse", "HEAD").trimmed
+        try fixture.git.run("update-ref", "refs/remotes/origin/main", oid)
+        try fixture.git.run("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        let capturedAt = unixMilliseconds(Date().addingTimeInterval(60))
+        let capture = try await LibGit2AgentStudioGitLocalClient().captureReviewComparisonTargets(
+            GitReviewComparisonTargetCaptureRequest(
+                repositoryPath: fixture.repositoryPath,
+                capturedAt: capturedAt,
+                cutoff: 0,
+                maximumRows: 10,
+                currentBranchReference: nil
+            )
+        )
+
+        #expect(capture.defaultReferenceName == "refs/remotes/origin/main")
+        #expect(capture.rows.contains { $0.canonicalReferenceName == "refs/remotes/origin/main" })
+        #expect(capture.rows.allSatisfy { $0.tipCommittedAt <= capturedAt })
+    }
+
+    @Test("bounded review capture prioritizes distinct mandatory rows and truncates recent rows")
+    func boundedReviewCapturePrioritizesMandatoryRowsAndTruncatesRecentRows() async throws {
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-review-bounds")
+        defer { fixture.remove() }
+        let oid = try fixture.git.run("rev-parse", "HEAD").trimmed
+        try fixture.git.run("update-ref", "refs/remotes/origin/main", oid)
+        try fixture.git.run("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        try fixture.git.run("branch", "aaa")
+        try fixture.git.run("branch", "zzz")
+        let now = unixMilliseconds(Date())
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        let truncated = try await client.captureReviewComparisonTargets(
+            GitReviewComparisonTargetCaptureRequest(
+                repositoryPath: fixture.repositoryPath,
+                capturedAt: now + 60_000,
+                cutoff: 0,
+                maximumRows: 2,
+                currentBranchReference: "refs/heads/main"
+            )
+        )
+
+        #expect(truncated.isTruncated)
+        #expect(
+            truncated.rows.map(\.canonicalReferenceName) == [
+                "refs/remotes/origin/main",
+                "refs/heads/main",
+            ])
+        #expect(truncated.defaultReferenceName == "refs/remotes/origin/main")
+        #expect(truncated.currentReferenceName == "refs/heads/main")
+
+        let futureCutoff = try await client.captureReviewComparisonTargets(
+            GitReviewComparisonTargetCaptureRequest(
+                repositoryPath: fixture.repositoryPath,
+                capturedAt: now + 120_000,
+                cutoff: now + 60_000,
+                maximumRows: 10,
+                currentBranchReference: "refs/heads/main"
+            )
+        )
+
+        #expect(
+            futureCutoff.rows.map(\.canonicalReferenceName) == [
+                "refs/remotes/origin/main",
+                "refs/heads/main",
+            ])
+        #expect(!futureCutoff.isTruncated)
+    }
+
+    @Test("bounded review capture collapses duplicate default and current roles")
+    func boundedReviewCaptureCollapsesDuplicateRoles() async throws {
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-review-dedup")
+        defer { fixture.remove() }
+        let oid = try fixture.git.run("rev-parse", "HEAD").trimmed
+        try fixture.git.run("update-ref", "refs/remotes/origin/main", oid)
+        try fixture.git.run("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+
+        let capture = try await LibGit2AgentStudioGitLocalClient().captureReviewComparisonTargets(
+            GitReviewComparisonTargetCaptureRequest(
+                repositoryPath: fixture.repositoryPath,
+                capturedAt: unixMilliseconds(Date().addingTimeInterval(60)),
+                cutoff: 0,
+                maximumRows: 10,
+                currentBranchReference: "refs/remotes/origin/main"
+            )
+        )
+
+        #expect(capture.defaultReferenceName == "refs/remotes/origin/main")
+        #expect(capture.currentReferenceName == "refs/remotes/origin/main")
+        #expect(capture.rows.filter { $0.canonicalReferenceName == "refs/remotes/origin/main" }.count == 1)
+    }
+
+    @Test("default resolver designates origin HEAD without substituting divergent local main")
+    func defaultResolverDesignatesOriginHeadWithoutSubstitutingDivergentLocalMain() async throws {
         // Arrange
         let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-review-targets")
         defer { fixture.remove() }
@@ -20,33 +115,40 @@ struct GitReviewDataIntegrationTests {
         try fixture.git.run("commit", "-m", "local integration commit")
         let localMainOID = try fixture.git.run("rev-parse", "refs/heads/main").trimmed
         let client = LibGit2AgentStudioGitLocalClient()
-
-        // Act
-        let catalog = try await client.reviewComparisonTargets(for: fixture.repositoryPath)
+        let defaultTarget = try await client.resolveReviewDefaultTarget(for: fixture.repositoryPath)
+        let capture = try await client.captureReviewComparisonTargets(
+            GitReviewComparisonTargetCaptureRequest(
+                repositoryPath: fixture.repositoryPath,
+                capturedAt: unixMilliseconds(Date().addingTimeInterval(60)),
+                cutoff: 0,
+                maximumRows: 10,
+                currentBranchReference: nil
+            )
+        )
 
         // Assert
         #expect(
-            catalog.defaultTarget
+            defaultTarget
                 == .remoteTracking(remoteName: "origin", branchName: "main", oid: remoteMainOID)
         )
         #expect(remoteMainOID != localMainOID)
-        #expect(catalog.branches.contains(.local(branchName: "main", oid: localMainOID)))
-        #expect(catalog.branches.contains(.local(branchName: "stack/base", oid: remoteMainOID)))
+        #expect(capture.rows.contains { $0.target == .local(branchName: "main", oid: localMainOID) })
+        #expect(capture.rows.contains { $0.target == .local(branchName: "stack/base", oid: remoteMainOID) })
         #expect(
-            catalog.branches.contains(
-                .remoteTracking(remoteName: "origin", branchName: "main", oid: remoteMainOID)
-            )
+            capture.rows.contains {
+                $0.target == .remoteTracking(remoteName: "origin", branchName: "main", oid: remoteMainOID)
+            }
         )
         #expect(
-            catalog.branches.contains(
-                .remoteTracking(remoteName: "origin", branchName: "release", oid: remoteMainOID)
-            )
+            capture.rows.contains {
+                $0.target == .remoteTracking(remoteName: "origin", branchName: "release", oid: remoteMainOID)
+            }
         )
-        #expect(!catalog.branches.contains { $0.referenceName == "refs/remotes/origin/HEAD" })
+        #expect(!capture.rows.contains { $0.canonicalReferenceName == "refs/remotes/origin/HEAD" })
     }
 
-    @Test("review target catalog leaves the default absent for unusable origin HEAD references")
-    func reviewTargetCatalogRejectsUnusableOriginHeadReferences() async throws {
+    @Test("default resolver leaves the target absent for unusable origin HEAD references")
+    func defaultResolverRejectsUnusableOriginHeadReferences() async throws {
         // Arrange
         let absentFixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-targets-absent")
         defer { absentFixture.remove() }
@@ -70,17 +172,13 @@ struct GitReviewDataIntegrationTests {
         let client = LibGit2AgentStudioGitLocalClient()
 
         // Act
-        var catalogs: [GitReviewComparisonTargetCatalog] = []
+        var targets: [GitReviewComparisonBranchTarget?] = []
         for fixture in [absentFixture, directFixture, malformedFixture, danglingFixture] {
-            catalogs.append(try await client.reviewComparisonTargets(for: fixture.repositoryPath))
+            targets.append(try await client.resolveReviewDefaultTarget(for: fixture.repositoryPath))
         }
 
         // Assert
-        #expect(catalogs.allSatisfy { $0.defaultTarget == nil })
-        #expect(
-            catalogs.allSatisfy { catalog in
-                !catalog.branches.contains { $0.referenceName == "refs/remotes/origin/HEAD" }
-            })
+        #expect(targets.allSatisfy { $0 == nil })
     }
 
     @Test(
@@ -636,6 +734,10 @@ private struct ReviewDataFixture {
 
 private func filesByPath(_ files: [GitDiffFile]) -> [String: GitDiffFile] {
     Dictionary(uniqueKeysWithValues: files.map { ($0.path, $0) })
+}
+
+private func unixMilliseconds(_ date: Date) -> Int64 {
+    Int64(date.timeIntervalSince1970 * 1000)
 }
 
 private func writeData(_ data: Data, to relativePath: String, in directory: URL) throws {

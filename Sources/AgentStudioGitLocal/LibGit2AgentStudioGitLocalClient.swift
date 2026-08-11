@@ -146,11 +146,19 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
         }
     }
 
-    public func reviewComparisonTargets(for repositoryPath: URL) async throws(GitDataPlaneError)
-        -> GitReviewComparisonTargetCatalog
+    public func resolveReviewDefaultTarget(for repositoryPath: URL) async throws(GitDataPlaneError)
+        -> GitReviewComparisonBranchTarget?
     {
         try await executeBlockingRead {
-            try LibGit2ReviewComparisonTargetReader().targets(for: repositoryPath)
+            try LibGit2ReviewComparisonTargetReader().resolveDefaultTarget(for: repositoryPath)
+        }
+    }
+
+    public func captureReviewComparisonTargets(
+        _ request: GitReviewComparisonTargetCaptureRequest
+    ) async throws(GitDataPlaneError) -> GitReviewComparisonTargetCapture {
+        try await executeBlockingRead {
+            try LibGit2ReviewComparisonTargetReader().capture(request)
         }
     }
 
