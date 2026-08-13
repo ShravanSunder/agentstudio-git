@@ -15,38 +15,11 @@ struct LibGit2ReviewComparisonTargetReader: Sendable {
 
     func resolveDefaultTarget(for repositoryPath: URL) throws -> GitReviewComparisonBranchTarget? {
         try LibGit2ReviewSupport.withRepository(at: repositoryPath, runtime: runtime) { repository in
-            guard
-                let reference = try lookupReference(
-                    named: Self.originHeadReferenceName,
-                    repository: repository
-                )
-            else {
-                return nil
-            }
-            defer { git_reference_free(reference) }
-
-            guard let symbolicTargetName = symbolicTargetName(reference),
-                Self.remoteTrackingBranchName(
-                    from: symbolicTargetName,
-                    requiredRemote: "origin"
-                ) != nil
-            else {
-                return nil
-            }
-            guard let targetReference = try lookupReference(named: symbolicTargetName, repository: repository) else {
-                return nil
-            }
-            defer { git_reference_free(targetReference) }
-            guard
-                let candidate = try row(
-                    reference: targetReference,
-                    referenceName: symbolicTargetName,
-                    branchType: GIT_BRANCH_REMOTE
-                )
-            else {
-                return nil
-            }
-            return candidate.target
+            let referenceName = try resolveDefaultReferenceName(repository: repository)
+            return try resolveMandatoryRow(
+                referenceName: referenceName,
+                repository: repository
+            )?.target
         }
     }
 

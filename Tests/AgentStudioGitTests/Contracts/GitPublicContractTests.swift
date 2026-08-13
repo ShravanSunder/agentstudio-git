@@ -6,6 +6,7 @@ import Testing
 struct GitPublicContractTests {
     @Test("bounded review comparison captures preserve timestamps, roles, and limits")
     func boundedReviewComparisonCapturesRoundTrip() throws {
+        // Arrange
         let request = GitReviewComparisonTargetCaptureRequest(
             repositoryPath: URL(fileURLWithPath: "/tmp/repo"),
             capturedAt: 1000,
@@ -28,6 +29,7 @@ struct GitPublicContractTests {
             ]
         )
 
+        // Act
         let decodedRequest = try JSONDecoder().decode(
             GitReviewComparisonTargetCaptureRequest.self,
             from: JSONEncoder().encode(request)
@@ -37,6 +39,7 @@ struct GitPublicContractTests {
             from: JSONEncoder().encode(capture)
         )
 
+        // Assert
         #expect(decodedRequest == request)
         #expect(decodedCapture == capture)
         #expect(capture.rows[0].target.displayName == "origin/main")

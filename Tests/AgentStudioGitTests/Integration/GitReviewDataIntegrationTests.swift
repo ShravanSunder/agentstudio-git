@@ -7,12 +7,15 @@ import Testing
 struct GitReviewDataIntegrationTests {
     @Test("bounded review capture retains the designated default and reports tip time")
     func boundedReviewCaptureRetainsDefaultAndTipTime() async throws {
+        // Arrange
         let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-review-capture")
         defer { fixture.remove() }
         let oid = try fixture.git.run("rev-parse", "HEAD").trimmed
         try fixture.git.run("update-ref", "refs/remotes/origin/main", oid)
         try fixture.git.run("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
         let capturedAt = unixMilliseconds(Date().addingTimeInterval(60))
+
+        // Act
         let capture = try await LibGit2AgentStudioGitLocalClient().captureReviewComparisonTargets(
             GitReviewComparisonTargetCaptureRequest(
                 repositoryPath: fixture.repositoryPath,
@@ -23,6 +26,7 @@ struct GitReviewDataIntegrationTests {
             )
         )
 
+        // Assert
         #expect(capture.defaultReferenceName == "refs/remotes/origin/main")
         #expect(capture.rows.contains { $0.canonicalReferenceName == "refs/remotes/origin/main" })
         #expect(capture.rows.allSatisfy { $0.tipCommittedAt <= capturedAt })
@@ -40,6 +44,7 @@ struct GitReviewDataIntegrationTests {
         let now = unixMilliseconds(Date())
         let client = LibGit2AgentStudioGitLocalClient()
 
+        // Act
         let truncated = try await client.captureReviewComparisonTargets(
             GitReviewComparisonTargetCaptureRequest(
                 repositoryPath: fixture.repositoryPath,
@@ -50,6 +55,7 @@ struct GitReviewDataIntegrationTests {
             )
         )
 
+        // Assert
         #expect(truncated.isTruncated)
         #expect(
             truncated.rows.map(\.canonicalReferenceName) == [
@@ -59,6 +65,7 @@ struct GitReviewDataIntegrationTests {
         #expect(truncated.defaultReferenceName == "refs/remotes/origin/main")
         #expect(truncated.currentReferenceName == "refs/heads/main")
 
+        // Act
         let futureCutoff = try await client.captureReviewComparisonTargets(
             GitReviewComparisonTargetCaptureRequest(
                 repositoryPath: fixture.repositoryPath,
@@ -69,6 +76,7 @@ struct GitReviewDataIntegrationTests {
             )
         )
 
+        // Assert
         #expect(
             futureCutoff.rows.map(\.canonicalReferenceName) == [
                 "refs/remotes/origin/main",
@@ -79,12 +87,14 @@ struct GitReviewDataIntegrationTests {
 
     @Test("bounded review capture collapses duplicate default and current roles")
     func boundedReviewCaptureCollapsesDuplicateRoles() async throws {
+        // Arrange
         let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-review-dedup")
         defer { fixture.remove() }
         let oid = try fixture.git.run("rev-parse", "HEAD").trimmed
         try fixture.git.run("update-ref", "refs/remotes/origin/main", oid)
         try fixture.git.run("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
 
+        // Act
         let capture = try await LibGit2AgentStudioGitLocalClient().captureReviewComparisonTargets(
             GitReviewComparisonTargetCaptureRequest(
                 repositoryPath: fixture.repositoryPath,
@@ -95,6 +105,7 @@ struct GitReviewDataIntegrationTests {
             )
         )
 
+        // Assert
         #expect(capture.defaultReferenceName == "refs/remotes/origin/main")
         #expect(capture.currentReferenceName == "refs/remotes/origin/main")
         #expect(capture.rows.filter { $0.canonicalReferenceName == "refs/remotes/origin/main" }.count == 1)

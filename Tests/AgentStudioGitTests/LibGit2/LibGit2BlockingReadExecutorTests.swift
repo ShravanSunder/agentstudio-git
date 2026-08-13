@@ -191,7 +191,7 @@ struct LibGit2BlockingReadExecutorTests {
     @Test("bounded review capture uses the blocking executor")
     func boundedReviewCaptureUsesTheBlockingExecutor() async {
         let missingRepositoryPath = FileManager.default.temporaryDirectory
-            .appending(path: "agentstudio-git-missing-capture-(UUID().uuidString)")
+            .appending(path: "agentstudio-git-missing-capture-\(UUID().uuidString)")
         let enqueueRecorder = SynchronousEnqueueRecorder()
         let client = LibGit2AgentStudioGitLocalClient(
             blockingReadExecutor: LibGit2BlockingReadExecutor(enqueue: enqueueRecorder.enqueue)

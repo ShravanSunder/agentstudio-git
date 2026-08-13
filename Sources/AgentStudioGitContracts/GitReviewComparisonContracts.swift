@@ -74,11 +74,19 @@ public enum GitReviewComparisonBranchTarget: Codable, Equatable, Hashable, Senda
     }
 }
 
+/// A bounded request for review comparison targets.
+///
+/// The capture retains the default and current references as mandatory candidates. Other branch tips
+/// are retained only when `tipCommittedAt` falls inside the inclusive `cutoff ... capturedAt` window.
 public struct GitReviewComparisonTargetCaptureRequest: Codable, Equatable, Hashable, Sendable {
     public let repositoryPath: URL
+    /// Inclusive upper bound of the capture window, in Unix milliseconds.
     public let capturedAt: Int64
+    /// Inclusive lower bound of the capture window, in Unix milliseconds.
     public let cutoff: Int64
+    /// Maximum number of rows to return. Values below zero are treated as zero.
     public let maximumRows: Int
+    /// Canonical or shorthand reference for the current branch. Pass `nil` to omit the current role.
     public let currentBranchReference: String?
 
     public init(
