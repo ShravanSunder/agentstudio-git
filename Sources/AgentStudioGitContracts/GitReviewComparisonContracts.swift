@@ -74,15 +74,73 @@ public enum GitReviewComparisonBranchTarget: Codable, Equatable, Hashable, Senda
     }
 }
 
-public struct GitReviewComparisonTargetCatalog: Codable, Equatable, Hashable, Sendable {
-    public let defaultTarget: GitReviewComparisonBranchTarget?
-    public let branches: [GitReviewComparisonBranchTarget]
+/// A bounded request for review comparison targets.
+///
+/// The capture retains the default and current references as mandatory candidates. Other branch tips
+/// are retained only when `tipCommittedAt` falls inside the inclusive `cutoff ... capturedAt` window.
+public struct GitReviewComparisonTargetCaptureRequest: Codable, Equatable, Hashable, Sendable {
+    public let repositoryPath: URL
+    /// Inclusive upper bound of the capture window, in Unix milliseconds.
+    public let capturedAt: Int64
+    /// Inclusive lower bound of the capture window, in Unix milliseconds.
+    public let cutoff: Int64
+    /// Maximum number of rows to return. Values below zero are treated as zero.
+    public let maximumRows: Int
+    /// Canonical or shorthand reference for the current branch. Pass `nil` to omit the current role.
+    public let currentBranchReference: String?
 
     public init(
-        defaultTarget: GitReviewComparisonBranchTarget?,
-        branches: [GitReviewComparisonBranchTarget]
+        repositoryPath: URL,
+        capturedAt: Int64,
+        cutoff: Int64,
+        maximumRows: Int,
+        currentBranchReference: String?
     ) {
-        self.defaultTarget = defaultTarget
-        self.branches = branches
+        self.repositoryPath = repositoryPath
+        self.capturedAt = capturedAt
+        self.cutoff = cutoff
+        self.maximumRows = maximumRows
+        self.currentBranchReference = currentBranchReference
+    }
+}
+
+public struct GitReviewComparisonTargetRow: Codable, Equatable, Hashable, Sendable {
+    public let canonicalReferenceName: String
+    public let target: GitReviewComparisonBranchTarget
+    public let tipCommittedAt: Int64
+
+    public init(
+        canonicalReferenceName: String,
+        target: GitReviewComparisonBranchTarget,
+        tipCommittedAt: Int64
+    ) {
+        self.canonicalReferenceName = canonicalReferenceName
+        self.target = target
+        self.tipCommittedAt = tipCommittedAt
+    }
+}
+
+public struct GitReviewComparisonTargetCapture: Codable, Equatable, Hashable, Sendable {
+    public let capturedAt: Int64
+    public let cutoff: Int64
+    public let isTruncated: Bool
+    public let defaultReferenceName: String?
+    public let currentReferenceName: String?
+    public let rows: [GitReviewComparisonTargetRow]
+
+    public init(
+        capturedAt: Int64,
+        cutoff: Int64,
+        isTruncated: Bool,
+        defaultReferenceName: String?,
+        currentReferenceName: String?,
+        rows: [GitReviewComparisonTargetRow]
+    ) {
+        self.capturedAt = capturedAt
+        self.cutoff = cutoff
+        self.isTruncated = isTruncated
+        self.defaultReferenceName = defaultReferenceName
+        self.currentReferenceName = currentReferenceName
+        self.rows = rows
     }
 }

@@ -41,7 +41,8 @@ struct LibGit2ContributionDiffReader: Sendable {
         }
     }
 
-    private func resolveTargetCommit(
+    /// The caller owns the returned commit and must release it with `git_commit_free`.
+    func resolveTargetCommit(
         _ target: GitRevisionTarget,
         repository: OpaquePointer
     ) throws -> (commit: OpaquePointer, shortName: String?) {
@@ -125,7 +126,8 @@ struct LibGit2ContributionDiffReader: Sendable {
         return commit
     }
 
-    private func resolveReviewedHead(repository: OpaquePointer) throws -> (commit: OpaquePointer, shortName: String?) {
+    /// The caller owns the returned commit and must release it with `git_commit_free`.
+    func resolveReviewedHead(repository: OpaquePointer) throws -> (commit: OpaquePointer, shortName: String?) {
         var headReference: OpaquePointer?
         let headResult = git_repository_head(&headReference, repository)
         guard headResult >= 0, let headReference else {
@@ -197,7 +199,8 @@ struct LibGit2ContributionDiffReader: Sendable {
         return commit
     }
 
-    private func requiredTree(commit: OpaquePointer) throws -> OpaquePointer {
+    /// The caller owns the returned tree and must release it with `git_tree_free`.
+    func requiredTree(commit: OpaquePointer) throws -> OpaquePointer {
         guard let treeOIDPointer = git_commit_tree_id(commit) else {
             throw LibGit2ErrorCapture.fallbackFailure(
                 code: -1,
@@ -216,7 +219,7 @@ struct LibGit2ContributionDiffReader: Sendable {
         return tree
     }
 
-    private func requiredCommitOID(_ commit: OpaquePointer) throws -> git_oid {
+    func requiredCommitOID(_ commit: OpaquePointer) throws -> git_oid {
         guard let oidPointer = git_commit_id(commit) else {
             throw LibGit2ErrorCapture.fallbackFailure(
                 code: -1,

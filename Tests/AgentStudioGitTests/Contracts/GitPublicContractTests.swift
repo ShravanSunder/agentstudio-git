@@ -4,37 +4,45 @@ import Testing
 
 @Suite("Git public contracts")
 struct GitPublicContractTests {
-    @Test("review comparison target catalogs preserve branch kinds and resolved revisions")
-    func reviewComparisonTargetCatalogsPreserveBranchKindsAndResolvedRevisions() throws {
+    @Test("bounded review comparison captures preserve timestamps, roles, and limits")
+    func boundedReviewComparisonCapturesRoundTrip() throws {
         // Arrange
-        let catalog = GitReviewComparisonTargetCatalog(
-            defaultTarget: .remoteTracking(
-                remoteName: "origin",
-                branchName: "main",
-                oid: "default-oid"
-            ),
-            branches: [
-                .local(branchName: "main", oid: "local-oid"),
-                .remoteTracking(
-                    remoteName: "origin",
-                    branchName: "main",
-                    oid: "default-oid"
-                ),
+        let request = GitReviewComparisonTargetCaptureRequest(
+            repositoryPath: URL(fileURLWithPath: "/tmp/repo"),
+            capturedAt: 1000,
+            cutoff: 500,
+            maximumRows: 25,
+            currentBranchReference: "refs/heads/feature/review"
+        )
+        let capture = GitReviewComparisonTargetCapture(
+            capturedAt: request.capturedAt,
+            cutoff: request.cutoff,
+            isTruncated: true,
+            defaultReferenceName: "refs/remotes/origin/main",
+            currentReferenceName: "refs/heads/feature/review",
+            rows: [
+                GitReviewComparisonTargetRow(
+                    canonicalReferenceName: "refs/remotes/origin/main",
+                    target: .remoteTracking(remoteName: "origin", branchName: "main", oid: "default-oid"),
+                    tipCommittedAt: 400
+                )
             ]
         )
 
         // Act
-        let decodedCatalog = try JSONDecoder().decode(
-            GitReviewComparisonTargetCatalog.self,
-            from: JSONEncoder().encode(catalog)
+        let decodedRequest = try JSONDecoder().decode(
+            GitReviewComparisonTargetCaptureRequest.self,
+            from: JSONEncoder().encode(request)
+        )
+        let decodedCapture = try JSONDecoder().decode(
+            GitReviewComparisonTargetCapture.self,
+            from: JSONEncoder().encode(capture)
         )
 
         // Assert
-        #expect(decodedCatalog == catalog)
-        #expect(decodedCatalog.defaultTarget?.displayName == "origin/main")
-        #expect(decodedCatalog.defaultTarget?.referenceName == "refs/remotes/origin/main")
-        #expect(decodedCatalog.branches[0].displayName == "main")
-        #expect(decodedCatalog.branches[0].referenceName == "refs/heads/main")
+        #expect(decodedRequest == request)
+        #expect(decodedCapture == capture)
+        #expect(capture.rows[0].target.displayName == "origin/main")
     }
 
     @Test("review comparison branch targets use stable explicit discriminators")
@@ -103,6 +111,34 @@ struct GitPublicContractTests {
         )
         let decodedSnapshot = try JSONDecoder().decode(
             GitContributionDiffSnapshot.self,
+            from: JSONEncoder().encode(snapshot)
+        )
+
+        // Assert
+        #expect(decodedRequest == request)
+        #expect(decodedSnapshot == snapshot)
+    }
+
+    @Test("direct review comparison contracts round-trip")
+    func directReviewComparisonContractsRoundTrip() throws {
+        // Arrange
+        let request = GitDirectReviewComparisonRequest(
+            repositoryPath: URL(fileURLWithPath: "/tmp/repo"),
+            target: .named("0123456789abcdef0123456789abcdef01234567")
+        )
+        let snapshot = GitDirectReviewComparisonSnapshot(
+            resolvedTarget: GitResolvedRevision(oid: "target-oid", shortName: nil),
+            reviewedHead: GitResolvedRevision(oid: "head-oid", shortName: "feature/review"),
+            diff: GitDiffSnapshot(files: [])
+        )
+
+        // Act
+        let decodedRequest = try JSONDecoder().decode(
+            GitDirectReviewComparisonRequest.self,
+            from: JSONEncoder().encode(request)
+        )
+        let decodedSnapshot = try JSONDecoder().decode(
+            GitDirectReviewComparisonSnapshot.self,
             from: JSONEncoder().encode(snapshot)
         )
 

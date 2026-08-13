@@ -19,13 +19,18 @@ public protocol AgentStudioGitLocalClient: Sendable {
     func ignoredPaths(repositoryAt worktreePath: URL, relativePaths: [String]) async throws(GitDataPlaneError)
         -> [GitIgnoreCheck]
     func branches(for repositoryPath: URL) async throws(GitDataPlaneError) -> [GitBranchSnapshot]
-    func reviewComparisonTargets(for repositoryPath: URL) async throws(GitDataPlaneError)
-        -> GitReviewComparisonTargetCatalog
+    func resolveReviewDefaultTarget(for repositoryPath: URL) async throws(GitDataPlaneError)
+        -> GitReviewComparisonBranchTarget?
+    func captureReviewComparisonTargets(_ request: GitReviewComparisonTargetCaptureRequest)
+        async throws(GitDataPlaneError)
+        -> GitReviewComparisonTargetCapture
     func resolveRevision(_ request: GitRevisionResolutionRequest) async throws(GitDataPlaneError) -> GitResolvedRevision
     func readTree(_ request: GitTreeReadRequest) async throws(GitDataPlaneError) -> GitTreeSnapshot
     func diff(_ request: GitDiffRequest) async throws(GitDataPlaneError) -> GitDiffSnapshot
     func contributionDiff(_ request: GitContributionDiffRequest) async throws(GitDataPlaneError)
         -> GitContributionDiffSnapshot
+    func directReviewComparison(_ request: GitDirectReviewComparisonRequest) async throws(GitDataPlaneError)
+        -> GitDirectReviewComparisonSnapshot
     func content(_ request: GitContentRequest) async throws(GitDataPlaneError) -> GitContentPayload
 }
 

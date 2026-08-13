@@ -136,9 +136,9 @@ struct LibGit2BlockingReadExecutorTests {
             await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
                 _ = try await client.branches(for: missingRepositoryPath)
             }
-        case .reviewComparisonTargets:
+        case .resolveReviewDefaultTarget:
             await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
-                _ = try await client.reviewComparisonTargets(for: missingRepositoryPath)
+                _ = try await client.resolveReviewDefaultTarget(for: missingRepositoryPath)
             }
         case .resolveRevision:
             await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
@@ -167,6 +167,15 @@ struct LibGit2BlockingReadExecutorTests {
                     )
                 )
             }
+        case .directReviewComparison:
+            await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
+                _ = try await client.directReviewComparison(
+                    GitDirectReviewComparisonRequest(
+                        repositoryPath: missingRepositoryPath,
+                        target: .named("refs/heads/main")
+                    )
+                )
+            }
         case .content:
             await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
                 _ = try await client.content(
@@ -176,6 +185,28 @@ struct LibGit2BlockingReadExecutorTests {
         }
 
         // Assert
+        #expect(enqueueRecorder.enqueueCount == 1)
+    }
+
+    @Test("bounded review capture uses the blocking executor")
+    func boundedReviewCaptureUsesTheBlockingExecutor() async {
+        let missingRepositoryPath = FileManager.default.temporaryDirectory
+            .appending(path: "agentstudio-git-missing-capture-\(UUID().uuidString)")
+        let enqueueRecorder = SynchronousEnqueueRecorder()
+        let client = LibGit2AgentStudioGitLocalClient(
+            blockingReadExecutor: LibGit2BlockingReadExecutor(enqueue: enqueueRecorder.enqueue)
+        )
+        await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
+            _ = try await client.captureReviewComparisonTargets(
+                GitReviewComparisonTargetCaptureRequest(
+                    repositoryPath: missingRepositoryPath,
+                    capturedAt: Int64(Date().timeIntervalSince1970 * 1000),
+                    cutoff: 0,
+                    maximumRows: 10,
+                    currentBranchReference: nil
+                )
+            )
+        }
         #expect(enqueueRecorder.enqueueCount == 1)
     }
 
@@ -210,11 +241,12 @@ private enum BlockingReadAPI: String, CaseIterable, Sendable {
     case isPathIgnored
     case ignoredPaths
     case branches
-    case reviewComparisonTargets
+    case resolveReviewDefaultTarget
     case resolveRevision
     case readTree
     case diff
     case contributionDiff
+    case directReviewComparison
     case content
 }
 
