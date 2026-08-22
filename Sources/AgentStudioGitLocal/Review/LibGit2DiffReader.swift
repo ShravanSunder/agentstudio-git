@@ -193,7 +193,7 @@ struct LibGit2DiffReader: Sendable {
         .sorted { $0.path < $1.path }
     }
 
-    func lineStats(diff: OpaquePointer, index: Int) throws -> (additions: Int, deletions: Int) {
+    private func lineStats(diff: OpaquePointer, index: Int) throws -> (additions: Int, deletions: Int) {
         var patch: OpaquePointer?
         let patchResult = git_patch_from_diff(&patch, diff, index)
         guard patchResult >= 0 else {

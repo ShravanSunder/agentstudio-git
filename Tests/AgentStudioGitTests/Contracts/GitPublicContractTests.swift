@@ -56,20 +56,25 @@ struct GitPublicContractTests {
             base: .commit("base"),
             compare: .commit("candidate"),
             maximumChangedFileCount: 25,
-            maximumChangedLineCount: 1000
+            maximumChangedLineCount: 1000,
+            maximumDiffableBlobByteCount: 1_048_576
         )
         let summaries = [
             GitDiffImpactSummary(
                 changedPaths: [GitDiffImpactPath(currentPath: "new.swift", previousPath: "old.swift")],
                 pathsAreComplete: true,
                 changedFileCount: .exact(1),
-                changedLineCount: .atLeastLimit(1000)
+                changedLineCount: .atLeastLimit(1000),
+                addedLineCount: 600,
+                deletedLineCount: 400
             ),
             GitDiffImpactSummary(
                 changedPaths: [GitDiffImpactPath(currentPath: nil, previousPath: "deleted.swift")],
                 pathsAreComplete: false,
                 changedFileCount: .indeterminate,
-                changedLineCount: .indeterminate
+                changedLineCount: .indeterminate,
+                addedLineCount: nil,
+                deletedLineCount: nil
             ),
         ]
         let encoder = JSONEncoder()
@@ -87,6 +92,63 @@ struct GitPublicContractTests {
         // Assert
         #expect(decodedRequest == request)
         #expect(decodedSummaries == summaries)
+    }
+
+    @Test("bounded diff impact summaries reject line-count contradictions")
+    func boundedDiffImpactSummariesRejectLineCountContradictions() throws {
+        // Arrange
+        let encoder = JSONEncoder()
+        let invalidSummaries = [
+            GitDiffImpactSummary(
+                changedPaths: [],
+                pathsAreComplete: true,
+                changedFileCount: .exact(1),
+                changedLineCount: .exact(3),
+                addedLineCount: 1,
+                deletedLineCount: 1
+            ),
+            GitDiffImpactSummary(
+                changedPaths: [],
+                pathsAreComplete: true,
+                changedFileCount: .exact(1),
+                changedLineCount: .atLeastLimit(3),
+                addedLineCount: 1,
+                deletedLineCount: 1
+            ),
+            GitDiffImpactSummary(
+                changedPaths: [],
+                pathsAreComplete: true,
+                changedFileCount: .exact(1),
+                changedLineCount: .indeterminate,
+                addedLineCount: 1,
+                deletedLineCount: nil
+            ),
+        ]
+
+        // Act / Assert
+        for summary in invalidSummaries {
+            #expect(throws: EncodingError.self) {
+                _ = try encoder.encode(summary)
+            }
+        }
+
+        let validSummary = GitDiffImpactSummary(
+            changedPaths: [],
+            pathsAreComplete: true,
+            changedFileCount: .exact(1),
+            changedLineCount: .exact(3),
+            addedLineCount: 2,
+            deletedLineCount: 1
+        )
+        var invalidWireSummary = try #require(
+            JSONSerialization.jsonObject(with: encoder.encode(validSummary)) as? [String: Any]
+        )
+        invalidWireSummary["addedLineCount"] = 0
+        invalidWireSummary["deletedLineCount"] = 0
+        let invalidWireData = try JSONSerialization.data(withJSONObject: invalidWireSummary)
+        #expect(throws: DecodingError.self) {
+            _ = try JSONDecoder().decode(GitDiffImpactSummary.self, from: invalidWireData)
+        }
     }
 
     @Test("bounded review comparison captures preserve timestamps, roles, and limits")

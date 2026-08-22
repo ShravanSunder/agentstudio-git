@@ -271,7 +271,8 @@ private func assertMissingRepositoryDiffImpactUsesBlockingExecutor(
                 base: .head,
                 compare: .workingTree,
                 maximumChangedFileCount: 25,
-                maximumChangedLineCount: 1000
+                maximumChangedLineCount: 1000,
+                maximumDiffableBlobByteCount: 1_048_576
             )
         )
     }

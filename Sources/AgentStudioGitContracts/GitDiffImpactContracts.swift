@@ -6,19 +6,22 @@ public struct GitDiffImpactSummaryRequest: Codable, Equatable, Hashable, Sendabl
     public let compare: GitDiffTarget
     public let maximumChangedFileCount: Int
     public let maximumChangedLineCount: Int
+    public let maximumDiffableBlobByteCount: Int64
 
     public init(
         repositoryPath: URL,
         base: GitDiffTarget,
         compare: GitDiffTarget,
         maximumChangedFileCount: Int,
-        maximumChangedLineCount: Int
+        maximumChangedLineCount: Int,
+        maximumDiffableBlobByteCount: Int64
     ) {
         self.repositoryPath = repositoryPath
         self.base = base
         self.compare = compare
         self.maximumChangedFileCount = maximumChangedFileCount
         self.maximumChangedLineCount = maximumChangedLineCount
+        self.maximumDiffableBlobByteCount = maximumDiffableBlobByteCount
     }
 }
 
@@ -37,7 +40,7 @@ public struct GitDiffImpactPath: Codable, Equatable, Hashable, Sendable {
 public enum GitDiffImpactCount: Equatable, Hashable, Sendable {
     case exact(Int)
     case atLeastLimit(Int)
-    /// The file traversal limit prevented an exact Git-shaped result.
+    /// A traversal or blob-work limit prevented an exact Git-shaped result.
     case indeterminate
 }
 
@@ -130,23 +133,102 @@ extension GitDiffImpactCount: Codable {
     }
 }
 
-public struct GitDiffImpactSummary: Codable, Equatable, Hashable, Sendable {
+public struct GitDiffImpactSummary: Equatable, Hashable, Sendable {
     /// Complete only when `pathsAreComplete` is true. Callers must not use a
     /// partial path set as an affected-file authority.
     public let changedPaths: [GitDiffImpactPath]
     public let pathsAreComplete: Bool
     public let changedFileCount: GitDiffImpactCount
     public let changedLineCount: GitDiffImpactCount
+    public let addedLineCount: Int?
+    public let deletedLineCount: Int?
 
     public init(
         changedPaths: [GitDiffImpactPath],
         pathsAreComplete: Bool,
         changedFileCount: GitDiffImpactCount,
-        changedLineCount: GitDiffImpactCount
+        changedLineCount: GitDiffImpactCount,
+        addedLineCount: Int?,
+        deletedLineCount: Int?
     ) {
         self.changedPaths = changedPaths
         self.pathsAreComplete = pathsAreComplete
         self.changedFileCount = changedFileCount
         self.changedLineCount = changedLineCount
+        self.addedLineCount = addedLineCount
+        self.deletedLineCount = deletedLineCount
+    }
+}
+
+extension GitDiffImpactSummary: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case addedLineCount
+        case changedFileCount
+        case changedLineCount
+        case changedPaths
+        case deletedLineCount
+        case pathsAreComplete
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let summary = Self(
+            changedPaths: try container.decode([GitDiffImpactPath].self, forKey: .changedPaths),
+            pathsAreComplete: try container.decode(Bool.self, forKey: .pathsAreComplete),
+            changedFileCount: try container.decode(GitDiffImpactCount.self, forKey: .changedFileCount),
+            changedLineCount: try container.decode(GitDiffImpactCount.self, forKey: .changedLineCount),
+            addedLineCount: try container.decodeIfPresent(Int.self, forKey: .addedLineCount),
+            deletedLineCount: try container.decodeIfPresent(Int.self, forKey: .deletedLineCount)
+        )
+        guard summary.hasValidLineCounts else {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "diff impact line counts do not match their bounded outcome"
+                ))
+        }
+        self = summary
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        guard hasValidLineCounts else {
+            throw EncodingError.invalidValue(
+                self,
+                EncodingError.Context(
+                    codingPath: encoder.codingPath,
+                    debugDescription: "diff impact line counts do not match their bounded outcome"
+                ))
+        }
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(changedPaths, forKey: .changedPaths)
+        try container.encode(pathsAreComplete, forKey: .pathsAreComplete)
+        try container.encode(changedFileCount, forKey: .changedFileCount)
+        try container.encode(changedLineCount, forKey: .changedLineCount)
+        try container.encode(addedLineCount, forKey: .addedLineCount)
+        try container.encode(deletedLineCount, forKey: .deletedLineCount)
+    }
+
+    private var hasValidLineCounts: Bool {
+        switch changedLineCount {
+        case .exact(let expectedCount):
+            return Self.combinedLineCount(addedLineCount, deletedLineCount) == expectedCount
+        case .atLeastLimit(let minimumCount):
+            guard let combinedCount = Self.combinedLineCount(addedLineCount, deletedLineCount) else {
+                return false
+            }
+            return combinedCount >= minimumCount
+        case .indeterminate:
+            return addedLineCount == nil && deletedLineCount == nil
+        }
+    }
+
+    private static func combinedLineCount(_ addedLineCount: Int?, _ deletedLineCount: Int?) -> Int? {
+        guard let addedLineCount, let deletedLineCount,
+            addedLineCount >= 0, deletedLineCount >= 0
+        else {
+            return nil
+        }
+        let result = addedLineCount.addingReportingOverflow(deletedLineCount)
+        return result.overflow ? nil : result.partialValue
     }
 }

@@ -36,6 +36,51 @@ private final class LibGit2DiffImpactFileAdmissionState {
     }
 }
 
+private final class LibGit2DiffImpactLineAdmissionState {
+    let maximumChangedLineCount: Int
+    let maximumDiffableBlobByteCount: UInt64
+    private(set) var addedLineCount = 0
+    private(set) var deletedLineCount = 0
+    private(set) var didReachLimit = false
+    private(set) var didEncounterOversizedBlob = false
+
+    init(maximumChangedLineCount: Int, maximumDiffableBlobByteCount: Int64) {
+        self.maximumChangedLineCount = maximumChangedLineCount
+        self.maximumDiffableBlobByteCount = UInt64(maximumDiffableBlobByteCount)
+    }
+
+    func admit(_ delta: git_diff_delta) -> Int32 {
+        guard delta.old_file.size <= maximumDiffableBlobByteCount,
+            delta.new_file.size <= maximumDiffableBlobByteCount
+        else {
+            didEncounterOversizedBlob = true
+            return GIT_EUSER.rawValue
+        }
+        return 0
+    }
+
+    func admit(_ line: git_diff_line) -> Int32 {
+        if line.origin == CChar(GIT_DIFF_LINE_ADDITION.rawValue) {
+            addedLineCount += 1
+        } else if line.origin == CChar(GIT_DIFF_LINE_DELETION.rawValue) {
+            deletedLineCount += 1
+        } else {
+            return 0
+        }
+        let changedLineCount = addedLineCount + deletedLineCount
+        guard changedLineCount < maximumChangedLineCount else {
+            didReachLimit = true
+            return GIT_EUSER.rawValue
+        }
+        return 0
+    }
+}
+
+private enum LibGit2BoundedDiffCreation {
+    case complete(OpaquePointer)
+    case fileLimitReached(GitDiffImpactSummary)
+}
+
 struct LibGit2DiffImpactSummarizer: Sendable {
     func summarize(_ request: GitDiffImpactSummaryRequest) throws -> GitDiffImpactSummary {
         guard request.maximumChangedFileCount > 0 else {
@@ -44,44 +89,20 @@ struct LibGit2DiffImpactSummarizer: Sendable {
         guard request.maximumChangedLineCount > 0 else {
             throw GitDataPlaneError.unsupported(message: "diff impact maximumChangedLineCount must be positive")
         }
+        guard request.maximumDiffableBlobByteCount > 0 else {
+            throw GitDataPlaneError.unsupported(
+                message: "diff impact maximumDiffableBlobByteCount must be positive"
+            )
+        }
 
         return try LibGit2ReviewSupport.withRepository(at: request.repositoryPath) { repository in
             let diffReader = LibGit2DiffReader()
-            let admissionState = LibGit2DiffImpactFileAdmissionState(
-                maximumChangedFileCount: request.maximumChangedFileCount
-            )
-            var options = try diffReader.diffOptions()
-            options.payload = Unmanaged.passUnretained(admissionState).toOpaque()
-            options.notify_cb = { _, deltaPointer, _, payload in
-                guard let deltaPointer, let payload else {
-                    return GIT_EUSER.rawValue
+            let creation = try createBoundedDiff(request, repository: repository, diffReader: diffReader)
+            guard case .complete(let diff) = creation else {
+                guard case .fileLimitReached(let summary) = creation else {
+                    throw GitDataPlaneError.unsupported(message: "unrecognized bounded diff creation outcome")
                 }
-                let state = Unmanaged<LibGit2DiffImpactFileAdmissionState>
-                    .fromOpaque(payload)
-                    .takeUnretainedValue()
-                return state.admit(deltaPointer.pointee)
-            }
-
-            let diff: OpaquePointer
-            do {
-                diff = try diffReader.makeDiff(
-                    GitDiffRequest(
-                        repositoryPath: request.repositoryPath,
-                        base: request.base,
-                        compare: request.compare
-                    ),
-                    options: &options,
-                    repository: repository
-                )
-            } catch GitDataPlaneError.libgit2Failure(let code, _, _)
-                where code == GIT_EUSER.rawValue && admissionState.didReachLimit
-            {
-                return GitDiffImpactSummary(
-                    changedPaths: admissionState.observedPaths,
-                    pathsAreComplete: false,
-                    changedFileCount: .indeterminate,
-                    changedLineCount: .indeterminate
-                )
+                return summary
             }
             defer { git_diff_free(diff) }
 
@@ -94,42 +115,135 @@ struct LibGit2DiffImpactSummarizer: Sendable {
             }
 
             let changedFileCount = git_diff_num_deltas(diff)
-            let changedPaths = try (0..<changedFileCount)
-                .map { index -> GitDiffImpactPath in
-                    guard let deltaPointer = git_diff_get_delta(diff, index) else {
-                        throw GitDataPlaneError.unsupported(
-                            message: "libgit2 returned no diff delta at index \(index)"
-                        )
-                    }
-                    return LibGit2DiffImpactFileAdmissionState.path(from: deltaPointer.pointee)
-                }
-                .sorted(by: Self.pathsPrecede)
+            let changedPaths = try changedPaths(diff: diff, changedFileCount: changedFileCount)
+            return try summarizeLineImpact(
+                diff: diff,
+                changedPaths: changedPaths,
+                changedFileCount: changedFileCount,
+                request: request
+            )
+        }
+    }
 
-            var changedLineCount = 0
-            for index in 0..<changedFileCount {
-                let lineStats = try diffReader.lineStats(diff: diff, index: index)
-                let fileLineCount = lineStats.additions.addingReportingOverflow(lineStats.deletions)
-                let cumulativeLineCount = changedLineCount.addingReportingOverflow(fileLineCount.partialValue)
-                if fileLineCount.overflow || cumulativeLineCount.overflow
-                    || cumulativeLineCount.partialValue >= request.maximumChangedLineCount
-                {
-                    return GitDiffImpactSummary(
-                        changedPaths: changedPaths,
-                        pathsAreComplete: true,
-                        changedFileCount: .exact(changedFileCount),
-                        changedLineCount: .atLeastLimit(request.maximumChangedLineCount)
+    private func createBoundedDiff(
+        _ request: GitDiffImpactSummaryRequest,
+        repository: OpaquePointer,
+        diffReader: LibGit2DiffReader
+    ) throws -> LibGit2BoundedDiffCreation {
+        let admissionState = LibGit2DiffImpactFileAdmissionState(
+            maximumChangedFileCount: request.maximumChangedFileCount
+        )
+        var options = try diffReader.diffOptions()
+        options.max_size = request.maximumDiffableBlobByteCount
+        options.flags &= ~GIT_DIFF_SHOW_BINARY.rawValue
+        options.payload = Unmanaged.passUnretained(admissionState).toOpaque()
+        options.notify_cb = { _, deltaPointer, _, payload in
+            guard let deltaPointer, let payload else {
+                return GIT_EUSER.rawValue
+            }
+            let state = Unmanaged<LibGit2DiffImpactFileAdmissionState>
+                .fromOpaque(payload)
+                .takeUnretainedValue()
+            return state.admit(deltaPointer.pointee)
+        }
+
+        do {
+            let diff = try diffReader.makeDiff(
+                GitDiffRequest(
+                    repositoryPath: request.repositoryPath,
+                    base: request.base,
+                    compare: request.compare
+                ),
+                options: &options,
+                repository: repository
+            )
+            return .complete(diff)
+        } catch GitDataPlaneError.libgit2Failure(let code, _, _)
+            where code == GIT_EUSER.rawValue && admissionState.didReachLimit
+        {
+            return .fileLimitReached(
+                GitDiffImpactSummary(
+                    changedPaths: admissionState.observedPaths,
+                    pathsAreComplete: false,
+                    changedFileCount: .atLeastLimit(request.maximumChangedFileCount),
+                    changedLineCount: .indeterminate,
+                    addedLineCount: nil,
+                    deletedLineCount: nil
+                )
+            )
+        }
+    }
+
+    private func changedPaths(diff: OpaquePointer, changedFileCount: Int) throws -> [GitDiffImpactPath] {
+        try (0..<changedFileCount)
+            .map { index -> GitDiffImpactPath in
+                guard let deltaPointer = git_diff_get_delta(diff, index) else {
+                    throw GitDataPlaneError.unsupported(
+                        message: "libgit2 returned no diff delta at index \(index)"
                     )
                 }
-                changedLineCount = cumulativeLineCount.partialValue
+                return LibGit2DiffImpactFileAdmissionState.path(from: deltaPointer.pointee)
             }
+            .sorted(by: Self.pathsPrecede)
+    }
 
+    private func summarizeLineImpact(
+        diff: OpaquePointer,
+        changedPaths: [GitDiffImpactPath],
+        changedFileCount: Int,
+        request: GitDiffImpactSummaryRequest
+    ) throws -> GitDiffImpactSummary {
+        let state = LibGit2DiffImpactLineAdmissionState(
+            maximumChangedLineCount: request.maximumChangedLineCount,
+            maximumDiffableBlobByteCount: request.maximumDiffableBlobByteCount
+        )
+        let result = git_diff_foreach(
+            diff,
+            { deltaPointer, _, payload in
+                guard let deltaPointer, let payload else { return GIT_EUSER.rawValue }
+                return Unmanaged<LibGit2DiffImpactLineAdmissionState>
+                    .fromOpaque(payload).takeUnretainedValue().admit(deltaPointer.pointee)
+            },
+            nil,
+            nil,
+            { _, _, linePointer, payload in
+                guard let linePointer, let payload else { return GIT_EUSER.rawValue }
+                return Unmanaged<LibGit2DiffImpactLineAdmissionState>
+                    .fromOpaque(payload).takeUnretainedValue().admit(linePointer.pointee)
+            },
+            Unmanaged.passUnretained(state).toOpaque()
+        )
+        if result == GIT_EUSER.rawValue, state.didEncounterOversizedBlob {
             return GitDiffImpactSummary(
                 changedPaths: changedPaths,
                 pathsAreComplete: true,
                 changedFileCount: .exact(changedFileCount),
-                changedLineCount: .exact(changedLineCount)
+                changedLineCount: .indeterminate,
+                addedLineCount: nil,
+                deletedLineCount: nil
             )
         }
+        if result == GIT_EUSER.rawValue, state.didReachLimit {
+            return GitDiffImpactSummary(
+                changedPaths: changedPaths,
+                pathsAreComplete: true,
+                changedFileCount: .exact(changedFileCount),
+                changedLineCount: .atLeastLimit(request.maximumChangedLineCount),
+                addedLineCount: state.addedLineCount,
+                deletedLineCount: state.deletedLineCount
+            )
+        }
+        guard result >= 0 else {
+            throw LibGit2ErrorCapture.failure(code: result)
+        }
+        return GitDiffImpactSummary(
+            changedPaths: changedPaths,
+            pathsAreComplete: true,
+            changedFileCount: .exact(changedFileCount),
+            changedLineCount: .exact(state.addedLineCount + state.deletedLineCount),
+            addedLineCount: state.addedLineCount,
+            deletedLineCount: state.deletedLineCount
+        )
     }
 
     private static func pathsPrecede(_ lhs: GitDiffImpactPath, _ rhs: GitDiffImpactPath) -> Bool {

@@ -25,15 +25,18 @@ struct GitDiffImpactSummaryIntegrationTests {
                 base: .commit(baseOID),
                 compare: .commit(candidateOID),
                 maximumChangedFileCount: 2,
-                maximumChangedLineCount: 100
+                maximumChangedLineCount: 100,
+                maximumDiffableBlobByteCount: 1_048_576
             )
         )
 
         // Assert
         #expect(summary.pathsAreComplete == false)
         #expect(summary.changedPaths.count == 2)
-        #expect(summary.changedFileCount == .indeterminate)
+        #expect(summary.changedFileCount == .atLeastLimit(2))
         #expect(summary.changedLineCount == .indeterminate)
+        #expect(summary.addedLineCount == nil)
+        #expect(summary.deletedLineCount == nil)
     }
 
     @Test("stops patch work at the changed-line cap while retaining complete paths")
@@ -55,7 +58,8 @@ struct GitDiffImpactSummaryIntegrationTests {
                 base: .commit(baseOID),
                 compare: .commit(candidateOID),
                 maximumChangedFileCount: 10,
-                maximumChangedLineCount: 3
+                maximumChangedLineCount: 3,
+                maximumDiffableBlobByteCount: 1_048_576
             )
         )
 
@@ -64,6 +68,11 @@ struct GitDiffImpactSummaryIntegrationTests {
         #expect(summary.changedPaths == [GitDiffImpactPath(currentPath: "README.md", previousPath: nil)])
         #expect(summary.changedFileCount == .exact(1))
         #expect(summary.changedLineCount == .atLeastLimit(3))
+        let partialAddedLineCount = try #require(summary.addedLineCount)
+        let partialDeletedLineCount = try #require(summary.deletedLineCount)
+        #expect(partialAddedLineCount >= 0)
+        #expect(partialDeletedLineCount >= 0)
+        #expect(partialAddedLineCount + partialDeletedLineCount >= 3)
     }
 
     @Test("reports rename and deletion paths exactly below both caps")
@@ -89,7 +98,8 @@ struct GitDiffImpactSummaryIntegrationTests {
                 base: .commit(baseOID),
                 compare: .commit(candidateOID),
                 maximumChangedFileCount: 10,
-                maximumChangedLineCount: 100
+                maximumChangedLineCount: 100,
+                maximumDiffableBlobByteCount: 1_048_576
             )
         )
 
@@ -103,6 +113,41 @@ struct GitDiffImpactSummaryIntegrationTests {
         )
         #expect(summary.changedFileCount == .exact(2))
         #expect(summary.changedLineCount == .exact(1))
+        #expect(summary.addedLineCount == 0)
+        #expect(summary.deletedLineCount == 1)
+    }
+
+    @Test("returns indeterminate line impact for an oversized single-line blob")
+    func returnsIndeterminateForOversizedBlob() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-diff-impact-blob-cap")
+        defer { fixture.remove() }
+        let baseOID = try fixture.git.run("rev-parse", "HEAD").trimmed
+        try fixture.write("large-line.txt", contents: String(repeating: "x", count: 1024))
+        try fixture.git.run("add", "large-line.txt")
+        try fixture.git.run("commit", "-m", "add oversized line")
+        let candidateOID = try fixture.git.run("rev-parse", "HEAD").trimmed
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        // Act
+        let summary = try await client.summarizeDiffImpact(
+            GitDiffImpactSummaryRequest(
+                repositoryPath: fixture.repositoryPath,
+                base: .commit(baseOID),
+                compare: .commit(candidateOID),
+                maximumChangedFileCount: 10,
+                maximumChangedLineCount: 100,
+                maximumDiffableBlobByteCount: 64
+            )
+        )
+
+        // Assert
+        #expect(summary.pathsAreComplete)
+        #expect(summary.changedPaths == [GitDiffImpactPath(currentPath: "large-line.txt", previousPath: nil)])
+        #expect(summary.changedFileCount == .exact(1))
+        #expect(summary.changedLineCount == .indeterminate)
+        #expect(summary.addedLineCount == nil)
+        #expect(summary.deletedLineCount == nil)
     }
 
     @Test("rejects nonpositive diff-impact caps before opening the repository")
@@ -123,7 +168,8 @@ struct GitDiffImpactSummaryIntegrationTests {
                     base: .head,
                     compare: .workingTree,
                     maximumChangedFileCount: 0,
-                    maximumChangedLineCount: 100
+                    maximumChangedLineCount: 100,
+                    maximumDiffableBlobByteCount: 1_048_576
                 )
             )
         }
@@ -138,7 +184,24 @@ struct GitDiffImpactSummaryIntegrationTests {
                     base: .head,
                     compare: .workingTree,
                     maximumChangedFileCount: 25,
-                    maximumChangedLineCount: 0
+                    maximumChangedLineCount: 0,
+                    maximumDiffableBlobByteCount: 1_048_576
+                )
+            )
+        }
+        await #expect(
+            throws: GitDataPlaneError.unsupported(
+                message: "diff impact maximumDiffableBlobByteCount must be positive"
+            )
+        ) {
+            _ = try await client.summarizeDiffImpact(
+                GitDiffImpactSummaryRequest(
+                    repositoryPath: missingRepository,
+                    base: .head,
+                    compare: .workingTree,
+                    maximumChangedFileCount: 25,
+                    maximumChangedLineCount: 1000,
+                    maximumDiffableBlobByteCount: 0
                 )
             )
         }
