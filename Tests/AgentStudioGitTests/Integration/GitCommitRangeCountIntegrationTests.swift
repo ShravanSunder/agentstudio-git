@@ -207,6 +207,40 @@ struct GitCommitRangeCountIntegrationTests {
         #expect(result == .exact(3))
     }
 
+    @Test("deduplicates shared ancestry across an octopus merge")
+    func countsOctopusMergedRange() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-octopus-commit-range")
+        defer { fixture.remove() }
+        let baseOID = try fixture.git.run("rev-parse", "HEAD").trimmed
+        let mainBranch = try fixture.git.run("branch", "--show-current").trimmed
+        let sideBranches = (1...8).map { "side-\($0)" }
+        for (branchIndex, branchName) in sideBranches.enumerated() {
+            try fixture.git.run("checkout", "-b", branchName, baseOID)
+            try fixture.write("side-\(branchIndex + 1).txt", contents: "side \(branchIndex + 1)\n")
+            try fixture.git.run("add", "side-\(branchIndex + 1).txt")
+            try fixture.git.run("commit", "-m", "side \(branchIndex + 1)")
+        }
+        try fixture.git.run("checkout", mainBranch)
+        try fixture.git.run(["merge", "--no-ff"] + sideBranches + ["-m", "merge all sides"])
+        let candidateOID = try fixture.git.run("rev-parse", "HEAD").trimmed
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        // Act
+        let result = try await client.countCommitRange(
+            GitCommitRangeCountRequest(
+                repositoryPath: fixture.repositoryPath,
+                base: .named(baseOID),
+                candidate: .named(candidateOID),
+                maximumCount: 20,
+                maximumTraversalCount: 64
+            )
+        )
+
+        // Assert
+        #expect(result == .exact(9))
+    }
+
     @Test("rejects a nonpositive cap before opening the repository")
     func rejectsNonpositiveMaximumCount() async {
         // Arrange

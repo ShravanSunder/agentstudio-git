@@ -18,9 +18,14 @@ private struct LibGit2CommitTraversalBudget {
 }
 
 private struct LibGit2CommitGraphDiscovery {
-    let commitOIDs: [git_oid]
+    let commitOIDKeys: Set<String>
     let encounteredStopOID: Bool
     let includesMerge: Bool
+}
+
+private struct LibGit2PendingCommitOID {
+    let oid: git_oid
+    let key: String
 }
 
 private enum LibGit2CommitGraphDiscoveryOutcome {
@@ -49,7 +54,9 @@ struct LibGit2CommitRangeCounter: Sendable {
             }
             let baseOID = baseOIDPointer.pointee
             let candidateOID = candidateOIDPointer.pointee
-            if Self.oidsAreEqual(baseOID, candidateOID) {
+            let baseOIDKey = LibGit2ReviewSupport.oidString(baseOID)
+            let candidateOIDKey = LibGit2ReviewSupport.oidString(candidateOID)
+            if baseOIDKey == candidateOIDKey {
                 return .exact(0)
             }
 
@@ -58,7 +65,7 @@ struct LibGit2CommitRangeCounter: Sendable {
             )
             let candidateOutcome = try discoverCommitGraph(
                 startingAt: candidateOID,
-                stoppingBefore: baseOID,
+                stoppingBefore: baseOIDKey,
                 repository: repository,
                 traversalBudget: &traversalBudget
             )
@@ -68,7 +75,7 @@ struct LibGit2CommitRangeCounter: Sendable {
 
             if candidateDiscovery.encounteredStopOID, !candidateDiscovery.includesMerge {
                 return Self.boundedResult(
-                    exactCount: candidateDiscovery.commitOIDs.count,
+                    exactCount: candidateDiscovery.commitOIDKeys.count,
                     maximumCount: request.maximumCount
                 )
             }
@@ -83,8 +90,8 @@ struct LibGit2CommitRangeCounter: Sendable {
                 return .traversalLimitReached(request.maximumTraversalCount)
             }
 
-            let candidateOnlyCount = candidateDiscovery.commitOIDs.count { candidateOID in
-                !Self.contains(candidateOID, in: baseDiscovery.commitOIDs)
+            let candidateOnlyCount = candidateDiscovery.commitOIDKeys.count { candidateOIDKey in
+                !baseDiscovery.commitOIDKeys.contains(candidateOIDKey)
             }
             if candidateOnlyCount >= request.maximumCount {
                 return .atLeastLimit(request.maximumCount)
@@ -98,24 +105,27 @@ struct LibGit2CommitRangeCounter: Sendable {
 
     private func discoverCommitGraph(
         startingAt startOID: git_oid,
-        stoppingBefore stopOID: git_oid?,
+        stoppingBefore stopOIDKey: String?,
         repository: OpaquePointer,
         traversalBudget: inout LibGit2CommitTraversalBudget
     ) throws -> LibGit2CommitGraphDiscoveryOutcome {
-        var pendingOIDs = [startOID]
-        var visitedOIDs: [git_oid] = []
+        let startOIDKey = LibGit2ReviewSupport.oidString(startOID)
+        var pendingOIDs = [LibGit2PendingCommitOID(oid: startOID, key: startOIDKey)]
+        var pendingOIDKeys: Set<String> = [startOIDKey]
+        var visitedOIDKeys: Set<String> = []
         var encounteredStopOID = false
         var includesMerge = false
 
-        while let currentOID = pendingOIDs.popLast() {
-            if let stopOID, Self.oidsAreEqual(currentOID, stopOID) {
+        while let current = pendingOIDs.popLast() {
+            pendingOIDKeys.remove(current.key)
+            if current.key == stopOIDKey {
                 encounteredStopOID = true
                 continue
             }
-            guard !Self.contains(currentOID, in: visitedOIDs) else { continue }
+            guard visitedOIDKeys.insert(current.key).inserted else { continue }
             guard traversalBudget.admitVisit() else { return .traversalLimitReached }
 
-            var lookupOID = currentOID
+            var lookupOID = current.oid
             var commit: OpaquePointer?
             let lookupResult = git_commit_lookup(&commit, repository, &lookupOID)
             guard lookupResult >= 0, let commit else {
@@ -123,7 +133,6 @@ struct LibGit2CommitRangeCounter: Sendable {
             }
             defer { git_commit_free(commit) }
 
-            visitedOIDs.append(currentOID)
             let parentCount = Int(git_commit_parentcount(commit))
             includesMerge = includesMerge || parentCount > 1
             guard parentCount <= traversalBudget.remainingVisitCount + 1 else {
@@ -137,23 +146,23 @@ struct LibGit2CommitRangeCounter: Sendable {
                     )
                 }
                 let parentOID = parentOIDPointer.pointee
-                if let stopOID, Self.oidsAreEqual(parentOID, stopOID) {
+                let parentOIDKey = LibGit2ReviewSupport.oidString(parentOID)
+                if parentOIDKey == stopOIDKey {
                     encounteredStopOID = true
                     continue
                 }
-                guard !Self.contains(parentOID, in: visitedOIDs),
-                    !Self.contains(parentOID, in: pendingOIDs)
-                else { continue }
+                guard !visitedOIDKeys.contains(parentOIDKey), !pendingOIDKeys.contains(parentOIDKey) else { continue }
                 guard pendingOIDs.count < traversalBudget.remainingVisitCount else {
                     return .traversalLimitReached
                 }
-                pendingOIDs.append(parentOID)
+                pendingOIDs.append(LibGit2PendingCommitOID(oid: parentOID, key: parentOIDKey))
+                pendingOIDKeys.insert(parentOIDKey)
             }
         }
 
         return .complete(
             LibGit2CommitGraphDiscovery(
-                commitOIDs: visitedOIDs,
+                commitOIDKeys: visitedOIDKeys,
                 encounteredStopOID: encounteredStopOID,
                 includesMerge: includesMerge
             )
@@ -162,15 +171,5 @@ struct LibGit2CommitRangeCounter: Sendable {
 
     private static func boundedResult(exactCount: Int, maximumCount: Int) -> GitCommitRangeCount {
         exactCount >= maximumCount ? .atLeastLimit(maximumCount) : .exact(exactCount)
-    }
-
-    private static func contains(_ targetOID: git_oid, in candidateOIDs: [git_oid]) -> Bool {
-        candidateOIDs.contains { oidsAreEqual(targetOID, $0) }
-    }
-
-    private static func oidsAreEqual(_ lhs: git_oid, _ rhs: git_oid) -> Bool {
-        var lhs = lhs
-        var rhs = rhs
-        return git_oid_equal(&lhs, &rhs) != 0
     }
 }
