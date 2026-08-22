@@ -1,37 +1,47 @@
 import Foundation
 
-public struct GitCommitRangeCountRequest: Codable, Equatable, Hashable, Sendable {
+public struct GitDiffImpactSummaryRequest: Codable, Equatable, Hashable, Sendable {
     public let repositoryPath: URL
-    public let base: GitRevisionTarget
-    public let candidate: GitRevisionTarget
-    public let maximumCount: Int
-    public let maximumTraversalCount: Int
+    public let base: GitDiffTarget
+    public let compare: GitDiffTarget
+    public let maximumChangedFileCount: Int
+    public let maximumChangedLineCount: Int
 
     public init(
         repositoryPath: URL,
-        base: GitRevisionTarget,
-        candidate: GitRevisionTarget,
-        maximumCount: Int,
-        maximumTraversalCount: Int
+        base: GitDiffTarget,
+        compare: GitDiffTarget,
+        maximumChangedFileCount: Int,
+        maximumChangedLineCount: Int
     ) {
         self.repositoryPath = repositoryPath
         self.base = base
-        self.candidate = candidate
-        self.maximumCount = maximumCount
-        self.maximumTraversalCount = maximumTraversalCount
+        self.compare = compare
+        self.maximumChangedFileCount = maximumChangedFileCount
+        self.maximumChangedLineCount = maximumChangedLineCount
     }
 }
 
-public enum GitCommitRangeCount: Equatable, Hashable, Sendable {
-    case exact(Int)
-    case atLeastLimit(Int)
-    /// The requested range stayed below `maximumCount`, but ancestry could
-    /// not be established within the request's traversal-work budget.
-    case traversalLimitReached(Int)
-    case unrelated
+public struct GitDiffImpactPath: Codable, Equatable, Hashable, Sendable {
+    /// Path on the candidate side, absent for a deletion.
+    public let currentPath: String?
+    /// Path on the displayed side for a rename or deletion.
+    public let previousPath: String?
+
+    public init(currentPath: String?, previousPath: String?) {
+        self.currentPath = currentPath
+        self.previousPath = previousPath
+    }
 }
 
-extension GitCommitRangeCount: Codable {
+public enum GitDiffImpactCount: Equatable, Hashable, Sendable {
+    case exact(Int)
+    case atLeastLimit(Int)
+    /// The file traversal limit prevented an exact Git-shaped result.
+    case indeterminate
+}
+
+extension GitDiffImpactCount: Codable {
     private enum CodingKeys: String, CodingKey {
         case count
         case kind
@@ -40,14 +50,12 @@ extension GitCommitRangeCount: Codable {
     private enum Kind: String, Codable {
         case atLeastLimit
         case exact
-        case traversalLimitReached
-        case unrelated
+        case indeterminate
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        let kind = try container.decode(Kind.self, forKey: .kind)
-        switch kind {
+        switch try container.decode(Kind.self, forKey: .kind) {
         case .exact:
             self = .exact(try Self.decodeNonnegativeCount(from: container, codingPath: decoder.codingPath))
         case .atLeastLimit:
@@ -60,25 +68,15 @@ extension GitCommitRangeCount: Codable {
                     ))
             }
             self = .atLeastLimit(count)
-        case .traversalLimitReached:
-            let count = try Self.decodeNonnegativeCount(from: container, codingPath: decoder.codingPath)
-            guard count > 0 else {
-                throw DecodingError.dataCorrupted(
-                    DecodingError.Context(
-                        codingPath: decoder.codingPath,
-                        debugDescription: "traversalLimitReached requires a positive count"
-                    ))
-            }
-            self = .traversalLimitReached(count)
-        case .unrelated:
+        case .indeterminate:
             guard !container.contains(.count) else {
                 throw DecodingError.dataCorrupted(
                     DecodingError.Context(
                         codingPath: decoder.codingPath,
-                        debugDescription: "unrelated commit ranges must not carry a count"
+                        debugDescription: "indeterminate diff impact counts must not carry a count"
                     ))
             }
-            self = .unrelated
+            self = .indeterminate
         }
     }
 
@@ -97,23 +95,8 @@ extension GitCommitRangeCount: Codable {
                     ))
             }
             try Self.encodeNonnegative(count, kind: .atLeastLimit, to: &container, codingPath: encoder.codingPath)
-        case .traversalLimitReached(let count):
-            guard count > 0 else {
-                throw EncodingError.invalidValue(
-                    count,
-                    EncodingError.Context(
-                        codingPath: encoder.codingPath,
-                        debugDescription: "traversalLimitReached requires a positive count"
-                    ))
-            }
-            try Self.encodeNonnegative(
-                count,
-                kind: .traversalLimitReached,
-                to: &container,
-                codingPath: encoder.codingPath
-            )
-        case .unrelated:
-            try container.encode(Kind.unrelated, forKey: .kind)
+        case .indeterminate:
+            try container.encode(Kind.indeterminate, forKey: .kind)
         }
     }
 
@@ -124,7 +107,8 @@ extension GitCommitRangeCount: Codable {
         let count = try container.decode(Int.self, forKey: .count)
         guard count >= 0 else {
             throw DecodingError.dataCorrupted(
-                DecodingError.Context(codingPath: codingPath, debugDescription: "commit count must be nonnegative"))
+                DecodingError.Context(codingPath: codingPath, debugDescription: "diff impact count must be nonnegative")
+            )
         }
         return count
     }
@@ -138,9 +122,31 @@ extension GitCommitRangeCount: Codable {
         guard count >= 0 else {
             throw EncodingError.invalidValue(
                 count,
-                EncodingError.Context(codingPath: codingPath, debugDescription: "commit count must be nonnegative"))
+                EncodingError.Context(codingPath: codingPath, debugDescription: "diff impact count must be nonnegative")
+            )
         }
         try container.encode(kind, forKey: .kind)
         try container.encode(count, forKey: .count)
+    }
+}
+
+public struct GitDiffImpactSummary: Codable, Equatable, Hashable, Sendable {
+    /// Complete only when `pathsAreComplete` is true. Callers must not use a
+    /// partial path set as an affected-file authority.
+    public let changedPaths: [GitDiffImpactPath]
+    public let pathsAreComplete: Bool
+    public let changedFileCount: GitDiffImpactCount
+    public let changedLineCount: GitDiffImpactCount
+
+    public init(
+        changedPaths: [GitDiffImpactPath],
+        pathsAreComplete: Bool,
+        changedFileCount: GitDiffImpactCount,
+        changedLineCount: GitDiffImpactCount
+    ) {
+        self.changedPaths = changedPaths
+        self.pathsAreComplete = pathsAreComplete
+        self.changedFileCount = changedFileCount
+        self.changedLineCount = changedLineCount
     }
 }

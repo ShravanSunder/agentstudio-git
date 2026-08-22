@@ -29,6 +29,8 @@ public protocol AgentStudioGitLocalClient: Sendable {
     func diff(_ request: GitDiffRequest) async throws(GitDataPlaneError) -> GitDiffSnapshot
     func countCommitRange(_ request: GitCommitRangeCountRequest) async throws(GitDataPlaneError)
         -> GitCommitRangeCount
+    func summarizeDiffImpact(_ request: GitDiffImpactSummaryRequest) async throws(GitDataPlaneError)
+        -> GitDiffImpactSummary
     func contributionDiff(_ request: GitContributionDiffRequest) async throws(GitDataPlaneError)
         -> GitContributionDiffSnapshot
     func directReviewComparison(_ request: GitDirectReviewComparisonRequest) async throws(GitDataPlaneError)

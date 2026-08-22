@@ -603,6 +603,12 @@ private struct StubLocalClient: AgentStudioGitLocalClient {
         throw .unsupported(message: "not needed")
     }
 
+    func summarizeDiffImpact(_: GitDiffImpactSummaryRequest) async throws(GitDataPlaneError)
+        -> GitDiffImpactSummary
+    {
+        throw .unsupported(message: "not needed")
+    }
+
     func contributionDiff(_: GitContributionDiffRequest) async throws(GitDataPlaneError)
         -> GitContributionDiffSnapshot
     {

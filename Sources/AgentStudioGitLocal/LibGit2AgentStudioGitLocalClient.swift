@@ -190,6 +190,14 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
         }
     }
 
+    public func summarizeDiffImpact(_ request: GitDiffImpactSummaryRequest) async throws(GitDataPlaneError)
+        -> GitDiffImpactSummary
+    {
+        try await executeBlockingRead {
+            try LibGit2DiffImpactSummarizer().summarize(request)
+        }
+    }
+
     public func contributionDiff(_ request: GitContributionDiffRequest) async throws(GitDataPlaneError)
         -> GitContributionDiffSnapshot
     {

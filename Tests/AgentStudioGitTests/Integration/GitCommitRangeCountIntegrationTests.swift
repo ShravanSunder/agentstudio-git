@@ -24,7 +24,8 @@ struct GitCommitRangeCountIntegrationTests {
                 repositoryPath: fixture.repositoryPath,
                 base: .named(baseOID),
                 candidate: .named(candidateOID),
-                maximumCount: 10
+                maximumCount: 10,
+                maximumTraversalCount: 64
             )
         )
         let capped = try await client.countCommitRange(
@@ -32,7 +33,8 @@ struct GitCommitRangeCountIntegrationTests {
                 repositoryPath: fixture.repositoryPath,
                 base: .named(baseOID),
                 candidate: .named(candidateOID),
-                maximumCount: 2
+                maximumCount: 2,
+                maximumTraversalCount: 64
             )
         )
         let same = try await client.countCommitRange(
@@ -40,7 +42,8 @@ struct GitCommitRangeCountIntegrationTests {
                 repositoryPath: fixture.repositoryPath,
                 base: .named(baseOID),
                 candidate: .named(baseOID),
-                maximumCount: 10
+                maximumCount: 10,
+                maximumTraversalCount: 64
             )
         )
 
@@ -70,7 +73,8 @@ struct GitCommitRangeCountIntegrationTests {
                 repositoryPath: fixture.repositoryPath,
                 base: .named(baseOID),
                 candidate: .named(candidateOID),
-                maximumCount: 10
+                maximumCount: 10,
+                maximumTraversalCount: 64
             )
         )
 
@@ -100,12 +104,44 @@ struct GitCommitRangeCountIntegrationTests {
                 repositoryPath: fixture.repositoryPath,
                 base: .named(baseOID),
                 candidate: .named(candidateOID),
-                maximumCount: 2
+                maximumCount: 2,
+                maximumTraversalCount: 64
             )
         )
 
         // Assert
         #expect(result == .atLeastLimit(2))
+    }
+
+    @Test("returns a typed indeterminate result when ancestry exceeds the traversal budget")
+    func returnsTraversalLimitForDeepUnrelatedHistory() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-budgeted-range")
+        defer { fixture.remove() }
+        let baseOID = try fixture.git.run("rev-parse", "HEAD").trimmed
+        try fixture.git.run("checkout", "--orphan", "deep-unrelated")
+        try fixture.git.run("rm", "-rf", ".")
+        for commitIndex in 1...6 {
+            try fixture.write("history.txt", contents: "\(commitIndex)\n")
+            try fixture.git.run("add", "history.txt")
+            try fixture.git.run("commit", "-m", "unrelated \(commitIndex)")
+        }
+        let candidateOID = try fixture.git.run("rev-parse", "HEAD").trimmed
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        // Act
+        let result = try await client.countCommitRange(
+            GitCommitRangeCountRequest(
+                repositoryPath: fixture.repositoryPath,
+                base: .named(baseOID),
+                candidate: .named(candidateOID),
+                maximumCount: 10,
+                maximumTraversalCount: 2
+            )
+        )
+
+        // Assert
+        #expect(result == .traversalLimitReached(2))
     }
 
     @Test("rejects a nonpositive cap before opening the repository")
@@ -123,7 +159,32 @@ struct GitCommitRangeCountIntegrationTests {
                     repositoryPath: missingRepository,
                     base: .named("base"),
                     candidate: .named("candidate"),
-                    maximumCount: 0
+                    maximumCount: 0,
+                    maximumTraversalCount: 10
+                )
+            )
+        }
+    }
+
+    @Test("rejects a nonpositive traversal budget before opening the repository")
+    func rejectsNonpositiveTraversalBudget() async {
+        // Arrange
+        let missingRepository = URL(fileURLWithPath: "/path/that/does/not/exist")
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        // Act / Assert
+        await #expect(
+            throws: GitDataPlaneError.unsupported(
+                message: "commit range maximumTraversalCount must be positive"
+            )
+        ) {
+            _ = try await client.countCommitRange(
+                GitCommitRangeCountRequest(
+                    repositoryPath: missingRepository,
+                    base: .named("base"),
+                    candidate: .named("candidate"),
+                    maximumCount: 10,
+                    maximumTraversalCount: 0
                 )
             )
         }

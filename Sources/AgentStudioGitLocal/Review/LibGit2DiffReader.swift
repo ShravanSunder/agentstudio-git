@@ -5,7 +5,8 @@ import Foundation
 struct LibGit2DiffReader: Sendable {
     func diff(_ request: GitDiffRequest) throws -> GitDiffSnapshot {
         try LibGit2ReviewSupport.withRepository(at: request.repositoryPath) { repository in
-            let diff = try makeDiff(request, repository: repository)
+            var options = try diffOptions()
+            let diff = try makeDiff(request, options: &options, repository: repository)
             defer { git_diff_free(diff) }
 
             try findRenames(diff)
@@ -21,31 +22,45 @@ struct LibGit2DiffReader: Sendable {
         return GitDiffSnapshot(files: try files(diff: diff, repository: repository))
     }
 
-    private func makeDiff(_ request: GitDiffRequest, repository: OpaquePointer) throws -> OpaquePointer {
+    func makeDiff(
+        _ request: GitDiffRequest,
+        options: inout git_diff_options,
+        repository: OpaquePointer
+    ) throws -> OpaquePointer {
         switch (request.base.kind, request.compare.kind) {
         case (.head, .head), (.commit, .commit), (.head, .commit), (.commit, .head):
             let oldTree = try LibGit2ReviewSupport.resolveTree(request.base, repository: repository)
             defer { git_tree_free(oldTree) }
             let newTree = try LibGit2ReviewSupport.resolveTree(request.compare, repository: repository)
             defer { git_tree_free(newTree) }
-            return try treeToTreeDiff(oldTree: oldTree, newTree: newTree, repository: repository)
+            return try treeToTreeDiff(
+                oldTree: oldTree,
+                newTree: newTree,
+                options: &options,
+                repository: repository
+            )
 
         case (.head, .index), (.commit, .index):
             let oldTree = try LibGit2ReviewSupport.resolveTree(request.base, repository: repository)
             defer { git_tree_free(oldTree) }
             let index = try repositoryIndex(repository)
             defer { git_index_free(index) }
-            return try treeToIndexDiff(oldTree: oldTree, index: index, repository: repository)
+            return try treeToIndexDiff(
+                oldTree: oldTree,
+                index: index,
+                options: &options,
+                repository: repository
+            )
 
         case (.index, .workingTree):
             let index = try repositoryIndex(repository)
             defer { git_index_free(index) }
-            return try indexToWorkdirDiff(index: index, repository: repository)
+            return try indexToWorkdirDiff(index: index, options: &options, repository: repository)
 
         case (.head, .workingTree), (.commit, .workingTree):
             let oldTree = try LibGit2ReviewSupport.resolveTree(request.base, repository: repository)
             defer { git_tree_free(oldTree) }
-            return try treeToWorkdirWithIndexDiff(oldTree: oldTree, repository: repository)
+            return try treeToWorkdirWithIndexDiff(oldTree: oldTree, options: &options, repository: repository)
 
         default:
             throw GitDataPlaneError.unsupported(
@@ -58,10 +73,10 @@ struct LibGit2DiffReader: Sendable {
     private func treeToTreeDiff(
         oldTree: OpaquePointer,
         newTree: OpaquePointer,
+        options: inout git_diff_options,
         repository: OpaquePointer
     ) throws -> OpaquePointer {
         var diff: OpaquePointer?
-        var options = try diffOptions()
         let result = git_diff_tree_to_tree(&diff, repository, oldTree, newTree, &options)
         guard result >= 0, let diff else {
             throw LibGit2ErrorCapture.failure(code: result)
@@ -72,10 +87,10 @@ struct LibGit2DiffReader: Sendable {
     private func treeToIndexDiff(
         oldTree: OpaquePointer,
         index: OpaquePointer,
+        options: inout git_diff_options,
         repository: OpaquePointer
     ) throws -> OpaquePointer {
         var diff: OpaquePointer?
-        var options = try diffOptions()
         let result = git_diff_tree_to_index(&diff, repository, oldTree, index, &options)
         guard result >= 0, let diff else {
             throw LibGit2ErrorCapture.failure(code: result)
@@ -83,9 +98,12 @@ struct LibGit2DiffReader: Sendable {
         return diff
     }
 
-    private func indexToWorkdirDiff(index: OpaquePointer, repository: OpaquePointer) throws -> OpaquePointer {
+    private func indexToWorkdirDiff(
+        index: OpaquePointer,
+        options: inout git_diff_options,
+        repository: OpaquePointer
+    ) throws -> OpaquePointer {
         var diff: OpaquePointer?
-        var options = try diffOptions()
         let result = git_diff_index_to_workdir(&diff, repository, index, &options)
         guard result >= 0, let diff else {
             throw LibGit2ErrorCapture.failure(code: result)
@@ -103,11 +121,14 @@ struct LibGit2DiffReader: Sendable {
         return diff
     }
 
-    private func treeToWorkdirWithIndexDiff(oldTree: OpaquePointer, repository: OpaquePointer) throws
+    private func treeToWorkdirWithIndexDiff(
+        oldTree: OpaquePointer,
+        options: inout git_diff_options,
+        repository: OpaquePointer
+    ) throws
         -> OpaquePointer
     {
         var diff: OpaquePointer?
-        var options = try diffOptions()
         let result = git_diff_tree_to_workdir_with_index(&diff, repository, oldTree, &options)
         guard result >= 0, let diff else {
             throw LibGit2ErrorCapture.failure(code: result)
@@ -124,7 +145,7 @@ struct LibGit2DiffReader: Sendable {
         return index
     }
 
-    private func diffOptions() throws -> git_diff_options {
+    func diffOptions() throws -> git_diff_options {
         var options = git_diff_options()
         let initResult = git_diff_options_init(&options, UInt32(GIT_DIFF_OPTIONS_VERSION))
         guard initResult >= 0 else {
@@ -138,13 +159,20 @@ struct LibGit2DiffReader: Sendable {
         return options
     }
 
-    private func findRenames(_ diff: OpaquePointer, includingUntracked: Bool = false) throws {
+    func findRenames(
+        _ diff: OpaquePointer,
+        includingUntracked: Bool = false,
+        maximumComparisonsPerTarget: Int? = nil
+    ) throws {
         var options = git_diff_find_options()
         let initResult = git_diff_find_options_init(&options, UInt32(GIT_DIFF_FIND_OPTIONS_VERSION))
         guard initResult >= 0 else {
             throw LibGit2ErrorCapture.failure(code: initResult)
         }
         options.flags = GIT_DIFF_FIND_RENAMES.rawValue
+        if let maximumComparisonsPerTarget {
+            options.rename_limit = maximumComparisonsPerTarget
+        }
         if includingUntracked {
             options.flags |= GIT_DIFF_FIND_FOR_UNTRACKED.rawValue
         }
@@ -165,7 +193,7 @@ struct LibGit2DiffReader: Sendable {
         .sorted { $0.path < $1.path }
     }
 
-    private func lineStats(diff: OpaquePointer, index: Int) throws -> (additions: Int, deletions: Int) {
+    func lineStats(diff: OpaquePointer, index: Int) throws -> (additions: Int, deletions: Int) {
         var patch: OpaquePointer?
         let patchResult = git_patch_from_diff(&patch, diff, index)
         guard patchResult >= 0 else {

@@ -28,6 +28,7 @@ suites=(
   GitTrackedPathIntegrationTests
   GitWorktreeIntegrationTests
   GitCommitRangeCountIntegrationTests
+  GitDiffImpactSummaryIntegrationTests
   GitReviewDataIntegrationTests
   GitWorkingTreeStatusCompatibilityTests
   BridgeReviewSourceCompatibilityTests

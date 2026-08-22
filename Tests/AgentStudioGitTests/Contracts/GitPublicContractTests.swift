@@ -11,9 +11,15 @@ struct GitPublicContractTests {
             repositoryPath: URL(fileURLWithPath: "/tmp/repo"),
             base: .named("base"),
             candidate: .named("candidate"),
-            maximumCount: 10
+            maximumCount: 10,
+            maximumTraversalCount: 64
         )
-        let outcomes: [GitCommitRangeCount] = [.exact(3), .atLeastLimit(10), .unrelated]
+        let outcomes: [GitCommitRangeCount] = [
+            .exact(3),
+            .atLeastLimit(10),
+            .traversalLimitReached(64),
+            .unrelated,
+        ]
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
 
@@ -35,7 +41,52 @@ struct GitPublicContractTests {
             String(data: encodedOutcomes[1], encoding: .utf8)
                 == #"{"count":10,"kind":"atLeastLimit"}"#
         )
-        #expect(String(data: encodedOutcomes[2], encoding: .utf8) == #"{"kind":"unrelated"}"#)
+        #expect(
+            String(data: encodedOutcomes[2], encoding: .utf8)
+                == #"{"count":64,"kind":"traversalLimitReached"}"#
+        )
+        #expect(String(data: encodedOutcomes[3], encoding: .utf8) == #"{"kind":"unrelated"}"#)
+    }
+
+    @Test("bounded diff impact requests and outcomes use explicit wire discriminators")
+    func boundedDiffImpactContractsRoundTrip() throws {
+        // Arrange
+        let request = GitDiffImpactSummaryRequest(
+            repositoryPath: URL(fileURLWithPath: "/tmp/repo"),
+            base: .commit("base"),
+            compare: .commit("candidate"),
+            maximumChangedFileCount: 25,
+            maximumChangedLineCount: 1000
+        )
+        let summaries = [
+            GitDiffImpactSummary(
+                changedPaths: [GitDiffImpactPath(currentPath: "new.swift", previousPath: "old.swift")],
+                pathsAreComplete: true,
+                changedFileCount: .exact(1),
+                changedLineCount: .atLeastLimit(1000)
+            ),
+            GitDiffImpactSummary(
+                changedPaths: [GitDiffImpactPath(currentPath: nil, previousPath: "deleted.swift")],
+                pathsAreComplete: false,
+                changedFileCount: .indeterminate,
+                changedLineCount: .indeterminate
+            ),
+        ]
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+
+        // Act
+        let decodedRequest = try JSONDecoder().decode(
+            GitDiffImpactSummaryRequest.self,
+            from: encoder.encode(request)
+        )
+        let decodedSummaries = try summaries.map {
+            try JSONDecoder().decode(GitDiffImpactSummary.self, from: encoder.encode($0))
+        }
+
+        // Assert
+        #expect(decodedRequest == request)
+        #expect(decodedSummaries == summaries)
     }
 
     @Test("bounded review comparison captures preserve timestamps, roles, and limits")

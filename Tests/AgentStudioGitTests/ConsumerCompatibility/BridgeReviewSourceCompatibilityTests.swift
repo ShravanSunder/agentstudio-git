@@ -571,6 +571,12 @@ private struct BridgeReviewSourceAdapterCompileHarness {
                 throw .unsupported(message: "unused")
             }
 
+            func summarizeDiffImpact(_ request: GitDiffImpactSummaryRequest)
+                async throws(GitDataPlaneError) -> GitDiffImpactSummary
+            {
+                throw .unsupported(message: "unused")
+            }
+
             func contributionDiff(_ request: GitContributionDiffRequest) async throws(GitDataPlaneError)
                 -> GitContributionDiffSnapshot
             {
