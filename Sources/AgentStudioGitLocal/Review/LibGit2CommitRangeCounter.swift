@@ -18,14 +18,38 @@ private struct LibGit2CommitTraversalBudget {
 }
 
 private struct LibGit2CommitGraphDiscovery {
-    let commitOIDKeys: Set<String>
+    let commitOIDKeys: Set<LibGit2CommitOIDKey>
     let encounteredStopOID: Bool
     let includesMerge: Bool
 }
 
+private struct LibGit2CommitOIDKey: Hashable {
+    let bytes0Through7: UInt64
+    let bytes8Through15: UInt64
+    let bytes16Through23: UInt64
+    let bytes24Through31: UInt64
+    let bytes32Through39: UInt64
+
+    init(_ oid: git_oid) {
+        var oid = oid
+        precondition(MemoryLayout<git_oid>.size <= 40)
+        var fixedBytes = (UInt64(0), UInt64(0), UInt64(0), UInt64(0), UInt64(0))
+        withUnsafeMutableBytes(of: &fixedBytes) { destination in
+            withUnsafeBytes(of: &oid) { source in
+                destination.copyBytes(from: source)
+            }
+        }
+        bytes0Through7 = fixedBytes.0
+        bytes8Through15 = fixedBytes.1
+        bytes16Through23 = fixedBytes.2
+        bytes24Through31 = fixedBytes.3
+        bytes32Through39 = fixedBytes.4
+    }
+}
+
 private struct LibGit2PendingCommitOID {
     let oid: git_oid
-    let key: String
+    let key: LibGit2CommitOIDKey
 }
 
 private enum LibGit2CommitGraphDiscoveryOutcome {
@@ -54,8 +78,8 @@ struct LibGit2CommitRangeCounter: Sendable {
             }
             let baseOID = baseOIDPointer.pointee
             let candidateOID = candidateOIDPointer.pointee
-            let baseOIDKey = LibGit2ReviewSupport.oidString(baseOID)
-            let candidateOIDKey = LibGit2ReviewSupport.oidString(candidateOID)
+            let baseOIDKey = LibGit2CommitOIDKey(baseOID)
+            let candidateOIDKey = LibGit2CommitOIDKey(candidateOID)
             if baseOIDKey == candidateOIDKey {
                 return .exact(0)
             }
@@ -105,14 +129,14 @@ struct LibGit2CommitRangeCounter: Sendable {
 
     private func discoverCommitGraph(
         startingAt startOID: git_oid,
-        stoppingBefore stopOIDKey: String?,
+        stoppingBefore stopOIDKey: LibGit2CommitOIDKey?,
         repository: OpaquePointer,
         traversalBudget: inout LibGit2CommitTraversalBudget
     ) throws -> LibGit2CommitGraphDiscoveryOutcome {
-        let startOIDKey = LibGit2ReviewSupport.oidString(startOID)
+        let startOIDKey = LibGit2CommitOIDKey(startOID)
         var pendingOIDs = [LibGit2PendingCommitOID(oid: startOID, key: startOIDKey)]
-        var pendingOIDKeys: Set<String> = [startOIDKey]
-        var visitedOIDKeys: Set<String> = []
+        var pendingOIDKeys: Set<LibGit2CommitOIDKey> = [startOIDKey]
+        var visitedOIDKeys: Set<LibGit2CommitOIDKey> = []
         var encounteredStopOID = false
         var includesMerge = false
 
@@ -146,7 +170,7 @@ struct LibGit2CommitRangeCounter: Sendable {
                     )
                 }
                 let parentOID = parentOIDPointer.pointee
-                let parentOIDKey = LibGit2ReviewSupport.oidString(parentOID)
+                let parentOIDKey = LibGit2CommitOIDKey(parentOID)
                 if parentOIDKey == stopOIDKey {
                     encounteredStopOID = true
                     continue

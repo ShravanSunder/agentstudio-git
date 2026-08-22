@@ -236,9 +236,19 @@ struct GitCommitRangeCountIntegrationTests {
                 maximumTraversalCount: 64
             )
         )
+        let boundedResult = try await client.countCommitRange(
+            GitCommitRangeCountRequest(
+                repositoryPath: fixture.repositoryPath,
+                base: .named(baseOID),
+                candidate: .named(candidateOID),
+                maximumCount: 20,
+                maximumTraversalCount: 4
+            )
+        )
 
         // Assert
         #expect(result == .exact(9))
+        #expect(boundedResult == .traversalLimitReached(4))
     }
 
     @Test("rejects a nonpositive cap before opening the repository")
