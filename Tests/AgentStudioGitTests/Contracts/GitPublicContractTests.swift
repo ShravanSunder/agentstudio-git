@@ -4,6 +4,40 @@ import Testing
 
 @Suite("Git public contracts")
 struct GitPublicContractTests {
+    @Test("commit range requests and bounded outcomes use explicit wire discriminators")
+    func commitRangeContractsRoundTrip() throws {
+        // Arrange
+        let request = GitCommitRangeCountRequest(
+            repositoryPath: URL(fileURLWithPath: "/tmp/repo"),
+            base: .named("base"),
+            candidate: .named("candidate"),
+            maximumCount: 10
+        )
+        let outcomes: [GitCommitRangeCount] = [.exact(3), .atLeastLimit(10), .unrelated]
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+
+        // Act
+        let decodedRequest = try JSONDecoder().decode(
+            GitCommitRangeCountRequest.self,
+            from: encoder.encode(request)
+        )
+        let encodedOutcomes = try outcomes.map { try encoder.encode($0) }
+        let decodedOutcomes = try encodedOutcomes.map {
+            try JSONDecoder().decode(GitCommitRangeCount.self, from: $0)
+        }
+
+        // Assert
+        #expect(decodedRequest == request)
+        #expect(decodedOutcomes == outcomes)
+        #expect(String(data: encodedOutcomes[0], encoding: .utf8) == #"{"count":3,"kind":"exact"}"#)
+        #expect(
+            String(data: encodedOutcomes[1], encoding: .utf8)
+                == #"{"count":10,"kind":"atLeastLimit"}"#
+        )
+        #expect(String(data: encodedOutcomes[2], encoding: .utf8) == #"{"kind":"unrelated"}"#)
+    }
+
     @Test("bounded review comparison captures preserve timestamps, roles, and limits")
     func boundedReviewComparisonCapturesRoundTrip() throws {
         // Arrange

@@ -158,6 +158,17 @@ struct LibGit2BlockingReadExecutorTests {
                     GitDiffRequest(repositoryPath: missingRepositoryPath, base: .head, compare: .workingTree)
                 )
             }
+        case .countCommitRange:
+            await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
+                _ = try await client.countCommitRange(
+                    GitCommitRangeCountRequest(
+                        repositoryPath: missingRepositoryPath,
+                        base: .named("base"),
+                        candidate: .named("candidate"),
+                        maximumCount: 10
+                    )
+                )
+            }
         case .contributionDiff:
             await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
                 _ = try await client.contributionDiff(
@@ -245,6 +256,7 @@ private enum BlockingReadAPI: String, CaseIterable, Sendable {
     case resolveRevision
     case readTree
     case diff
+    case countCommitRange
     case contributionDiff
     case directReviewComparison
     case content

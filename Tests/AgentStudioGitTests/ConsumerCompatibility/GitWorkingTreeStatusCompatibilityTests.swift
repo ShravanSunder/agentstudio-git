@@ -599,6 +599,10 @@ private struct StubLocalClient: AgentStudioGitLocalClient {
         throw .unsupported(message: "not needed")
     }
 
+    func countCommitRange(_: GitCommitRangeCountRequest) async throws(GitDataPlaneError) -> GitCommitRangeCount {
+        throw .unsupported(message: "not needed")
+    }
+
     func contributionDiff(_: GitContributionDiffRequest) async throws(GitDataPlaneError)
         -> GitContributionDiffSnapshot
     {

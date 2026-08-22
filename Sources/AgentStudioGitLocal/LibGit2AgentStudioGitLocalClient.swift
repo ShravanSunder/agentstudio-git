@@ -182,6 +182,14 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
         }
     }
 
+    public func countCommitRange(_ request: GitCommitRangeCountRequest) async throws(GitDataPlaneError)
+        -> GitCommitRangeCount
+    {
+        try await executeBlockingRead {
+            try LibGit2CommitRangeCounter().count(request)
+        }
+    }
+
     public func contributionDiff(_ request: GitContributionDiffRequest) async throws(GitDataPlaneError)
         -> GitContributionDiffSnapshot
     {

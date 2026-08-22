@@ -565,6 +565,12 @@ private struct BridgeReviewSourceAdapterCompileHarness {
                 )
             }
 
+            func countCommitRange(_ request: GitCommitRangeCountRequest)
+                async throws(GitDataPlaneError) -> GitCommitRangeCount
+            {
+                throw .unsupported(message: "unused")
+            }
+
             func contributionDiff(_ request: GitContributionDiffRequest) async throws(GitDataPlaneError)
                 -> GitContributionDiffSnapshot
             {
