@@ -144,6 +144,69 @@ struct GitCommitRangeCountIntegrationTests {
         #expect(result == .traversalLimitReached(2))
     }
 
+    @Test("physical traversal budget wins before the promotion count on a long descendant range")
+    func traversalBudgetBoundsLongDescendantRange() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-budgeted-descendant-range")
+        defer { fixture.remove() }
+        let baseOID = try fixture.git.run("rev-parse", "HEAD").trimmed
+        for commitIndex in 1...40 {
+            try fixture.write("history.txt", contents: "\(commitIndex)\n")
+            try fixture.git.run("add", "history.txt")
+            try fixture.git.run("commit", "-m", "descendant \(commitIndex)")
+        }
+        let candidateOID = try fixture.git.run("rev-parse", "HEAD").trimmed
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        // Act
+        let result = try await client.countCommitRange(
+            GitCommitRangeCountRequest(
+                repositoryPath: fixture.repositoryPath,
+                base: .named(baseOID),
+                candidate: .named(candidateOID),
+                maximumCount: 10,
+                maximumTraversalCount: 4
+            )
+        )
+
+        // Assert
+        #expect(result == .traversalLimitReached(4))
+    }
+
+    @Test("counts both sides of a small merged range within the shared traversal budget")
+    func countsSmallMergedRange() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-merged-commit-range")
+        defer { fixture.remove() }
+        let baseOID = try fixture.git.run("rev-parse", "HEAD").trimmed
+        let mainBranch = try fixture.git.run("branch", "--show-current").trimmed
+        try fixture.git.run("checkout", "-b", "side")
+        try fixture.write("side.txt", contents: "side\n")
+        try fixture.git.run("add", "side.txt")
+        try fixture.git.run("commit", "-m", "side commit")
+        try fixture.git.run("checkout", mainBranch)
+        try fixture.write("main.txt", contents: "main\n")
+        try fixture.git.run("add", "main.txt")
+        try fixture.git.run("commit", "-m", "main commit")
+        try fixture.git.run("merge", "--no-ff", "side", "-m", "merge side")
+        let candidateOID = try fixture.git.run("rev-parse", "HEAD").trimmed
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        // Act
+        let result = try await client.countCommitRange(
+            GitCommitRangeCountRequest(
+                repositoryPath: fixture.repositoryPath,
+                base: .named(baseOID),
+                candidate: .named(candidateOID),
+                maximumCount: 10,
+                maximumTraversalCount: 64
+            )
+        )
+
+        // Assert
+        #expect(result == .exact(3))
+    }
+
     @Test("rejects a nonpositive cap before opening the repository")
     func rejectsNonpositiveMaximumCount() async {
         // Arrange

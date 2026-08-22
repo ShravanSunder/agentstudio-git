@@ -150,6 +150,90 @@ struct GitDiffImpactSummaryIntegrationTests {
         #expect(summary.deletedLineCount == nil)
     }
 
+    @Test("skips fuzzy rename similarity for oversized modified rename candidates")
+    func skipsFuzzyRenameSimilarityForOversizedModifiedRename() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-oversized-fuzzy-rename")
+        defer { fixture.remove() }
+        try fixture.write("rename-source.txt", contents: String(repeating: "source-line\n", count: 128))
+        try fixture.git.run("add", "rename-source.txt")
+        try fixture.git.run("commit", "-m", "add oversized rename source")
+        let baseOID = try fixture.git.run("rev-parse", "HEAD").trimmed
+        try fixture.git.run("mv", "rename-source.txt", "rename-target.txt")
+        try fixture.write(
+            "rename-target.txt",
+            contents: String(repeating: "source-line\n", count: 127) + "changed-line\n"
+        )
+        try fixture.git.run("add", "rename-target.txt")
+        try fixture.git.run("commit", "-m", "modify oversized rename target")
+        let candidateOID = try fixture.git.run("rev-parse", "HEAD").trimmed
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        // Act
+        let summary = try await client.summarizeDiffImpact(
+            GitDiffImpactSummaryRequest(
+                repositoryPath: fixture.repositoryPath,
+                base: .commit(baseOID),
+                compare: .commit(candidateOID),
+                maximumChangedFileCount: 10,
+                maximumChangedLineCount: 100,
+                maximumDiffableBlobByteCount: 64
+            )
+        )
+
+        // Assert
+        #expect(summary.pathsAreComplete == false)
+        #expect(
+            summary.changedPaths == [
+                GitDiffImpactPath(currentPath: nil, previousPath: "rename-source.txt"),
+                GitDiffImpactPath(currentPath: "rename-target.txt", previousPath: nil),
+            ]
+        )
+        #expect(summary.changedFileCount == .indeterminate)
+        #expect(summary.changedLineCount == .indeterminate)
+        #expect(summary.addedLineCount == nil)
+        #expect(summary.deletedLineCount == nil)
+    }
+
+    @Test("retains exact OID pairing for an oversized rename without fuzzy similarity")
+    func retainsExactOIDPairingForOversizedRename() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-oversized-exact-rename")
+        defer { fixture.remove() }
+        try fixture.write("exact-source.txt", contents: String(repeating: "exact-line\n", count: 128))
+        try fixture.git.run("add", "exact-source.txt")
+        try fixture.git.run("commit", "-m", "add oversized exact source")
+        let baseOID = try fixture.git.run("rev-parse", "HEAD").trimmed
+        try fixture.git.run("mv", "exact-source.txt", "exact-target.txt")
+        try fixture.git.run("commit", "-m", "rename oversized exact source")
+        let candidateOID = try fixture.git.run("rev-parse", "HEAD").trimmed
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        // Act
+        let summary = try await client.summarizeDiffImpact(
+            GitDiffImpactSummaryRequest(
+                repositoryPath: fixture.repositoryPath,
+                base: .commit(baseOID),
+                compare: .commit(candidateOID),
+                maximumChangedFileCount: 10,
+                maximumChangedLineCount: 100,
+                maximumDiffableBlobByteCount: 64
+            )
+        )
+
+        // Assert
+        #expect(summary.pathsAreComplete)
+        #expect(
+            summary.changedPaths == [
+                GitDiffImpactPath(currentPath: "exact-target.txt", previousPath: "exact-source.txt")
+            ]
+        )
+        #expect(summary.changedFileCount == .exact(1))
+        #expect(summary.changedLineCount == .indeterminate)
+        #expect(summary.addedLineCount == nil)
+        #expect(summary.deletedLineCount == nil)
+    }
+
     @Test("rejects nonpositive diff-impact caps before opening the repository")
     func rejectsNonpositiveCaps() async {
         // Arrange

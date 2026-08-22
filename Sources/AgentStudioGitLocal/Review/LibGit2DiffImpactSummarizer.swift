@@ -107,6 +107,14 @@ struct LibGit2DiffImpactSummarizer: Sendable {
             defer { git_diff_free(diff) }
 
             let deltaCount = git_diff_num_deltas(diff)
+            if let conservativeSummary = try conservativeOversizedRenameSummary(
+                diff: diff,
+                changedFileCount: deltaCount,
+                maximumDiffableBlobByteCount: request.maximumDiffableBlobByteCount,
+                repository: repository
+            ) {
+                return conservativeSummary
+            }
             if deltaCount > 0 {
                 try diffReader.findRenames(
                     diff,
@@ -123,6 +131,70 @@ struct LibGit2DiffImpactSummarizer: Sendable {
                 request: request
             )
         }
+    }
+
+    private func conservativeOversizedRenameSummary(
+        diff: OpaquePointer,
+        changedFileCount: Int,
+        maximumDiffableBlobByteCount: Int64,
+        repository: OpaquePointer
+    ) throws -> GitDiffImpactSummary? {
+        var renameSources: [git_diff_delta] = []
+        var renameTargets: [git_diff_delta] = []
+        for deltaIndex in 0..<changedFileCount {
+            guard let deltaPointer = git_diff_get_delta(diff, deltaIndex) else {
+                throw GitDataPlaneError.unsupported(
+                    message: "libgit2 returned no diff delta at index \(deltaIndex)"
+                )
+            }
+            let delta = deltaPointer.pointee
+            if delta.status == GIT_DELTA_DELETED || delta.status == GIT_DELTA_TYPECHANGE {
+                renameSources.append(delta)
+            }
+            if delta.status == GIT_DELTA_ADDED || delta.status == GIT_DELTA_TYPECHANGE {
+                renameTargets.append(delta)
+            }
+        }
+        guard !renameSources.isEmpty, !renameTargets.isEmpty else { return nil }
+
+        let maximumBlobByteCount = UInt64(maximumDiffableBlobByteCount)
+        var objectDatabase: OpaquePointer?
+        let objectDatabaseResult = git_repository_odb(&objectDatabase, repository)
+        guard objectDatabaseResult >= 0, let objectDatabase else {
+            throw LibGit2ErrorCapture.failure(code: objectDatabaseResult)
+        }
+        defer { git_odb_free(objectDatabase) }
+
+        let sourceExceedsLimit = try renameSources.contains { source in
+            try Self.blobExceedsLimit(
+                source.old_file,
+                maximumBlobByteCount: maximumBlobByteCount,
+                objectDatabase: objectDatabase
+            )
+        }
+        let targetExceedsLimit = try renameTargets.contains { target in
+            try Self.blobExceedsLimit(
+                target.new_file,
+                maximumBlobByteCount: maximumBlobByteCount,
+                objectDatabase: objectDatabase
+            )
+        }
+        let hasOversizedCandidate = sourceExceedsLimit || targetExceedsLimit
+        guard hasOversizedCandidate else { return nil }
+        if renameSources.count == 1, renameTargets.count == 1,
+            Self.haveEqualNonzeroOIDs(renameSources[0].old_file.id, renameTargets[0].new_file.id)
+        {
+            return nil
+        }
+
+        return GitDiffImpactSummary(
+            changedPaths: try changedPaths(diff: diff, changedFileCount: changedFileCount),
+            pathsAreComplete: false,
+            changedFileCount: .indeterminate,
+            changedLineCount: .indeterminate,
+            addedLineCount: nil,
+            deletedLineCount: nil
+        )
     }
 
     private func createBoundedDiff(
@@ -253,5 +325,35 @@ struct LibGit2DiffImpactSummarizer: Sendable {
             return lhsSortPath < rhsSortPath
         }
         return (lhs.previousPath ?? "") < (rhs.previousPath ?? "")
+    }
+
+    private static func haveEqualNonzeroOIDs(_ lhs: git_oid, _ rhs: git_oid) -> Bool {
+        var lhs = lhs
+        var rhs = rhs
+        return git_oid_is_zero(&lhs) == 0 && git_oid_is_zero(&rhs) == 0 && git_oid_equal(&lhs, &rhs) != 0
+    }
+
+    private static func blobExceedsLimit(
+        _ file: git_diff_file,
+        maximumBlobByteCount: UInt64,
+        objectDatabase: OpaquePointer
+    ) throws -> Bool {
+        if file.flags & GIT_DIFF_FLAG_VALID_SIZE.rawValue != 0 {
+            return file.size > maximumBlobByteCount
+        }
+        var oid = file.id
+        guard git_oid_is_zero(&oid) == 0 else {
+            return true
+        }
+        var objectByteCount = 0
+        var objectType = GIT_OBJECT_INVALID
+        let headerResult = git_odb_read_header(&objectByteCount, &objectType, objectDatabase, &oid)
+        guard headerResult >= 0 else {
+            throw LibGit2ErrorCapture.failure(code: headerResult)
+        }
+        guard objectType == GIT_OBJECT_BLOB else {
+            throw GitDataPlaneError.unsupported(message: "rename candidate object is not a blob")
+        }
+        return UInt64(objectByteCount) > maximumBlobByteCount
     }
 }
