@@ -1,0 +1,222 @@
+import AgentStudioGit
+import Foundation
+import Testing
+
+@Suite("Git staged fetch integration", .serialized)
+struct GitStagedFetchIntegrationTests {
+    @Test("staged fetch leaves canonical refs unchanged until atomic promotion")
+    func stagedFetchLeavesCanonicalRefsUnchangedUntilAtomicPromotion() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-staged-fetch")
+        defer { fixture.remove() }
+        let remotePath = fixture.root.appending(path: "origin.git")
+        try fixture.git.run("init", "--bare", remotePath.path, currentDirectory: fixture.root)
+        try fixture.git.run("remote", "add", "origin", remotePath.path)
+        try fixture.git.run("push", "-u", "origin", "main")
+        try fixture.git.run("checkout", "-b", "feature/delete-me")
+        try fixture.git.run("push", "-u", "origin", "feature/delete-me")
+        try fixture.git.run("checkout", "main")
+        try fixture.git.run("checkout", "-b", "stable")
+        try fixture.git.run("push", "-u", "origin", "stable")
+        try fixture.git.run("checkout", "main")
+        try fixture.git.run("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        let canonicalBefore = try fixture.git.run("rev-parse", "refs/remotes/origin/main")
+        let client = SystemGitRemoteClient(
+            configuration: .init(allowedProtocols: [.file])
+        )
+        let captured = try await client.captureRemoteTrackingSnapshot(
+            GitRemoteTrackingSnapshotRequest(
+                repositoryPath: fixture.repositoryPath,
+                remoteName: "origin"
+            )
+        )
+        try fixture.git.run("config", "fetch.prune", "true")
+        try fixture.git.run("config", "fetch.pruneTags", "true")
+        let fetchHeadURL = captured.repositoryCommonDirectory.appending(path: "FETCH_HEAD")
+        let fetchHeadSentinel = Data("preserve-fetch-head\n".utf8)
+        try fetchHeadSentinel.write(to: fetchHeadURL)
+
+        let peerPath = fixture.root.appending(path: "peer")
+        try fixture.git.run("clone", remotePath.path, peerPath.path, currentDirectory: fixture.root)
+        let peerGit = GitProcess(repositoryPath: peerPath)
+        try peerGit.run("config", "user.name", "AgentStudio Git Tests")
+        try peerGit.run("config", "user.email", "agentstudio-git-tests@example.invalid")
+        try "remote change\n".write(
+            to: peerPath.appending(path: "remote-change.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try peerGit.run("add", "remote-change.txt")
+        try peerGit.run("commit", "-m", "remote change")
+        try peerGit.run("push", "origin", "main")
+        try peerGit.run("push", "origin", ":refs/heads/feature/delete-me")
+        try peerGit.run("tag", "staged-fetch-tag")
+        try peerGit.run("push", "origin", "refs/tags/staged-fetch-tag")
+        try fixture.git.run(
+            "config",
+            "--add",
+            "remote.origin.fetch",
+            "+refs/heads/*:refs/remotes/unrelated/*"
+        )
+
+        // Act
+        let staged = try await client.stageFetch(
+            GitStagedFetchRequest(snapshot: captured, stagingID: UUID())
+        )
+
+        // Assert
+        #expect(try fixture.git.run("rev-parse", "refs/remotes/origin/main") == canonicalBefore)
+        #expect(staged.updates.contains { $0.canonicalRefName == "refs/remotes/origin/main" })
+        #expect(staged.verifications.contains { $0.canonicalRefName == "refs/remotes/origin/stable" })
+        #expect(staged.deletions.map(\.canonicalRefName) == ["refs/remotes/origin/feature/delete-me"])
+        #expect(try fixture.git.succeeds("show-ref", "--verify", "refs/remotes/origin/feature/delete-me"))
+        #expect(try Data(contentsOf: fetchHeadURL) == fetchHeadSentinel)
+        #expect(!(try fixture.git.succeeds("show-ref", "--verify", "refs/tags/staged-fetch-tag")))
+        #expect(try fixture.git.run("for-each-ref", "refs/remotes/unrelated/").isEmpty)
+
+        let incompletePlan = GitStagedFetchResult(
+            snapshot: staged.snapshot,
+            handle: staged.handle,
+            updates: staged.updates,
+            verifications: [],
+            deletions: []
+        )
+        await #expect(throws: GitDataPlaneError.self) {
+            _ = try await client.promoteStagedFetch(
+                GitPromoteStagedFetchRequest(stagedFetch: incompletePlan)
+            )
+        }
+        #expect(try fixture.git.run("rev-parse", "refs/remotes/origin/main") == canonicalBefore)
+
+        let promoted = try await client.promoteStagedFetch(
+            GitPromoteStagedFetchRequest(stagedFetch: staged)
+        )
+        #expect(promoted.updatedRefNames == ["refs/remotes/origin/main"])
+        #expect(promoted.deletedRefNames == ["refs/remotes/origin/feature/delete-me"])
+        #expect(try fixture.git.run("rev-parse", "refs/remotes/origin/main") != canonicalBefore)
+        #expect(!(try fixture.git.succeeds("show-ref", "--verify", "refs/remotes/origin/feature/delete-me")))
+        #expect(try fixture.git.run("symbolic-ref", "refs/remotes/origin/HEAD").contains("origin/main"))
+        #expect(try fixture.git.run("for-each-ref", staged.stagingNamespace).isEmpty)
+    }
+
+    @Test("staged promotion rejects concurrent canonical mutation as one transaction")
+    func stagedPromotionRejectsConcurrentCanonicalMutationAsOneTransaction() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-staged-fetch-race")
+        defer { fixture.remove() }
+        let remotePath = fixture.root.appending(path: "origin.git")
+        try fixture.git.run("init", "--bare", remotePath.path, currentDirectory: fixture.root)
+        try fixture.git.run("remote", "add", "origin", remotePath.path)
+        try fixture.git.run("push", "-u", "origin", "main")
+        let firstOID = try fixture.git.run("rev-parse", "HEAD").trimmingCharacters(in: .whitespacesAndNewlines)
+
+        try fixture.write("second.txt", contents: "second\n")
+        try fixture.git.run("add", "second.txt")
+        try fixture.git.run("commit", "-m", "second")
+        let secondOID = try fixture.git.run("rev-parse", "HEAD").trimmingCharacters(in: .whitespacesAndNewlines)
+        try fixture.git.run("push", "origin", "main")
+        try fixture.git.run("update-ref", "refs/remotes/origin/main", firstOID)
+
+        let client = SystemGitRemoteClient(configuration: .init(allowedProtocols: [.file]))
+        let captured = try await client.captureRemoteTrackingSnapshot(
+            GitRemoteTrackingSnapshotRequest(
+                repositoryPath: fixture.repositoryPath,
+                remoteName: "origin"
+            )
+        )
+        let staged = try await client.stageFetch(
+            GitStagedFetchRequest(snapshot: captured, stagingID: UUID())
+        )
+        try fixture.git.run("update-ref", "refs/remotes/origin/main", secondOID, firstOID)
+
+        // Act / Assert
+        await #expect(throws: GitDataPlaneError.self) {
+            _ = try await client.promoteStagedFetch(
+                GitPromoteStagedFetchRequest(stagedFetch: staged)
+            )
+        }
+        #expect(
+            try fixture.git.run("rev-parse", "refs/remotes/origin/main")
+                .trimmingCharacters(in: .whitespacesAndNewlines) == secondOID
+        )
+
+        _ = try await client.cleanupStagedFetch(
+            GitCleanupStagedFetchRequest(handle: staged.handle)
+        )
+        #expect(try fixture.git.run("for-each-ref", staged.stagingNamespace).isEmpty)
+    }
+
+    @Test("abandoned staging sweep preserves active UUIDs then removes only reserved refs")
+    func abandonedStagingSweepPreservesActiveUUIDsThenRemovesOnlyReservedRefs() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-staged-fetch-sweep")
+        defer { fixture.remove() }
+        let remotePath = fixture.root.appending(path: "origin.git")
+        try fixture.git.run("init", "--bare", remotePath.path, currentDirectory: fixture.root)
+        try fixture.git.run("remote", "add", "origin", remotePath.path)
+        try fixture.git.run("push", "-u", "origin", "main")
+        let canonicalBefore = try fixture.git.run("rev-parse", "refs/remotes/origin/main")
+        let client = SystemGitRemoteClient(configuration: .init(allowedProtocols: [.file]))
+        let snapshot = try await client.captureRemoteTrackingSnapshot(
+            GitRemoteTrackingSnapshotRequest(
+                repositoryPath: fixture.repositoryPath,
+                remoteName: "origin"
+            )
+        )
+        let stagingID = UUID()
+        let staged = try await client.stageFetch(
+            GitStagedFetchRequest(snapshot: snapshot, stagingID: stagingID)
+        )
+
+        // Act / Assert
+        let retained = try await client.cleanupAbandonedStagedFetches(
+            GitCleanupAbandonedStagedFetchesRequest(
+                repositoryCommonDirectory: snapshot.repositoryCommonDirectory,
+                retainedStagingIDs: [stagingID]
+            )
+        )
+        #expect(retained.deletedRefNames.isEmpty)
+        #expect(!retained.retainedRefNames.isEmpty)
+
+        let cleaned = try await client.cleanupAbandonedStagedFetches(
+            GitCleanupAbandonedStagedFetchesRequest(
+                repositoryCommonDirectory: snapshot.repositoryCommonDirectory,
+                retainedStagingIDs: []
+            )
+        )
+        #expect(!cleaned.deletedRefNames.isEmpty)
+        #expect(cleaned.retainedRefNames.isEmpty)
+        #expect(try fixture.git.run("for-each-ref", staged.stagingNamespace).isEmpty)
+        #expect(try fixture.git.run("rev-parse", "refs/remotes/origin/main") == canonicalBefore)
+    }
+
+    @Test("staging cleanup survives removal of the originating linked worktree")
+    func stagingCleanupSurvivesRemovalOfOriginatingLinkedWorktree() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-staged-fetch-linked")
+        defer { fixture.remove() }
+        let remotePath = fixture.root.appending(path: "origin.git")
+        try fixture.git.run("init", "--bare", remotePath.path, currentDirectory: fixture.root)
+        try fixture.git.run("remote", "add", "origin", remotePath.path)
+        try fixture.git.run("push", "-u", "origin", "main")
+        let linkedPath = try fixture.addLinkedWorktree(named: "linked-stage", branch: "feature/linked-stage")
+        let client = SystemGitRemoteClient(configuration: .init(allowedProtocols: [.file]))
+        let snapshot = try await client.captureRemoteTrackingSnapshot(
+            GitRemoteTrackingSnapshotRequest(repositoryPath: linkedPath, remoteName: "origin")
+        )
+        let staged = try await client.stageFetch(
+            GitStagedFetchRequest(snapshot: snapshot, stagingID: UUID())
+        )
+        try fixture.git.run("worktree", "remove", "--force", linkedPath.path)
+
+        // Act
+        let cleanup = try await client.cleanupStagedFetch(
+            GitCleanupStagedFetchRequest(handle: staged.handle)
+        )
+
+        // Assert
+        #expect(!cleanup.deletedRefNames.isEmpty)
+        #expect(cleanup.retainedRefNames.isEmpty)
+        #expect(try fixture.git.run("for-each-ref", staged.stagingNamespace).isEmpty)
+    }
+}

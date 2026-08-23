@@ -423,6 +423,63 @@ struct GitPublicContractTests {
         #expect(dictionary["destinationPath"] as? String == "file:///tmp/checkout")
     }
 
+    @Test("staged fetch contracts preserve captured provenance and atomic update intent")
+    func stagedFetchContractsPreserveCapturedProvenanceAndAtomicUpdateIntent() throws {
+        let repositoryPath = URL(fileURLWithPath: "/tmp/repo")
+        let stagingID = try #require(UUID(uuidString: "00000000-0000-7000-8000-000000000001"))
+        let snapshot = GitRemoteTrackingSnapshot(
+            repositoryPath: repositoryPath,
+            repositoryCommonDirectory: URL(fileURLWithPath: "/tmp/repo/.git"),
+            remoteName: "origin",
+            configuredRemoteURL: "https://example.com/org/repo.git",
+            effectiveFetchURL: "https://example.com/org/repo.git",
+            references: [
+                GitRemoteTrackingReference(
+                    canonicalRefName: "refs/remotes/origin/main",
+                    oid: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                )
+            ]
+        )
+        let stagedFetch = GitStagedFetchResult(
+            snapshot: snapshot,
+            handle: GitStagedFetchHandle(
+                repositoryCommonDirectory: snapshot.repositoryCommonDirectory,
+                stagingID: stagingID
+            ),
+            updates: [
+                GitStagedFetchUpdate(
+                    stagingRefName:
+                        "refs/agentstudio/staged/00000000-0000-7000-8000-000000000001/remotes/origin/main",
+                    canonicalRefName: "refs/remotes/origin/main",
+                    newOID: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    expectedOldOID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                )
+            ],
+            verifications: [],
+            deletions: []
+        )
+
+        let decodedSnapshot = try JSONDecoder().decode(
+            GitRemoteTrackingSnapshot.self,
+            from: JSONEncoder().encode(snapshot)
+        )
+        let decodedStagedFetch = try JSONDecoder().decode(
+            GitStagedFetchResult.self,
+            from: JSONEncoder().encode(stagedFetch)
+        )
+        let indeterminate = GitDataPlaneError.remoteRefTransactionIndeterminate(
+            message: "promotion outcome requires reconciliation"
+        )
+        let decodedIndeterminate = try JSONDecoder().decode(
+            GitDataPlaneError.self,
+            from: JSONEncoder().encode(indeterminate)
+        )
+
+        #expect(decodedSnapshot == snapshot)
+        #expect(decodedStagedFetch == stagedFetch)
+        #expect(decodedIndeterminate == indeterminate)
+    }
+
     @Test("content requests target review endpoints and carry optional size limits")
     func contentRequestsTargetReviewEndpointsAndCarryOptionalSizeLimits() throws {
         let request = GitContentRequest(

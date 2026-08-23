@@ -106,6 +106,23 @@ struct SystemGitRemoteClientTests {
         #expect(try fakeGit.recordedInvocations().isEmpty)
     }
 
+    @Test("option-shaped remote names are rejected before staged capture launches")
+    func optionShapedRemoteNamesAreRejectedBeforeStagedCaptureLaunches() async throws {
+        let fakeGit = try FakeGitExecutable()
+        let client = SystemGitRemoteClient(configuration: fakeGit.configuration())
+
+        await #expect(throws: GitDataPlaneError.self) {
+            _ = try await client.captureRemoteTrackingSnapshot(
+                GitRemoteTrackingSnapshotRequest(
+                    repositoryPath: fakeGit.root.appending(path: "repo"),
+                    remoteName: "--upload-pack=bad"
+                )
+            )
+        }
+
+        #expect(try fakeGit.recordedInvocations().isEmpty)
+    }
+
     @Test("live remote smoke is explicitly opt in")
     func liveRemoteSmokeIsExplicitlyOptIn() async throws {
         let environment = ProcessInfo.processInfo.environment

@@ -41,6 +41,15 @@ public protocol AgentStudioGitLocalClient: Sendable {
 public protocol AgentStudioGitRemoteClient: Sendable {
     func clone(_ request: GitCloneRequest) async throws(GitDataPlaneError) -> GitCloneResult
     func fetch(_ request: GitFetchRequest) async throws(GitDataPlaneError) -> GitFetchResult
+    func captureRemoteTrackingSnapshot(_ request: GitRemoteTrackingSnapshotRequest)
+        async throws(GitDataPlaneError) -> GitRemoteTrackingSnapshot
+    func stageFetch(_ request: GitStagedFetchRequest) async throws(GitDataPlaneError) -> GitStagedFetchResult
+    func promoteStagedFetch(_ request: GitPromoteStagedFetchRequest)
+        async throws(GitDataPlaneError) -> GitPromoteStagedFetchResult
+    func cleanupStagedFetch(_ request: GitCleanupStagedFetchRequest)
+        async throws(GitDataPlaneError) -> GitCleanupStagedFetchResult
+    func cleanupAbandonedStagedFetches(_ request: GitCleanupAbandonedStagedFetchesRequest)
+        async throws(GitDataPlaneError) -> GitCleanupStagedFetchResult
     func push(_ request: GitPushRequest) async throws(GitDataPlaneError) -> GitPushResult
     func remoteReferences(_ request: GitRemoteReferencesRequest) async throws(GitDataPlaneError)
         -> [GitRemoteReference]

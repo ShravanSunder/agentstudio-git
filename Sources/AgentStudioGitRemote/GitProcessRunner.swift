@@ -18,7 +18,11 @@ public struct GitProcessRunner: Sendable {
         self.configuration = configuration
     }
 
-    public func run(arguments: [String], currentDirectory: URL? = nil) async throws(GitDataPlaneError)
+    public func run(
+        arguments: [String],
+        currentDirectory: URL? = nil,
+        standardInput: Data? = nil
+    ) async throws(GitDataPlaneError)
         -> GitProcessResult
     {
         let invocation = GitExecutableLocator(configuredExecutableURL: configuration.executableURL).invocation()
@@ -39,14 +43,19 @@ public struct GitProcessRunner: Sendable {
             stdoutCapture.startReading()
             stderrCapture.startReading()
 
+            let standardInputFile = try standardInput.map(GitProcessStandardInputFile.init(data:))
             let spawnedProcess = try PosixGitProcess.spawn(
-                executableURL: invocation.executableURL,
-                arguments: processArguments,
-                environment: configuration.processEnvironment(),
-                currentDirectory: currentDirectory,
-                stdoutDescriptor: stdoutCapture.writeFileDescriptor,
-                stderrDescriptor: stderrCapture.writeFileDescriptor
+                PosixGitProcess.SpawnRequest(
+                    executableURL: invocation.executableURL,
+                    arguments: processArguments,
+                    environment: configuration.processEnvironment(),
+                    currentDirectory: currentDirectory,
+                    stdinDescriptor: standardInputFile?.fileDescriptor(),
+                    stdoutDescriptor: stdoutCapture.writeFileDescriptor,
+                    stderrDescriptor: stderrCapture.writeFileDescriptor
+                )
             )
+            standardInputFile?.closeParentDescriptor()
             stdoutCapture.closeParentWriteDescriptor()
             stderrCapture.closeParentWriteDescriptor()
 
