@@ -12,7 +12,11 @@ public protocol AgentStudioGitLocalClient: Sendable {
         -> GitWorktreeRemovalResult
     func lockWorktree(_ request: GitLockWorktreeRequest) async throws(GitDataPlaneError) -> GitWorktreeSnapshot
     func unlockWorktree(_ request: GitUnlockWorktreeRequest) async throws(GitDataPlaneError) -> GitWorktreeSnapshot
-    func status(for worktreePath: URL, options: GitStatusOptions) async throws(GitDataPlaneError) -> GitStatusSnapshot
+    func statusFacts(for worktreePath: URL, options: GitStatusOptions) async throws(GitDataPlaneError)
+        -> GitStatusFactsSnapshot
+    func exactLineCountDetail(for worktreePath: URL) async throws(GitDataPlaneError) -> GitStatusLineCountDetail
+    func completeStatus(for worktreePath: URL, options: GitStatusOptions) async throws(GitDataPlaneError)
+        -> GitCompleteStatusSnapshot
     func trackedPaths(for worktreePath: URL, options: GitTrackedPathsOptions) async throws(GitDataPlaneError)
         -> GitTrackedPathsSnapshot
     func isPathIgnored(repositoryAt worktreePath: URL, relativePath: String) async throws(GitDataPlaneError) -> Bool

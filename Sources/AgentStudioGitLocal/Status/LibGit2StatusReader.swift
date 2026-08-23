@@ -17,35 +17,67 @@ struct LibGit2StatusReader: Sendable {
         self.indexPathResolver = indexPathResolver
     }
 
-    func status(for worktreePath: URL, options: GitStatusOptions) throws -> GitStatusSnapshot {
+    func statusFacts(for worktreePath: URL, options: GitStatusOptions) throws -> GitStatusFactsSnapshot {
         try withRepository(at: worktreePath) { repository in
-            _ = try indexPathResolver.indexPath(repository: repository)
-            let branchSummary = try branchReader.branchSummary(repository: repository)
-            let statusEntries = try entries(repository: repository, options: options)
-            let lineCounts = try shortstat(repository: repository)
-            let summary = GitStatusSummary(
-                changedFileCount: statusEntries.filter { !$0.ignored }.count,
-                stagedFileCount: statusEntries.filter { $0.indexState != nil }.count,
-                unstagedFileCount: statusEntries.filter { $0.worktreeState != nil }.count,
-                untrackedFileCount: statusEntries.filter(\.untracked).count,
-                ignoredFileCount: statusEntries.filter(\.ignored).count,
-                linesAdded: lineCounts.insertions,
-                linesDeleted: lineCounts.deletions,
-                aheadCount: branchSummary.aheadCount,
-                behindCount: branchSummary.behindCount,
-                hasUpstream: branchSummary.hasUpstream
-            )
+            try statusFacts(repository: repository, options: options)
+        }
+    }
 
-            return GitStatusSnapshot(
-                repositoryRoot: try mainWorktreePath(repository: repository),
-                worktreePath: try currentWorktreePath(repository: repository),
-                generatedAtUnixMilliseconds: Int64(Date().timeIntervalSince1970 * 1000),
-                head: branchSummary.head,
-                originResolution: branchReader.originResolution(repository: repository),
-                summary: summary,
-                entries: statusEntries
+    func exactLineCountDetail(for worktreePath: URL) throws -> GitStatusLineCountDetail {
+        try withRepository(at: worktreePath) { repository in
+            try exactLineCountDetail(repository: repository)
+        }
+    }
+
+    func completeStatus(for worktreePath: URL, options: GitStatusOptions) throws -> GitCompleteStatusSnapshot {
+        try withRepository(at: worktreePath) { repository in
+            GitCompleteStatusSnapshot(
+                facts: try statusFacts(repository: repository, options: options),
+                lineCountDetail: try exactLineCountDetail(repository: repository)
             )
         }
+    }
+
+    private func statusFacts(repository: OpaquePointer, options: GitStatusOptions) throws -> GitStatusFactsSnapshot {
+        _ = try indexPathResolver.indexPath(repository: repository)
+        let branchSummary = try branchReader.branchSummary(repository: repository)
+        let statusEntries = try entries(repository: repository, options: options)
+        let summary = GitStatusFactSummary(
+            changedFileCount: statusEntries.filter { !$0.ignored }.count,
+            stagedFileCount: statusEntries.filter { $0.indexState != nil }.count,
+            unstagedFileCount: statusEntries.filter { $0.worktreeState != nil }.count,
+            untrackedFileCount: statusEntries.filter(\.untracked).count,
+            ignoredFileCount: statusEntries.filter(\.ignored).count,
+            aheadCount: branchSummary.aheadCount,
+            behindCount: branchSummary.behindCount,
+            hasUpstream: branchSummary.hasUpstream
+        )
+
+        return GitStatusFactsSnapshot(
+            repositoryRoot: try mainWorktreePath(repository: repository),
+            worktreePath: try currentWorktreePath(repository: repository),
+            generatedAtUnixMilliseconds: generatedAtUnixMilliseconds(),
+            head: branchSummary.head,
+            originResolution: branchReader.originResolution(repository: repository),
+            summary: summary,
+            entries: statusEntries
+        )
+    }
+
+    private func exactLineCountDetail(repository: OpaquePointer) throws -> GitStatusLineCountDetail {
+        _ = try indexPathResolver.indexPath(repository: repository)
+        let lineCounts = try shortstat(repository: repository)
+        return GitStatusLineCountDetail(
+            repositoryRoot: try mainWorktreePath(repository: repository),
+            worktreePath: try currentWorktreePath(repository: repository),
+            generatedAtUnixMilliseconds: generatedAtUnixMilliseconds(),
+            linesAdded: lineCounts.insertions,
+            linesDeleted: lineCounts.deletions
+        )
+    }
+
+    private func generatedAtUnixMilliseconds() -> Int64 {
+        Int64(Date().timeIntervalSince1970 * 1000)
     }
 
     private func entries(repository: OpaquePointer, options: GitStatusOptions) throws -> [GitStatusEntry] {

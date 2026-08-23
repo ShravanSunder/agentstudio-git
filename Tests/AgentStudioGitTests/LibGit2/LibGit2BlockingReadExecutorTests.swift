@@ -110,9 +110,17 @@ struct LibGit2BlockingReadExecutorTests {
                 GitValidateWorktreeRequest(worktreePath: missingRepositoryPath)
             )
             #expect(validation == GitWorktreeValidation(snapshot: nil, isValid: false))
-        case .status:
+        case .statusFacts:
             await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
-                _ = try await client.status(for: missingRepositoryPath, options: GitStatusOptions())
+                _ = try await client.statusFacts(for: missingRepositoryPath, options: GitStatusOptions())
+            }
+        case .exactLineCountDetail:
+            await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
+                _ = try await client.exactLineCountDetail(for: missingRepositoryPath)
+            }
+        case .completeStatus:
+            await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
+                _ = try await client.completeStatus(for: missingRepositoryPath, options: GitStatusOptions())
             }
         case .trackedPaths:
             await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
@@ -236,7 +244,9 @@ private enum BlockingReadTestError: Error, Equatable, Sendable {
 private enum BlockingReadAPI: String, CaseIterable, Sendable {
     case worktrees
     case validateWorktree
-    case status
+    case statusFacts
+    case exactLineCountDetail
+    case completeStatus
     case trackedPaths
     case isPathIgnored
     case ignoredPaths

@@ -8,10 +8,7 @@ struct GitWorkingTreeStatusCompatibilityTests {
     func sdkStatusSnapshotMapsIntoCurrentAgentStudioWorkingTreeStatusShape() async throws {
         let provider = AppStatusCompatibilityProvider(
             client: StubLocalClient(
-                snapshot: GitStatusSnapshot(
-                    repositoryRoot: URL(fileURLWithPath: "/tmp/repo"),
-                    worktreePath: URL(fileURLWithPath: "/tmp/repo"),
-                    generatedAtUnixMilliseconds: 1,
+                snapshot: makeCompleteStatusSnapshot(
                     head: GitHeadSnapshot(kind: .branch, oid: "abc123", shortName: "feature/sdk"),
                     originResolution: .resolved(
                         GitRemoteSnapshot(
@@ -20,19 +17,18 @@ struct GitWorkingTreeStatusCompatibilityTests {
                             rawURL: "git@example.com:agentstudio/agent-studio.git"
                         )
                     ),
-                    summary: GitStatusSummary(
+                    summary: GitStatusFactSummary(
                         changedFileCount: 5,
                         stagedFileCount: 2,
                         unstagedFileCount: 3,
                         untrackedFileCount: 1,
                         ignoredFileCount: 0,
-                        linesAdded: 8,
-                        linesDeleted: 4,
                         aheadCount: 1,
                         behindCount: 2,
                         hasUpstream: true
                     ),
-                    entries: []
+                    linesAdded: 8,
+                    linesDeleted: 4
                 )
             )
         )
@@ -55,10 +51,7 @@ struct GitWorkingTreeStatusCompatibilityTests {
     func sdkStatusSnapshotPreservesCurrentAgentStudioOriginAndSyncOptionalSemantics() async throws {
         let provider = AppStatusCompatibilityProvider(
             client: StubLocalClient(
-                snapshot: GitStatusSnapshot(
-                    repositoryRoot: URL(fileURLWithPath: "/tmp/repo"),
-                    worktreePath: URL(fileURLWithPath: "/tmp/repo"),
-                    generatedAtUnixMilliseconds: 1,
+                snapshot: makeCompleteStatusSnapshot(
                     head: GitHeadSnapshot(kind: .branch, oid: "abc123", shortName: "main"),
                     originResolution: .resolved(
                         GitRemoteSnapshot(
@@ -67,19 +60,18 @@ struct GitWorkingTreeStatusCompatibilityTests {
                             rawURL: "/tmp/origin.git"
                         )
                     ),
-                    summary: GitStatusSummary(
+                    summary: GitStatusFactSummary(
                         changedFileCount: 0,
                         stagedFileCount: 0,
                         unstagedFileCount: 0,
                         untrackedFileCount: 0,
                         ignoredFileCount: 0,
-                        linesAdded: 0,
-                        linesDeleted: 0,
                         aheadCount: 0,
                         behindCount: 0,
                         hasUpstream: false
                     ),
-                    entries: []
+                    linesAdded: 0,
+                    linesDeleted: 0
                 )
             )
         )
@@ -96,25 +88,21 @@ struct GitWorkingTreeStatusCompatibilityTests {
     func detachedSDKHeadsMapToAgentStudiosBranchlessSyncUnknownStatus() async throws {
         let provider = AppStatusCompatibilityProvider(
             client: StubLocalClient(
-                snapshot: GitStatusSnapshot(
-                    repositoryRoot: URL(fileURLWithPath: "/tmp/repo"),
-                    worktreePath: URL(fileURLWithPath: "/tmp/repo"),
-                    generatedAtUnixMilliseconds: 1,
+                snapshot: makeCompleteStatusSnapshot(
                     head: GitHeadSnapshot(kind: .detached, oid: "abc123", shortName: nil),
                     originResolution: .confirmedAbsent,
-                    summary: GitStatusSummary(
+                    summary: GitStatusFactSummary(
                         changedFileCount: 0,
                         stagedFileCount: 0,
                         unstagedFileCount: 0,
                         untrackedFileCount: 0,
                         ignoredFileCount: 0,
-                        linesAdded: 0,
-                        linesDeleted: 0,
                         aheadCount: 0,
                         behindCount: 0,
                         hasUpstream: false
                     ),
-                    entries: []
+                    linesAdded: 0,
+                    linesDeleted: 0
                 )
             )
         )
@@ -176,6 +164,35 @@ struct GitWorkingTreeStatusCompatibilityTests {
 
         #expect(resolvedPath.standardizedFileURL == fixture.localHeadersPath.standardizedFileURL)
     }
+}
+
+private func makeCompleteStatusSnapshot(
+    head: GitHeadSnapshot,
+    originResolution: GitOriginResolution,
+    summary: GitStatusFactSummary,
+    linesAdded: Int,
+    linesDeleted: Int
+) -> GitCompleteStatusSnapshot {
+    let repositoryRoot = URL(fileURLWithPath: "/tmp/repo")
+    let worktreePath = URL(fileURLWithPath: "/tmp/repo")
+    return GitCompleteStatusSnapshot(
+        facts: GitStatusFactsSnapshot(
+            repositoryRoot: repositoryRoot,
+            worktreePath: worktreePath,
+            generatedAtUnixMilliseconds: 1,
+            head: head,
+            originResolution: originResolution,
+            summary: summary,
+            entries: []
+        ),
+        lineCountDetail: GitStatusLineCountDetail(
+            repositoryRoot: repositoryRoot,
+            worktreePath: worktreePath,
+            generatedAtUnixMilliseconds: 1,
+            linesAdded: linesAdded,
+            linesDeleted: linesDeleted
+        )
+    )
 }
 
 private struct LibGit2HeaderSearchPathFixture {
@@ -304,25 +321,26 @@ private struct AgentStudioStatusAdapterCompileHarness {
 
                 func statusResult(for rootPath: URL, pathspecs: [String]?) async -> GitWorkingTreeStatusResult {
                     do {
-                        let snapshot = try await client.status(
+                        let snapshot = try await client.completeStatus(
                             for: rootPath,
                             options: GitStatusOptions(pathspecs: pathspecs)
                         )
+                        let facts = snapshot.facts
                         return .available(
                             GitWorkingTreeStatus(
                                 summary: GitWorkingTreeSummary(
-                                    changed: snapshot.summary.unstagedFileCount,
-                                    staged: snapshot.summary.stagedFileCount,
-                                    untracked: snapshot.summary.untrackedFileCount,
-                                    linesAdded: snapshot.summary.linesAdded,
-                                    linesDeleted: snapshot.summary.linesDeleted,
-                                    aheadCount: appAheadCount(snapshot),
-                                    behindCount: appBehindCount(snapshot),
-                                    hasUpstream: appHasUpstream(snapshot)
+                                    changed: facts.summary.unstagedFileCount,
+                                    staged: facts.summary.stagedFileCount,
+                                    untracked: facts.summary.untrackedFileCount,
+                                    linesAdded: snapshot.lineCountDetail.linesAdded,
+                                    linesDeleted: snapshot.lineCountDetail.linesDeleted,
+                                    aheadCount: appAheadCount(facts),
+                                    behindCount: appBehindCount(facts),
+                                    hasUpstream: appHasUpstream(facts)
                                 ),
-                                branch: snapshot.head.kind == .branch ? snapshot.head.shortName : nil,
-                                originResolution: appOriginResolution(snapshot.originResolution),
-                                entries: snapshot.entries.map(appEntry)
+                                branch: facts.head.kind == .branch ? facts.head.shortName : nil,
+                                originResolution: appOriginResolution(facts.originResolution),
+                                entries: facts.entries.map(appEntry)
                             ),
                         )
                     } catch {
@@ -341,15 +359,15 @@ private struct AgentStudioStatusAdapterCompileHarness {
                     )
                 }
 
-                private func appAheadCount(_ snapshot: GitStatusSnapshot) -> Int? {
+                private func appAheadCount(_ snapshot: GitStatusFactsSnapshot) -> Int? {
                     snapshot.summary.hasUpstream ? snapshot.summary.aheadCount : nil
                 }
 
-                private func appBehindCount(_ snapshot: GitStatusSnapshot) -> Int? {
+                private func appBehindCount(_ snapshot: GitStatusFactsSnapshot) -> Int? {
                     snapshot.summary.hasUpstream ? snapshot.summary.behindCount : nil
                 }
 
-                private func appHasUpstream(_ snapshot: GitStatusSnapshot) -> Bool? {
+                private func appHasUpstream(_ snapshot: GitStatusFactsSnapshot) -> Bool? {
                     snapshot.head.kind == .branch ? snapshot.summary.hasUpstream : nil
                 }
 
@@ -455,7 +473,7 @@ private struct AppStatusCompatibilityProvider<LocalClient: AgentStudioGitLocalCl
 
     func status(for rootPath: URL) async -> AppGitWorkingTreeStatus? {
         do {
-            let snapshot = try await client.status(for: rootPath, options: GitStatusOptions())
+            let snapshot = try await client.completeStatus(for: rootPath, options: GitStatusOptions())
             return AppGitWorkingTreeStatus(snapshot: snapshot)
         } catch {
             return nil
@@ -468,10 +486,14 @@ private struct AppGitWorkingTreeStatus: Sendable, Equatable {
     let branch: String?
     let originResolution: AppGitOriginResolution
 
-    init(snapshot: GitStatusSnapshot) {
-        self.summary = AppGitWorkingTreeSummary(summary: snapshot.summary, headKind: snapshot.head.kind)
-        self.branch = snapshot.head.kind == .branch ? snapshot.head.shortName : nil
-        self.originResolution = AppGitOriginResolution(snapshot: snapshot.originResolution)
+    init(snapshot: GitCompleteStatusSnapshot) {
+        self.summary = AppGitWorkingTreeSummary(
+            summary: snapshot.facts.summary,
+            lineCountDetail: snapshot.lineCountDetail,
+            headKind: snapshot.facts.head.kind
+        )
+        self.branch = snapshot.facts.head.kind == .branch ? snapshot.facts.head.shortName : nil
+        self.originResolution = AppGitOriginResolution(snapshot: snapshot.facts.originResolution)
     }
 }
 
@@ -485,12 +507,16 @@ private struct AppGitWorkingTreeSummary: Sendable, Equatable {
     let behindCount: Int?
     let hasUpstream: Bool?
 
-    init(summary: GitStatusSummary, headKind: GitHeadKind) {
+    init(
+        summary: GitStatusFactSummary,
+        lineCountDetail: GitStatusLineCountDetail,
+        headKind: GitHeadKind
+    ) {
         self.changed = summary.unstagedFileCount
         self.staged = summary.stagedFileCount
         self.untracked = summary.untrackedFileCount
-        self.linesAdded = summary.linesAdded
-        self.linesDeleted = summary.linesDeleted
+        self.linesAdded = lineCountDetail.linesAdded
+        self.linesDeleted = lineCountDetail.linesDeleted
         self.aheadCount = summary.hasUpstream ? summary.aheadCount : nil
         self.behindCount = summary.hasUpstream ? summary.behindCount : nil
         self.hasUpstream = headKind == .branch ? summary.hasUpstream : nil
@@ -515,7 +541,7 @@ private enum AppGitOriginResolution: Sendable, Equatable {
 }
 
 private struct StubLocalClient: AgentStudioGitLocalClient {
-    let snapshot: GitStatusSnapshot
+    let snapshot: GitCompleteStatusSnapshot
 
     func repositoryIdentity(for _: URL) async throws(GitDataPlaneError) -> GitRepositoryIdentity {
         throw .unsupported(message: "not needed")
@@ -551,7 +577,19 @@ private struct StubLocalClient: AgentStudioGitLocalClient {
         throw .unsupported(message: "not needed")
     }
 
-    func status(for _: URL, options _: GitStatusOptions) async throws(GitDataPlaneError) -> GitStatusSnapshot {
+    func statusFacts(for _: URL, options _: GitStatusOptions) async throws(GitDataPlaneError)
+        -> GitStatusFactsSnapshot
+    {
+        snapshot.facts
+    }
+
+    func exactLineCountDetail(for _: URL) async throws(GitDataPlaneError) -> GitStatusLineCountDetail {
+        snapshot.lineCountDetail
+    }
+
+    func completeStatus(for _: URL, options _: GitStatusOptions) async throws(GitDataPlaneError)
+        -> GitCompleteStatusSnapshot
+    {
         snapshot
     }
 

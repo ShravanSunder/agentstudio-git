@@ -489,8 +489,20 @@ private struct BridgeReviewSourceAdapterCompileHarness {
                 throw .unsupported(message: "unused")
             }
 
-            func status(for worktreePath: URL, options: GitStatusOptions) async throws(GitDataPlaneError)
-                -> GitStatusSnapshot
+            func statusFacts(for worktreePath: URL, options: GitStatusOptions) async throws(GitDataPlaneError)
+                -> GitStatusFactsSnapshot
+            {
+                throw .unsupported(message: "unused")
+            }
+
+            func exactLineCountDetail(for worktreePath: URL) async throws(GitDataPlaneError)
+                -> GitStatusLineCountDetail
+            {
+                throw .unsupported(message: "unused")
+            }
+
+            func completeStatus(for worktreePath: URL, options: GitStatusOptions)
+                async throws(GitDataPlaneError) -> GitCompleteStatusSnapshot
             {
                 throw .unsupported(message: "unused")
             }

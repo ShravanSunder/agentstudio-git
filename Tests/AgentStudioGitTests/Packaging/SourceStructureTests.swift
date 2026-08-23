@@ -48,6 +48,26 @@ struct SourceStructureTests {
         #expect(ignoreReaderSource.contains("defer { git_repository_free(repository) }"))
     }
 
+    @Test("status fact reads cannot invoke exact line detail")
+    func statusFactReadsCannotInvokeExactLineDetail() throws {
+        let readerSource = try sourceContents(
+            "Sources/AgentStudioGitLocal/Status/LibGit2StatusReader.swift"
+        )
+        let factsStart = try #require(
+            readerSource.range(of: "private func statusFacts(repository:")
+        )
+        let detailStart = try #require(
+            readerSource.range(
+                of: "private func exactLineCountDetail(repository:",
+                range: factsStart.upperBound..<readerSource.endIndex
+            )
+        )
+        let factsImplementation = readerSource[factsStart.lowerBound..<detailStart.lowerBound]
+
+        #expect(!factsImplementation.contains("shortstat"))
+        #expect(!factsImplementation.contains("git_diff_tree_to_workdir_with_index"))
+    }
+
     private func sourceSwiftFiles() throws -> [String] {
         try filePaths(under: "Sources").filter { $0.hasSuffix(".swift") }
     }
