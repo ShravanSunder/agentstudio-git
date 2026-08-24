@@ -97,10 +97,21 @@ extension SystemGitRemoteClient {
             repositoryCommonDirectory: request.snapshot.repositoryCommonDirectory,
             namespace: stagedRemoteNamespace
         )
-        return try makeStagedFetchResult(
+        let unguardedResult = try makeStagedFetchResult(
             snapshot: request.snapshot,
             handle: handle,
-            stagedReferences: stagedReferences
+            stagedReferences: stagedReferences,
+            promotionGuard: nil
+        )
+        guard unguardedResult.requiresPromotionGuard else { return unguardedResult }
+        let promotionGuard = try await createPromotionGuard(for: unguardedResult)
+        return GitStagedFetchResult(
+            snapshot: unguardedResult.snapshot,
+            handle: unguardedResult.handle,
+            promotionGuard: promotionGuard,
+            updates: unguardedResult.updates,
+            verifications: unguardedResult.verifications,
+            deletions: unguardedResult.deletions
         )
     }
 
@@ -113,25 +124,37 @@ extension SystemGitRemoteClient {
             namespace: request.stagedFetch.stagingNamespace
         )
         let expectedStagedReferences =
-            (request.stagedFetch.updates.map {
+            ((request.stagedFetch.promotionGuard.map {
+                [GitRefRecord(refName: $0.refName, oid: $0.expectedOID)]
+            } ?? [])
+            + (request.stagedFetch.updates.map {
                 GitRefRecord(refName: $0.stagingRefName, oid: $0.newOID)
             }
-            + request.stagedFetch.verifications.map {
-                GitRefRecord(refName: $0.stagingRefName, oid: $0.expectedOID)
-            }).sorted { $0.refName < $1.refName }
+                + request.stagedFetch.verifications.map {
+                    GitRefRecord(refName: $0.stagingRefName, oid: $0.expectedOID)
+                }))
+            .sorted { $0.refName < $1.refName }
         guard actualStagedReferences == expectedStagedReferences else {
             throw GitDataPlaneError.unsupported(message: "staged fetch namespace changed before promotion")
         }
         let reconstructedPlan = try makeStagedFetchResult(
             snapshot: request.stagedFetch.snapshot,
             handle: request.stagedFetch.handle,
-            stagedReferences: actualStagedReferences
+            stagedReferences: actualStagedReferences.filter {
+                $0.refName != request.stagedFetch.promotionGuard?.refName
+            },
+            promotionGuard: request.stagedFetch.promotionGuard
         )
         guard reconstructedPlan == request.stagedFetch else {
             throw GitDataPlaneError.unsupported(message: "staged fetch plan is incomplete or inconsistent")
         }
 
         var commands: [GitRefTransactionCommand] = [.start]
+        if let promotionGuard = request.stagedFetch.promotionGuard {
+            commands.append(
+                .delete(refName: promotionGuard.refName, expectedOldOID: promotionGuard.expectedOID)
+            )
+        }
         for update in request.stagedFetch.updates {
             if let expectedOldOID = update.expectedOldOID {
                 commands.append(
@@ -312,7 +335,8 @@ extension SystemGitRemoteClient {
     private func makeStagedFetchResult(
         snapshot: GitRemoteTrackingSnapshot,
         handle: GitStagedFetchHandle,
-        stagedReferences: [GitRefRecord]
+        stagedReferences: [GitRefRecord],
+        promotionGuard: GitStagedFetchPromotionGuard?
     ) throws(GitDataPlaneError) -> GitStagedFetchResult {
         let stagedRemoteNamespace = "\(handle.stagingNamespace)heads/"
         let capturedReferencesByName = Dictionary(
@@ -365,6 +389,7 @@ extension SystemGitRemoteClient {
         return GitStagedFetchResult(
             snapshot: snapshot,
             handle: handle,
+            promotionGuard: promotionGuard,
             updates: updates,
             verifications: verifications,
             deletions: deletions
@@ -380,10 +405,14 @@ extension SystemGitRemoteClient {
             namespace: stagedFetch.stagingNamespace
         )
         let expectedStagedReferences =
-            (stagedFetch.updates.map { GitRefRecord(refName: $0.stagingRefName, oid: $0.newOID) }
-            + stagedFetch.verifications.map {
-                GitRefRecord(refName: $0.stagingRefName, oid: $0.expectedOID)
-            }).sorted { $0.refName < $1.refName }
+            ((stagedFetch.promotionGuard.map {
+                [GitRefRecord(refName: $0.refName, oid: $0.expectedOID)]
+            } ?? [])
+            + (stagedFetch.updates.map { GitRefRecord(refName: $0.stagingRefName, oid: $0.newOID) }
+                + stagedFetch.verifications.map {
+                    GitRefRecord(refName: $0.stagingRefName, oid: $0.expectedOID)
+                }))
+            .sorted { $0.refName < $1.refName }
         if actualStagedReferences == expectedStagedReferences {
             return .notPromoted
         }
@@ -405,23 +434,6 @@ extension SystemGitRemoteClient {
             return .indeterminate
         }
         return .promoted
-    }
-
-    private func runRefTransaction(
-        repositoryCommonDirectory: URL,
-        commands: [GitRefTransactionCommand]
-    ) async throws(GitDataPlaneError) {
-        _ = try await runner.run(
-            arguments: [
-                "--git-dir",
-                repositoryCommonDirectory.path,
-                "update-ref",
-                "--no-deref",
-                "--stdin",
-                "-z",
-            ],
-            standardInput: GitRefTransactionEncoder.encode(commands)
-        )
     }
 
     private func validateSnapshot(_ snapshot: GitRemoteTrackingSnapshot) throws(GitDataPlaneError) {
@@ -454,6 +466,15 @@ extension SystemGitRemoteClient {
             throw GitDataPlaneError.unsupported(message: "staged fetch handle does not match its repository")
         }
         let canonicalNamespace = canonicalRemoteNamespace(stagedFetch.snapshot.remoteName)
+        if let promotionGuard = stagedFetch.promotionGuard {
+            guard promotionGuard.refName == "\(stagedFetch.stagingNamespace)promotion-guard" else {
+                throw GitDataPlaneError.unsupported(message: "staged fetch promotion guard has an invalid ref")
+            }
+            try validateRefName(promotionGuard.refName, namespace: stagedFetch.stagingNamespace)
+            try validateOID(promotionGuard.expectedOID)
+        } else if stagedFetch.requiresPromotionGuard {
+            throw GitDataPlaneError.unsupported(message: "mutation-bearing staged fetch is missing its promotion guard")
+        }
         let capturedReferencesByName = Dictionary(
             uniqueKeysWithValues: stagedFetch.snapshot.references.map { ($0.canonicalRefName, $0.oid) }
         )

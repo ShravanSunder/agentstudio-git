@@ -446,6 +446,10 @@ struct GitPublicContractTests {
                 repositoryCommonDirectory: snapshot.repositoryCommonDirectory,
                 stagingID: stagingID
             ),
+            promotionGuard: GitStagedFetchPromotionGuard(
+                refName: "refs/agentstudio/staged/00000000-0000-7000-8000-000000000001/promotion-guard",
+                expectedOID: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            ),
             updates: [
                 GitStagedFetchUpdate(
                     stagingRefName:

@@ -77,6 +77,7 @@ struct GitStagedFetchIntegrationTests {
         let incompletePlan = GitStagedFetchResult(
             snapshot: staged.snapshot,
             handle: staged.handle,
+            promotionGuard: staged.promotionGuard,
             updates: staged.updates,
             verifications: [],
             deletions: []
@@ -84,6 +85,21 @@ struct GitStagedFetchIntegrationTests {
         await #expect(throws: GitDataPlaneError.self) {
             _ = try await client.promoteStagedFetch(
                 GitPromoteStagedFetchRequest(stagedFetch: incompletePlan)
+            )
+        }
+        #expect(try fixture.git.run("rev-parse", "refs/remotes/origin/main") == canonicalBefore)
+
+        let missingGuardPlan = GitStagedFetchResult(
+            snapshot: staged.snapshot,
+            handle: staged.handle,
+            promotionGuard: nil,
+            updates: staged.updates,
+            verifications: staged.verifications,
+            deletions: staged.deletions
+        )
+        await #expect(throws: GitDataPlaneError.self) {
+            _ = try await client.promoteStagedFetch(
+                GitPromoteStagedFetchRequest(stagedFetch: missingGuardPlan)
             )
         }
         #expect(try fixture.git.run("rev-parse", "refs/remotes/origin/main") == canonicalBefore)
@@ -144,6 +160,59 @@ struct GitStagedFetchIntegrationTests {
             GitCleanupStagedFetchRequest(handle: staged.handle)
         )
         #expect(try fixture.git.run("for-each-ref", staged.stagingNamespace).isEmpty)
+    }
+
+    @Test("cleanup revokes a deletion-only staged promotion")
+    func cleanupRevokesDeletionOnlyStagedPromotion() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-staged-fetch-revoke")
+        defer { fixture.remove() }
+        let remotePath = fixture.root.appending(path: "origin.git")
+        try fixture.git.run("init", "--bare", remotePath.path, currentDirectory: fixture.root)
+        try fixture.git.run("remote", "add", "origin", remotePath.path)
+        try fixture.git.run("push", "-u", "origin", "main")
+        let canonicalBefore = try fixture.git.run("rev-parse", "HEAD")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        try fixture.git.run("update-ref", "refs/remotes/origin/main", canonicalBefore)
+        try fixture.git.run(
+            "--git-dir",
+            remotePath.path,
+            "config",
+            "receive.denyDeleteCurrent",
+            "ignore",
+            currentDirectory: fixture.root
+        )
+        let client = SystemGitRemoteClient(configuration: .init(allowedProtocols: [.file]))
+        let captured = try await client.captureRemoteTrackingSnapshot(
+            GitRemoteTrackingSnapshotRequest(repositoryPath: fixture.repositoryPath, remoteName: "origin")
+        )
+        try fixture.git.run(
+            "--git-dir",
+            remotePath.path,
+            "update-ref",
+            "-d",
+            "refs/heads/main",
+            currentDirectory: fixture.root
+        )
+        let staged = try await client.stageFetch(
+            GitStagedFetchRequest(snapshot: captured, stagingID: UUID())
+        )
+        #expect(staged.updates.isEmpty)
+        #expect(staged.verifications.isEmpty)
+        #expect(staged.deletions.map(\.canonicalRefName) == ["refs/remotes/origin/main"])
+
+        // Act
+        _ = try await client.cleanupStagedFetch(
+            GitCleanupStagedFetchRequest(handle: staged.handle)
+        )
+
+        // Assert
+        await #expect(throws: GitDataPlaneError.self) {
+            _ = try await client.promoteStagedFetch(
+                GitPromoteStagedFetchRequest(stagedFetch: staged)
+            )
+        }
+        #expect(try fixture.git.succeeds("show-ref", "--verify", "refs/remotes/origin/main"))
     }
 
     @Test("abandoned staging sweep preserves active UUIDs then removes only reserved refs")

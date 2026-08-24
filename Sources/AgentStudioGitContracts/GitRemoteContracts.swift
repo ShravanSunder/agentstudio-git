@@ -138,6 +138,7 @@ public struct GitStagedFetchDeletion: Codable, Equatable, Hashable, Sendable {
 public struct GitStagedFetchResult: Codable, Equatable, Hashable, Sendable {
     public let snapshot: GitRemoteTrackingSnapshot
     public let handle: GitStagedFetchHandle
+    public let promotionGuard: GitStagedFetchPromotionGuard?
     public let updates: [GitStagedFetchUpdate]
     public let verifications: [GitStagedFetchVerification]
     public let deletions: [GitStagedFetchDeletion]
@@ -149,15 +150,27 @@ public struct GitStagedFetchResult: Codable, Equatable, Hashable, Sendable {
     public init(
         snapshot: GitRemoteTrackingSnapshot,
         handle: GitStagedFetchHandle,
+        promotionGuard: GitStagedFetchPromotionGuard?,
         updates: [GitStagedFetchUpdate],
         verifications: [GitStagedFetchVerification],
         deletions: [GitStagedFetchDeletion]
     ) {
         self.snapshot = snapshot
         self.handle = handle
+        self.promotionGuard = promotionGuard
         self.updates = updates
         self.verifications = verifications
         self.deletions = deletions
+    }
+}
+
+public struct GitStagedFetchPromotionGuard: Codable, Equatable, Hashable, Sendable {
+    public let refName: String
+    public let expectedOID: String
+
+    public init(refName: String, expectedOID: String) {
+        self.refName = refName
+        self.expectedOID = expectedOID
     }
 }
 
