@@ -21,7 +21,7 @@ struct GitStatusIntegrationTests {
         let facts = try await client.statusFacts(
             for: fixture.repositoryPath,
             options: GitStatusOptions()
-        )
+        ).facts
         let detail = try await client.exactLineCountDetail(for: fixture.repositoryPath)
 
         // Assert
@@ -40,7 +40,7 @@ struct GitStatusIntegrationTests {
         defer { fixture.remove() }
         let client = LibGit2AgentStudioGitLocalClient()
 
-        let status = try await client.statusFacts(for: fixture.repositoryPath, options: GitStatusOptions())
+        let status = try await client.statusFacts(for: fixture.repositoryPath, options: GitStatusOptions()).facts
 
         #expect(status.head.kind == .branch)
         #expect(status.head.shortName == "main")
@@ -65,7 +65,7 @@ struct GitStatusIntegrationTests {
         let status = try await client.statusFacts(
             for: fixture.repositoryPath,
             options: GitStatusOptions(includeIgnored: true, includeUntracked: true)
-        )
+        ).facts
         let entriesByPath = Dictionary(uniqueKeysWithValues: status.entries.map { ($0.path, $0) })
 
         #expect(entriesByPath["modified.txt"]?.indexState == nil)
@@ -90,7 +90,7 @@ struct GitStatusIntegrationTests {
         let withoutIgnored = try await client.statusFacts(
             for: fixture.repositoryPath,
             options: GitStatusOptions(includeIgnored: false, includeUntracked: true)
-        )
+        ).facts
         #expect(!withoutIgnored.entries.contains { $0.ignored })
     }
 
@@ -141,7 +141,7 @@ struct GitStatusIntegrationTests {
         defer { fixture.remove() }
         let client = LibGit2AgentStudioGitLocalClient()
 
-        let localOnly = try await client.statusFacts(for: fixture.repositoryPath, options: GitStatusOptions())
+        let localOnly = try await client.statusFacts(for: fixture.repositoryPath, options: GitStatusOptions()).facts
         #expect(localOnly.head.shortName == "main")
         #expect(localOnly.originResolution == .confirmedAbsent)
         #expect(!localOnly.summary.hasUpstream)
@@ -153,7 +153,7 @@ struct GitStatusIntegrationTests {
         try fixture.git.run("remote", "add", "origin", remotePath.path)
         try fixture.git.run("push", "-u", "origin", "main")
 
-        let inSync = try await client.statusFacts(for: fixture.repositoryPath, options: GitStatusOptions())
+        let inSync = try await client.statusFacts(for: fixture.repositoryPath, options: GitStatusOptions()).facts
         #expect(inSync.summary.hasUpstream)
         #expect(inSync.summary.aheadCount == 0)
         #expect(inSync.summary.behindCount == 0)
@@ -162,7 +162,7 @@ struct GitStatusIntegrationTests {
         try fixture.write("ahead.txt", contents: "ahead\n")
         try fixture.git.run("add", "ahead.txt")
         try fixture.git.run("commit", "-m", "local ahead")
-        let ahead = try await client.statusFacts(for: fixture.repositoryPath, options: GitStatusOptions())
+        let ahead = try await client.statusFacts(for: fixture.repositoryPath, options: GitStatusOptions()).facts
         #expect(ahead.summary.aheadCount == 1)
         #expect(ahead.summary.behindCount == 0)
 
@@ -175,24 +175,24 @@ struct GitStatusIntegrationTests {
         try peerGit.run("push")
         try fixture.git.run("fetch", "origin")
 
-        let diverged = try await client.statusFacts(for: fixture.repositoryPath, options: GitStatusOptions())
+        let diverged = try await client.statusFacts(for: fixture.repositoryPath, options: GitStatusOptions()).facts
         #expect(diverged.summary.aheadCount == 1)
         #expect(diverged.summary.behindCount == 1)
         let scopedDiverged = try await client.statusFacts(
             for: fixture.repositoryPath,
             options: GitStatusOptions(pathspecs: ["ahead.txt"])
-        )
+        ).facts
         #expect(scopedDiverged.summary.aheadCount == diverged.summary.aheadCount)
         #expect(scopedDiverged.summary.behindCount == diverged.summary.behindCount)
         #expect(scopedDiverged.summary.hasUpstream == diverged.summary.hasUpstream)
 
         try fixture.git.run("reset", "--hard", "origin/main~1")
-        let behind = try await client.statusFacts(for: fixture.repositoryPath, options: GitStatusOptions())
+        let behind = try await client.statusFacts(for: fixture.repositoryPath, options: GitStatusOptions()).facts
         #expect(behind.summary.aheadCount == 0)
         #expect(behind.summary.behindCount == 1)
 
         try fixture.git.run("checkout", "-b", "local-only")
-        let noUpstream = try await client.statusFacts(for: fixture.repositoryPath, options: GitStatusOptions())
+        let noUpstream = try await client.statusFacts(for: fixture.repositoryPath, options: GitStatusOptions()).facts
         #expect(noUpstream.head.shortName == "local-only")
         #expect(!noUpstream.summary.hasUpstream)
         #expect(noUpstream.summary.aheadCount == 0)
@@ -208,7 +208,7 @@ struct GitStatusIntegrationTests {
 
         try fixture.git.run("remote", "add", "origin", credentialedURL)
 
-        let status = try await client.statusFacts(for: fixture.repositoryPath, options: GitStatusOptions())
+        let status = try await client.statusFacts(for: fixture.repositoryPath, options: GitStatusOptions()).facts
 
         guard case .resolved(let remote) = status.originResolution else {
             Issue.record("expected resolved origin, got \(status.originResolution)")
@@ -232,7 +232,7 @@ struct GitStatusIntegrationTests {
 
         try fixture.git.run("remote", "add", "origin", signedURL)
 
-        let status = try await client.statusFacts(for: fixture.repositoryPath, options: GitStatusOptions())
+        let status = try await client.statusFacts(for: fixture.repositoryPath, options: GitStatusOptions()).facts
 
         guard case .resolved(let remote) = status.originResolution else {
             Issue.record("expected resolved origin, got \(status.originResolution)")
@@ -260,7 +260,7 @@ struct GitStatusIntegrationTests {
 
         try fixture.git.run("remote", "add", "origin", sshURL)
 
-        let status = try await client.statusFacts(for: fixture.repositoryPath, options: GitStatusOptions())
+        let status = try await client.statusFacts(for: fixture.repositoryPath, options: GitStatusOptions()).facts
 
         guard case .resolved(let remote) = status.originResolution else {
             Issue.record("expected resolved origin, got \(status.originResolution)")
@@ -279,7 +279,7 @@ struct GitStatusIntegrationTests {
 
         try fixture.git.run("remote", "add", "origin", localRemotePath.path)
 
-        let status = try await client.statusFacts(for: fixture.repositoryPath, options: GitStatusOptions())
+        let status = try await client.statusFacts(for: fixture.repositoryPath, options: GitStatusOptions()).facts
 
         guard case .resolved(let remote) = status.originResolution else {
             Issue.record("expected resolved origin, got \(status.originResolution)")
@@ -296,7 +296,7 @@ struct GitStatusIntegrationTests {
         let client = LibGit2AgentStudioGitLocalClient()
 
         try fixture.git.run("checkout", "--detach", "HEAD")
-        let detached = try await client.statusFacts(for: fixture.repositoryPath, options: GitStatusOptions())
+        let detached = try await client.statusFacts(for: fixture.repositoryPath, options: GitStatusOptions()).facts
         #expect(detached.head.kind == .detached)
         #expect(detached.head.shortName == nil)
         #expect(detached.summary.changedFileCount == 0)
@@ -305,6 +305,7 @@ struct GitStatusIntegrationTests {
         try fixture.git.run("remote", "add", "origin", "https://example.invalid/repo.git")
         try fixture.git.run("config", "remote.origin.url", "")
         let unresolvedOrigin = try await client.statusFacts(for: fixture.repositoryPath, options: GitStatusOptions())
+            .facts
         #expect(unresolvedOrigin.originResolution == .awaitingResolution)
         #expect(unresolvedOrigin.head.shortName == "main")
 
@@ -312,7 +313,7 @@ struct GitStatusIntegrationTests {
         try FileManager.default.createDirectory(at: emptyRoot, withIntermediateDirectories: true)
         let emptyGit = GitProcess(repositoryPath: emptyRoot)
         try emptyGit.run("init")
-        let unborn = try await client.statusFacts(for: emptyRoot, options: GitStatusOptions())
+        let unborn = try await client.statusFacts(for: emptyRoot, options: GitStatusOptions()).facts
         #expect(unborn.head.kind == .unborn)
         #expect(unborn.summary.changedFileCount == 0)
     }
@@ -350,11 +351,11 @@ struct GitStatusIntegrationTests {
             includeUntracked: true,
             pathspecs: ["modified.txt"]
         )
-        let scoped = try await client.statusFacts(for: fixture.repositoryPath, options: scopeOptions)
+        let scoped = try await client.statusFacts(for: fixture.repositoryPath, options: scopeOptions).facts
         let full = try await client.statusFacts(
             for: fixture.repositoryPath,
             options: GitStatusOptions(includeIgnored: true, includeUntracked: true)
-        )
+        ).facts
 
         // Scoped status returns only the entry under the requested pathspec.
         #expect(scoped.entries.map(\.path) == ["modified.txt"])
@@ -393,11 +394,11 @@ struct GitStatusIntegrationTests {
         let scoped = try await client.statusFacts(
             for: fixture.repositoryPath,
             options: GitStatusOptions(includeUntracked: true, pathspecs: ["src"])
-        )
+        ).facts
         let full = try await client.statusFacts(
             for: fixture.repositoryPath,
             options: GitStatusOptions(includeUntracked: true)
-        )
+        ).facts
 
         // A bare directory pathspec matches the whole subtree recursively, excluding siblings.
         #expect(scoped.entries.map(\.path) == ["src/a.txt", "src/nested/b.txt"])
@@ -416,8 +417,8 @@ struct GitStatusIntegrationTests {
 
         let defaultOptions = GitStatusOptions(includeUntracked: true)
         let explicitNil = GitStatusOptions(includeUntracked: true, pathspecs: nil)
-        let defaultStatus = try await client.statusFacts(for: fixture.repositoryPath, options: defaultOptions)
-        let nilStatus = try await client.statusFacts(for: fixture.repositoryPath, options: explicitNil)
+        let defaultStatus = try await client.statusFacts(for: fixture.repositoryPath, options: defaultOptions).facts
+        let nilStatus = try await client.statusFacts(for: fixture.repositoryPath, options: explicitNil).facts
 
         // Default options carry no pathspecs, and nil is a full-worktree walk.
         #expect(defaultOptions.pathspecs == nil)
@@ -439,15 +440,15 @@ struct GitStatusIntegrationTests {
         let sourceOnly = try await client.statusFacts(
             for: fixture.repositoryPath,
             options: GitStatusOptions(pathspecs: ["rename-source.txt"])
-        )
+        ).facts
         let targetOnly = try await client.statusFacts(
             for: fixture.repositoryPath,
             options: GitStatusOptions(pathspecs: ["rename-target.txt"])
-        )
+        ).facts
         let bothSides = try await client.statusFacts(
             for: fixture.repositoryPath,
             options: GitStatusOptions(pathspecs: ["rename-source.txt", "rename-target.txt"])
-        )
+        ).facts
 
         #expect(sourceOnly.entries.count == 1)
         let sourceEntry = try #require(sourceOnly.entries.first)

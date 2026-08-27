@@ -6,20 +6,27 @@ struct LibGit2StatusReader: Sendable {
     private let runtime: LibGit2Runtime
     private let branchReader: LibGit2BranchReader
     private let indexPathResolver: GitIndexPathResolver
+    private let observationIdentityReader: LibGit2StatusObservationIdentityReader
 
     init(
         runtime: LibGit2Runtime = .shared,
         branchReader: LibGit2BranchReader = LibGit2BranchReader(),
-        indexPathResolver: GitIndexPathResolver = GitIndexPathResolver()
+        indexPathResolver: GitIndexPathResolver = GitIndexPathResolver(),
+        observationIdentityReader: LibGit2StatusObservationIdentityReader = LibGit2StatusObservationIdentityReader()
     ) {
         self.runtime = runtime
         self.branchReader = branchReader
         self.indexPathResolver = indexPathResolver
+        self.observationIdentityReader = observationIdentityReader
     }
 
-    func statusFacts(for worktreePath: URL, options: GitStatusOptions) throws -> GitStatusFactsSnapshot {
+    func statusFacts(
+        for worktreePath: URL,
+        options: GitStatusOptions,
+        observationPlan: GitStatusObservationPlan?
+    ) throws -> GitStatusFactsRead {
         try withRepository(at: worktreePath) { repository in
-            try statusFacts(repository: repository, options: options)
+            try statusFacts(repository: repository, options: options, observationPlan: observationPlan)
         }
     }
 
@@ -32,13 +39,38 @@ struct LibGit2StatusReader: Sendable {
     func completeStatus(for worktreePath: URL, options: GitStatusOptions) throws -> GitCompleteStatusSnapshot {
         try withRepository(at: worktreePath) { repository in
             GitCompleteStatusSnapshot(
-                facts: try statusFacts(repository: repository, options: options),
+                facts: try statusFactsSnapshot(repository: repository, options: options),
                 lineCountDetail: try exactLineCountDetail(repository: repository)
             )
         }
     }
 
-    private func statusFacts(repository: OpaquePointer, options: GitStatusOptions) throws -> GitStatusFactsSnapshot {
+    private func statusFacts(
+        repository: OpaquePointer,
+        options: GitStatusOptions,
+        observationPlan: GitStatusObservationPlan?
+    ) throws -> GitStatusFactsRead {
+        let facts = try statusFactsSnapshot(repository: repository, options: options)
+        guard let observationPlan else {
+            return GitStatusFactsRead(facts: facts, exactCleanBaseline: nil)
+        }
+        let currentPlan = try observationIdentityReader.plan(repository: repository)
+        let isLiteralFullScope = options.pathspecs == nil
+        let exactCleanBaseline =
+            observationPlan.support == .supported
+                && currentPlan.support == .supported
+                && currentPlan.identity == observationPlan.identity
+                && isLiteralFullScope
+                && options.includeUntracked
+                && facts.entries.isEmpty
+            ? GitExactCleanBaseline(observationIdentity: currentPlan.identity)
+            : nil
+        return GitStatusFactsRead(facts: facts, exactCleanBaseline: exactCleanBaseline)
+    }
+
+    private func statusFactsSnapshot(repository: OpaquePointer, options: GitStatusOptions) throws
+        -> GitStatusFactsSnapshot
+    {
         _ = try indexPathResolver.indexPath(repository: repository)
         let branchSummary = try branchReader.branchSummary(repository: repository)
         let statusEntries = try entries(repository: repository, options: options)
@@ -91,6 +123,7 @@ struct LibGit2StatusReader: Sendable {
             GIT_STATUS_OPT_RENAMES_HEAD_TO_INDEX.rawValue
             | GIT_STATUS_OPT_RENAMES_INDEX_TO_WORKDIR.rawValue
             | GIT_STATUS_OPT_NO_REFRESH.rawValue
+            | GIT_STATUS_OPT_INCLUDE_UNREADABLE.rawValue
         if options.includeUntracked {
             statusOptions.flags |= GIT_STATUS_OPT_INCLUDE_UNTRACKED.rawValue
             statusOptions.flags |= GIT_STATUS_OPT_RECURSE_UNTRACKED_DIRS.rawValue

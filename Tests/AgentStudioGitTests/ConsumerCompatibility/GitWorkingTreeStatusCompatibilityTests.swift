@@ -577,10 +577,16 @@ private struct StubLocalClient: AgentStudioGitLocalClient {
         throw .unsupported(message: "not needed")
     }
 
-    func statusFacts(for _: URL, options _: GitStatusOptions) async throws(GitDataPlaneError)
-        -> GitStatusFactsSnapshot
-    {
-        snapshot.facts
+    func statusObservationPlan(for _: URL) async throws(GitDataPlaneError) -> GitStatusObservationPlan {
+        throw .unsupported(message: "not needed")
+    }
+
+    func statusFacts(
+        for _: URL,
+        options _: GitStatusOptions,
+        observationPlan _: GitStatusObservationPlan?
+    ) async throws(GitDataPlaneError) -> GitStatusFactsRead {
+        GitStatusFactsRead(facts: snapshot.facts, exactCleanBaseline: nil)
     }
 
     func exactLineCountDetail(for _: URL) async throws(GitDataPlaneError) -> GitStatusLineCountDetail {

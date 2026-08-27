@@ -108,11 +108,25 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
         }
     }
 
-    public func statusFacts(for worktreePath: URL, options: GitStatusOptions) async throws(GitDataPlaneError)
-        -> GitStatusFactsSnapshot
+    public func statusObservationPlan(for worktreePath: URL) async throws(GitDataPlaneError)
+        -> GitStatusObservationPlan
     {
         try await executeBlockingRead {
-            try LibGit2StatusReader().statusFacts(for: worktreePath, options: options)
+            try LibGit2StatusObservationIdentityReader().plan(for: worktreePath)
+        }
+    }
+
+    public func statusFacts(
+        for worktreePath: URL,
+        options: GitStatusOptions,
+        observationPlan: GitStatusObservationPlan?
+    ) async throws(GitDataPlaneError) -> GitStatusFactsRead {
+        try await executeBlockingRead {
+            try LibGit2StatusReader().statusFacts(
+                for: worktreePath,
+                options: options,
+                observationPlan: observationPlan
+            )
         }
     }
 

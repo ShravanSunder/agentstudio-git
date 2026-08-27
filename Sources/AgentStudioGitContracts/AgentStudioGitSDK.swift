@@ -12,8 +12,13 @@ public protocol AgentStudioGitLocalClient: Sendable {
         -> GitWorktreeRemovalResult
     func lockWorktree(_ request: GitLockWorktreeRequest) async throws(GitDataPlaneError) -> GitWorktreeSnapshot
     func unlockWorktree(_ request: GitUnlockWorktreeRequest) async throws(GitDataPlaneError) -> GitWorktreeSnapshot
-    func statusFacts(for worktreePath: URL, options: GitStatusOptions) async throws(GitDataPlaneError)
-        -> GitStatusFactsSnapshot
+    func statusObservationPlan(for worktreePath: URL) async throws(GitDataPlaneError) -> GitStatusObservationPlan
+    func statusFacts(
+        for worktreePath: URL,
+        options: GitStatusOptions,
+        observationPlan: GitStatusObservationPlan?
+    ) async throws(GitDataPlaneError)
+        -> GitStatusFactsRead
     func exactLineCountDetail(for worktreePath: URL) async throws(GitDataPlaneError) -> GitStatusLineCountDetail
     func completeStatus(for worktreePath: URL, options: GitStatusOptions) async throws(GitDataPlaneError)
         -> GitCompleteStatusSnapshot
@@ -36,6 +41,14 @@ public protocol AgentStudioGitLocalClient: Sendable {
     func directReviewComparison(_ request: GitDirectReviewComparisonRequest) async throws(GitDataPlaneError)
         -> GitDirectReviewComparisonSnapshot
     func content(_ request: GitContentRequest) async throws(GitDataPlaneError) -> GitContentPayload
+}
+
+extension AgentStudioGitLocalClient {
+    public func statusFacts(for worktreePath: URL, options: GitStatusOptions) async throws(GitDataPlaneError)
+        -> GitStatusFactsRead
+    {
+        try await statusFacts(for: worktreePath, options: options, observationPlan: nil)
+    }
 }
 
 public protocol AgentStudioGitRemoteClient: Sendable {

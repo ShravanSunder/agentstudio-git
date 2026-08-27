@@ -245,6 +245,18 @@ struct GitPublicContractTests {
             linesAdded: 12,
             linesDeleted: 3
         )
+        let observationPlan = GitStatusObservationPlan(
+            identity: GitStatusObservationIdentity(rawValue: "opaque-plan"),
+            scopes: [
+                GitStatusObservationScope(kind: .subtree, path: facts.worktreePath),
+                GitStatusObservationScope(kind: .item, path: URL(fileURLWithPath: "/tmp/repo/.git/index")),
+            ],
+            support: .supported
+        )
+        let factsRead = GitStatusFactsRead(
+            facts: facts,
+            exactCleanBaseline: GitExactCleanBaseline(observationIdentity: observationPlan.identity)
+        )
 
         let decodedFacts = try JSONDecoder().decode(
             GitStatusFactsSnapshot.self,
@@ -254,10 +266,20 @@ struct GitPublicContractTests {
             GitStatusLineCountDetail.self,
             from: JSONEncoder().encode(detail)
         )
+        let decodedPlan = try JSONDecoder().decode(
+            GitStatusObservationPlan.self,
+            from: JSONEncoder().encode(observationPlan)
+        )
+        let decodedRead = try JSONDecoder().decode(
+            GitStatusFactsRead.self,
+            from: JSONEncoder().encode(factsRead)
+        )
 
         #expect(decodedFacts == facts)
         #expect(decodedFacts.originResolution == facts.originResolution)
         #expect(decodedDetail == detail)
+        #expect(decodedPlan == observationPlan)
+        #expect(decodedRead == factsRead)
     }
 
     @Test("status options keep pathspecs off the wire when unset")
