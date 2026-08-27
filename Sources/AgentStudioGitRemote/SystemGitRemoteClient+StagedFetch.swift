@@ -216,91 +216,25 @@ extension SystemGitRemoteClient {
         )
     }
 
-    public func cleanupStagedFetch(
-        _ request: GitCleanupStagedFetchRequest
-    ) async throws(GitDataPlaneError) -> GitCleanupStagedFetchResult {
-        let stagingNamespace = request.handle.stagingNamespace
-        try validateStagingNamespace(stagingNamespace)
-        let stagedReferences = try await references(
-            repositoryCommonDirectory: request.handle.repositoryCommonDirectory,
-            namespace: stagingNamespace
-        )
-        guard !stagedReferences.isEmpty else {
-            return GitCleanupStagedFetchResult(deletedRefNames: [], retainedRefNames: [])
-        }
-
-        var commands: [GitRefTransactionCommand] = [.start]
-        commands.append(
-            contentsOf: stagedReferences.map {
-                .delete(refName: $0.refName, expectedOldOID: $0.oid)
-            }
-        )
-        commands.append(.prepare)
-        commands.append(.commit)
-        try await runRefTransaction(
-            repositoryCommonDirectory: request.handle.repositoryCommonDirectory,
-            commands: commands
-        )
-        let retainedReferences = try await references(
-            repositoryCommonDirectory: request.handle.repositoryCommonDirectory,
-            namespace: stagingNamespace
-        )
-        return GitCleanupStagedFetchResult(
-            deletedRefNames: stagedReferences.map(\.refName),
-            retainedRefNames: retainedReferences.map(\.refName)
-        )
-    }
-
-    public func cleanupAbandonedStagedFetches(
-        _ request: GitCleanupAbandonedStagedFetchesRequest
-    ) async throws(GitDataPlaneError) -> GitCleanupStagedFetchResult {
-        let allStagedReferences = try await references(
-            repositoryCommonDirectory: request.repositoryCommonDirectory,
-            namespace: "refs/agentstudio/staged/"
-        )
-        let abandonedReferences = allStagedReferences.filter { reference in
-            guard let stagingID = stagingID(from: reference.refName) else { return false }
-            return !request.retainedStagingIDs.contains(stagingID)
-        }
-        guard !abandonedReferences.isEmpty else {
-            return GitCleanupStagedFetchResult(
-                deletedRefNames: [],
-                retainedRefNames: allStagedReferences.map(\.refName)
-            )
-        }
-        var commands: [GitRefTransactionCommand] = [.start]
-        commands.append(
-            contentsOf: abandonedReferences.map {
-                .delete(refName: $0.refName, expectedOldOID: $0.oid)
-            }
-        )
-        commands.append(.prepare)
-        commands.append(.commit)
-        try await runRefTransaction(
-            repositoryCommonDirectory: request.repositoryCommonDirectory,
-            commands: commands
-        )
-        let retainedReferences = try await references(
-            repositoryCommonDirectory: request.repositoryCommonDirectory,
-            namespace: "refs/agentstudio/staged/"
-        )
-        return GitCleanupStagedFetchResult(
-            deletedRefNames: abandonedReferences.map(\.refName),
-            retainedRefNames: retainedReferences.map(\.refName)
-        )
-    }
-
-    private func references(
+    func references(
         repositoryCommonDirectory: URL,
-        namespace: String
+        namespace: String,
+        count: Int? = nil,
+        excludedPatterns: [String] = []
     ) async throws(GitDataPlaneError) -> [GitRefRecord] {
-        let result = try await runner.run(arguments: [
+        var arguments = [
             "--git-dir",
             repositoryCommonDirectory.path,
             "for-each-ref",
             "--format=%(refname)%09%(objectname)%09%(symref)",
-            namespace,
-        ])
+            "--sort=refname",
+        ]
+        if let count {
+            arguments.append("--count=\(count)")
+        }
+        arguments.append(contentsOf: excludedPatterns.map { "--exclude=\($0)" })
+        arguments.append(namespace)
+        let result = try await runner.run(arguments: arguments)
         var references: [GitRefRecord] = []
         for rawLine in result.stdout.split(separator: "\n") {
             let fields = rawLine.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
@@ -541,7 +475,7 @@ extension SystemGitRemoteClient {
         }
     }
 
-    private func validateStagingNamespace(_ namespace: String) throws(GitDataPlaneError) {
+    func validateStagingNamespace(_ namespace: String) throws(GitDataPlaneError) {
         let prefix = "refs/agentstudio/staged/"
         guard namespace.hasPrefix(prefix), namespace.hasSuffix("/") else {
             throw GitDataPlaneError.unsupported(message: "staged fetch namespace is outside the reserved prefix")
@@ -552,7 +486,7 @@ extension SystemGitRemoteClient {
         }
     }
 
-    private func stagingID(from refName: String) -> UUID? {
+    func stagingID(from refName: String) -> UUID? {
         let prefix = "refs/agentstudio/staged/"
         guard refName.hasPrefix(prefix) else { return nil }
         let suffix = refName.dropFirst(prefix.count)
@@ -586,7 +520,7 @@ extension SystemGitRemoteClient {
     }
 }
 
-private struct GitRefRecord: Equatable, Sendable {
+struct GitRefRecord: Equatable, Sendable {
     let refName: String
     let oid: String
 }

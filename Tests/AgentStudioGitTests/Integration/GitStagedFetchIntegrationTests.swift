@@ -259,6 +259,124 @@ struct GitStagedFetchIntegrationTests {
         #expect(try fixture.git.run("rev-parse", "refs/remotes/origin/main") == canonicalBefore)
     }
 
+    @Test("abandoned staging sweep stays within the Git output limit")
+    func abandonedStagingSweepStaysWithinGitOutputLimit() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-staged-fetch-bounded-sweep")
+        defer { fixture.remove() }
+        let objectID = try fixture.git.run("rev-parse", "HEAD")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let activeStagingID = UUID()
+        let abandonedStagingIDs = [UUID(), UUID()]
+        let activeNamespace = GitStagedFetchHandle(
+            repositoryCommonDirectory: fixture.repositoryPath,
+            stagingID: activeStagingID
+        ).stagingNamespace
+        let abandonedNamespaces = abandonedStagingIDs.map {
+            GitStagedFetchHandle(
+                repositoryCommonDirectory: fixture.repositoryPath,
+                stagingID: $0
+            ).stagingNamespace
+        }
+        let activeRefNames = (0..<3).map {
+            "\(activeNamespace)heads/active-\(String(format: "%03d", $0))"
+        }
+        let abandonedRefNames = abandonedNamespaces.flatMap { namespace in
+            (0..<192).map {
+                "\(namespace)heads/abandoned-\(String(format: "%03d", $0))"
+            }
+        }
+        let refCreationCommands = (activeRefNames + abandonedRefNames)
+            .map { "create \($0) \(objectID)\n" }
+            .joined()
+        try fixture.git.run(
+            ["update-ref", "--stdin"],
+            standardInput: Data(refCreationCommands.utf8)
+        )
+        let canonicalRefName = "refs/remotes/origin/main"
+        try fixture.git.run("update-ref", canonicalRefName, objectID)
+        let capturedOutputLimitBytes: Int64 = 16_384
+        let unboundedEnumeration = try fixture.git.run(
+            "--git-dir",
+            fixture.repositoryPath.appending(path: ".git").path,
+            "for-each-ref",
+            "--format=%(refname)%09%(objectname)%09%(symref)",
+            "refs/agentstudio/staged/"
+        )
+        #expect(Int64(unboundedEnumeration.utf8.count) > capturedOutputLimitBytes)
+        let client = SystemGitRemoteClient(
+            configuration: .init(
+                allowedProtocols: [.file],
+                capturedOutputLimitBytes: capturedOutputLimitBytes
+            )
+        )
+
+        // Act
+        let cleanup = try await client.cleanupAbandonedStagedFetches(
+            GitCleanupAbandonedStagedFetchesRequest(
+                repositoryCommonDirectory: fixture.repositoryPath.appending(path: ".git"),
+                retainedStagingIDs: [activeStagingID]
+            )
+        )
+
+        // Assert
+        #expect(cleanup.deletedRefNames == abandonedRefNames.sorted())
+        #expect(cleanup.retainedRefNames == activeRefNames.sorted())
+        for abandonedNamespace in abandonedNamespaces {
+            #expect(try fixture.git.run("for-each-ref", abandonedNamespace).isEmpty)
+        }
+        #expect(try fixture.git.run("for-each-ref", activeNamespace).split(separator: "\n").count == 3)
+        #expect(
+            try fixture.git.run("rev-parse", canonicalRefName).trimmingCharacters(in: .whitespacesAndNewlines)
+                == objectID)
+    }
+
+    @Test("staging cleanup stays within the Git output limit")
+    func stagingCleanupStaysWithinGitOutputLimit() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-staged-fetch-bounded-cleanup")
+        defer { fixture.remove() }
+        let repositoryCommonDirectory = fixture.repositoryPath.appending(path: ".git")
+        let handle = GitStagedFetchHandle(
+            repositoryCommonDirectory: repositoryCommonDirectory,
+            stagingID: UUID()
+        )
+        let objectID = try fixture.git.run("rev-parse", "HEAD")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let stagedRefNames = [
+            "\(handle.stagingNamespace)heads/alpha",
+            "\(handle.stagingNamespace)heads/beta",
+        ]
+        for stagedRefName in stagedRefNames {
+            try fixture.git.run("update-ref", stagedRefName, objectID)
+        }
+        let capturedOutputLimitBytes: Int64 = 192
+        let unboundedEnumeration = try fixture.git.run(
+            "--git-dir",
+            repositoryCommonDirectory.path,
+            "for-each-ref",
+            "--format=%(refname)%09%(objectname)%09%(symref)",
+            handle.stagingNamespace
+        )
+        #expect(Int64(unboundedEnumeration.utf8.count) > capturedOutputLimitBytes)
+        let client = SystemGitRemoteClient(
+            configuration: .init(
+                allowedProtocols: [.file],
+                capturedOutputLimitBytes: capturedOutputLimitBytes
+            )
+        )
+
+        // Act
+        let cleanup = try await client.cleanupStagedFetch(
+            GitCleanupStagedFetchRequest(handle: handle)
+        )
+
+        // Assert
+        #expect(cleanup.deletedRefNames == stagedRefNames)
+        #expect(cleanup.retainedRefNames.isEmpty)
+        #expect(try fixture.git.run("for-each-ref", handle.stagingNamespace).isEmpty)
+    }
+
     @Test("staging cleanup survives removal of the originating linked worktree")
     func stagingCleanupSurvivesRemovalOfOriginatingLinkedWorktree() async throws {
         // Arrange
