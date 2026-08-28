@@ -1,9 +1,57 @@
 import AgentStudioGit
+import CoreServices
 import Foundation
 import Testing
 
 @Suite("Git staged fetch integration", .serialized)
 struct GitStagedFetchIntegrationTests {
+    @Test("canonical ref promotion is attributed to the current process")
+    func canonicalRefPromotionIsAttributedToCurrentProcess() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-owned-promotion")
+        defer { fixture.remove() }
+        let remotePath = fixture.root.appending(path: "origin.git")
+        try fixture.git.run("init", "--bare", remotePath.path, currentDirectory: fixture.root)
+        try fixture.git.run("remote", "add", "origin", remotePath.path)
+        try fixture.git.run("push", "-u", "origin", "main")
+        let client = SystemGitRemoteClient(configuration: .init(allowedProtocols: [.file]))
+        let captured = try await client.captureRemoteTrackingSnapshot(
+            GitRemoteTrackingSnapshotRequest(repositoryPath: fixture.repositoryPath, remoteName: "origin")
+        )
+        let peerPath = fixture.root.appending(path: "peer")
+        try fixture.git.run("clone", remotePath.path, peerPath.path, currentDirectory: fixture.root)
+        let peerGit = GitProcess(repositoryPath: peerPath)
+        try peerGit.run("config", "user.name", "AgentStudio Git Tests")
+        try peerGit.run("config", "user.email", "agentstudio-git-tests@example.invalid")
+        try "owned promotion\n".write(
+            to: peerPath.appending(path: "owned-promotion.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try peerGit.run("add", "owned-promotion.txt")
+        try peerGit.run("commit", "-m", "owned promotion")
+        try peerGit.run("push", "origin", "main")
+        let staged = try await client.stageFetch(
+            GitStagedFetchRequest(snapshot: captured, stagingID: UUID())
+        )
+        let eventRecorder = try CurrentProcessFSEventRecorder(rootPath: captured.repositoryCommonDirectory)
+        defer { eventRecorder.stop() }
+
+        // Act
+        _ = try await client.promoteStagedFetch(
+            GitPromoteStagedFetchRequest(stagedFetch: staged)
+        )
+        eventRecorder.flush()
+
+        // Assert
+        #expect(
+            eventRecorder.waitForOwnEvent(
+                containing: "/refs/remotes/origin/main",
+                timeout: 5
+            )
+        )
+    }
+
     @Test("staged fetch leaves canonical refs unchanged until atomic promotion")
     func stagedFetchLeavesCanonicalRefsUnchangedUntilAtomicPromotion() async throws {
         // Arrange
@@ -405,5 +453,115 @@ struct GitStagedFetchIntegrationTests {
         #expect(!cleanup.deletedRefNames.isEmpty)
         #expect(cleanup.retainedRefNames.isEmpty)
         #expect(try fixture.git.run("for-each-ref", staged.stagingNamespace).isEmpty)
+    }
+}
+
+private final class CurrentProcessFSEventRecorder: @unchecked Sendable {
+    private final class CallbackContext {
+        weak var recorder: CurrentProcessFSEventRecorder?
+    }
+
+    private struct RecordedEvent {
+        let path: String
+        let flags: FSEventStreamEventFlags
+    }
+
+    private static let callback: FSEventStreamCallback = { _, context, count, paths, flags, _ in
+        guard let context else { return }
+        let callbackContext = Unmanaged<CallbackContext>.fromOpaque(context).takeUnretainedValue()
+        guard let recorder = callbackContext.recorder else { return }
+        let pathArray = unsafeBitCast(paths, to: CFArray.self)
+        let eventCount = min(Int(count), CFArrayGetCount(pathArray))
+        var events: [RecordedEvent] = []
+        events.reserveCapacity(eventCount)
+        for index in 0..<eventCount {
+            guard let value = CFArrayGetValueAtIndex(pathArray, index) else { continue }
+            let path = unsafeBitCast(value, to: CFString.self) as String
+            events.append(RecordedEvent(path: path, flags: flags[index]))
+        }
+        recorder.record(events)
+    }
+
+    private let condition = NSCondition()
+    private var recordedEvents: [RecordedEvent] = []
+    private let stream: FSEventStreamRef
+    private let callbackContextPointer: UnsafeMutableRawPointer
+    private let queue = DispatchQueue(label: "agentstudio-git.tests.fsevents")
+
+    init(rootPath: URL) throws {
+        let callbackContext = CallbackContext()
+        let callbackContextPointer = Unmanaged.passRetained(callbackContext).toOpaque()
+        var streamContext = FSEventStreamContext(
+            version: 0,
+            info: callbackContextPointer,
+            retain: nil,
+            release: nil,
+            copyDescription: nil
+        )
+        let watchedPaths = [rootPath.path as NSString] as CFArray
+        guard
+            let stream = FSEventStreamCreate(
+                kCFAllocatorDefault,
+                Self.callback,
+                &streamContext,
+                watchedPaths,
+                FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
+                0.01,
+                FSEventStreamCreateFlags(
+                    kFSEventStreamCreateFlagFileEvents
+                        | kFSEventStreamCreateFlagMarkSelf
+                        | kFSEventStreamCreateFlagWatchRoot
+                        | kFSEventStreamCreateFlagUseCFTypes
+                )
+            )
+        else {
+            Unmanaged<CallbackContext>.fromOpaque(callbackContextPointer).release()
+            throw GitDataPlaneError.unsupported(message: "could not create FSEvents attribution stream")
+        }
+        self.stream = stream
+        self.callbackContextPointer = callbackContextPointer
+        callbackContext.recorder = self
+        FSEventStreamSetDispatchQueue(stream, queue)
+        guard FSEventStreamStart(stream) else {
+            FSEventStreamInvalidate(stream)
+            FSEventStreamRelease(stream)
+            Unmanaged<CallbackContext>.fromOpaque(callbackContextPointer).release()
+            throw GitDataPlaneError.unsupported(message: "could not start FSEvents attribution stream")
+        }
+    }
+
+    func flush() {
+        FSEventStreamFlushSync(stream)
+    }
+
+    func stop() {
+        FSEventStreamStop(stream)
+        FSEventStreamInvalidate(stream)
+        FSEventStreamRelease(stream)
+        Unmanaged<CallbackContext>.fromOpaque(callbackContextPointer).release()
+    }
+
+    func waitForOwnEvent(containing pathFragment: String, timeout: TimeInterval) -> Bool {
+        let deadline = Date(timeIntervalSinceNow: timeout)
+        condition.lock()
+        defer { condition.unlock() }
+        while !containsOwnEvent(pathFragment: pathFragment) {
+            guard condition.wait(until: deadline) else { return false }
+        }
+        return true
+    }
+
+    private func record(_ events: [RecordedEvent]) {
+        condition.lock()
+        recordedEvents.append(contentsOf: events)
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    private func containsOwnEvent(pathFragment: String) -> Bool {
+        recordedEvents.contains { event in
+            event.path.contains(pathFragment)
+                && event.flags & FSEventStreamEventFlags(kFSEventStreamEventFlagOwnEvent) != 0
+        }
     }
 }

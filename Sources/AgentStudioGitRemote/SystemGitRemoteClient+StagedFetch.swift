@@ -149,67 +149,7 @@ extension SystemGitRemoteClient {
             throw GitDataPlaneError.unsupported(message: "staged fetch plan is incomplete or inconsistent")
         }
 
-        var commands: [GitRefTransactionCommand] = [.start]
-        if let promotionGuard = request.stagedFetch.promotionGuard {
-            commands.append(
-                .delete(refName: promotionGuard.refName, expectedOldOID: promotionGuard.expectedOID)
-            )
-        }
-        for update in request.stagedFetch.updates {
-            if let expectedOldOID = update.expectedOldOID {
-                commands.append(
-                    .update(
-                        refName: update.canonicalRefName,
-                        newOID: update.newOID,
-                        expectedOldOID: expectedOldOID
-                    )
-                )
-            } else {
-                commands.append(.create(refName: update.canonicalRefName, newOID: update.newOID))
-            }
-            commands.append(.delete(refName: update.stagingRefName, expectedOldOID: update.newOID))
-        }
-        for verification in request.stagedFetch.verifications {
-            commands.append(
-                .verify(
-                    refName: verification.canonicalRefName,
-                    expectedOID: verification.expectedOID
-                )
-            )
-            commands.append(
-                .delete(
-                    refName: verification.stagingRefName,
-                    expectedOldOID: verification.expectedOID
-                )
-            )
-        }
-        for deletion in request.stagedFetch.deletions {
-            commands.append(
-                .delete(
-                    refName: deletion.canonicalRefName,
-                    expectedOldOID: deletion.expectedOldOID
-                )
-            )
-        }
-        commands.append(.prepare)
-        commands.append(.commit)
-        do {
-            try await runRefTransaction(
-                repositoryCommonDirectory: request.stagedFetch.snapshot.repositoryCommonDirectory,
-                commands: commands
-            )
-        } catch let transactionError {
-            switch try await promotionOutcome(after: transactionError, stagedFetch: request.stagedFetch) {
-            case .promoted:
-                break
-            case .notPromoted:
-                throw transactionError
-            case .indeterminate:
-                throw GitDataPlaneError.remoteRefTransactionIndeterminate(
-                    message: "staged remote-ref promotion outcome is indeterminate"
-                )
-            }
-        }
+        try await LibGit2StagedFetchPromoter.promote(request.stagedFetch)
         return GitPromoteStagedFetchResult(
             updatedRefNames: request.stagedFetch.updates.map(\.canonicalRefName),
             deletedRefNames: request.stagedFetch.deletions.map(\.canonicalRefName)
@@ -328,46 +268,6 @@ extension SystemGitRemoteClient {
             verifications: verifications,
             deletions: deletions
         )
-    }
-
-    private func promotionOutcome(
-        after _: GitDataPlaneError,
-        stagedFetch: GitStagedFetchResult
-    ) async throws(GitDataPlaneError) -> GitStagedFetchPromotionOutcome {
-        let actualStagedReferences = try await references(
-            repositoryCommonDirectory: stagedFetch.snapshot.repositoryCommonDirectory,
-            namespace: stagedFetch.stagingNamespace
-        )
-        let expectedStagedReferences =
-            ((stagedFetch.promotionGuard.map {
-                [GitRefRecord(refName: $0.refName, oid: $0.expectedOID)]
-            } ?? [])
-            + (stagedFetch.updates.map { GitRefRecord(refName: $0.stagingRefName, oid: $0.newOID) }
-                + stagedFetch.verifications.map {
-                    GitRefRecord(refName: $0.stagingRefName, oid: $0.expectedOID)
-                }))
-            .sorted { $0.refName < $1.refName }
-        if actualStagedReferences == expectedStagedReferences {
-            return .notPromoted
-        }
-        guard actualStagedReferences.isEmpty else { return .indeterminate }
-
-        let canonicalReferences = try await references(
-            repositoryCommonDirectory: stagedFetch.snapshot.repositoryCommonDirectory,
-            namespace: canonicalRemoteNamespace(stagedFetch.snapshot.remoteName)
-        )
-        let canonicalOIDsByRefName = Dictionary(
-            uniqueKeysWithValues: canonicalReferences.map { ($0.refName, $0.oid) }
-        )
-        guard stagedFetch.updates.allSatisfy({ canonicalOIDsByRefName[$0.canonicalRefName] == $0.newOID }),
-            stagedFetch.verifications.allSatisfy({
-                canonicalOIDsByRefName[$0.canonicalRefName] == $0.expectedOID
-            }),
-            stagedFetch.deletions.allSatisfy({ canonicalOIDsByRefName[$0.canonicalRefName] == nil })
-        else {
-            return .indeterminate
-        }
-        return .promoted
     }
 
     private func validateSnapshot(_ snapshot: GitRemoteTrackingSnapshot) throws(GitDataPlaneError) {
@@ -523,10 +423,4 @@ extension SystemGitRemoteClient {
 struct GitRefRecord: Equatable, Sendable {
     let refName: String
     let oid: String
-}
-
-private enum GitStagedFetchPromotionOutcome: Sendable {
-    case promoted
-    case notPromoted
-    case indeterminate
 }
