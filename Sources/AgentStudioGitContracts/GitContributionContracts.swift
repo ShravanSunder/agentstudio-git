@@ -35,6 +35,36 @@ public struct GitContributionDiffResult: Sendable {
         self.calculationDisposition = calculationDisposition
         self.calculationReason = calculationReason
     }
+
+    /// Constructs a deterministic result for an external in-process client fake.
+    ///
+    /// The opaque successor cannot authorize proportional work in the libgit2 client. Passing it
+    /// across client implementations therefore selects that client's complete fallback.
+    public static func clientFixture(
+        snapshot: GitContributionDiffSnapshot,
+        calculationDisposition: GitReviewCalculationDisposition = .complete,
+        calculationReason: GitReviewCalculationReason = .completeRequested
+    ) -> Self {
+        Self(
+            snapshot: snapshot,
+            successorSeed: GitReviewRefreshSeed(
+                key: GitReviewRefreshSeedKey(
+                    canonicalCommonDirectoryPath: "__agentstudio_git_client_fixture__",
+                    canonicalWorktreePath: "__agentstudio_git_client_fixture__",
+                    comparisonKind: .contribution,
+                    comparisonOptionsVersion: 0,
+                    selectedTargetName: snapshot.resolvedTarget.shortName ?? "__client_fixture_target__",
+                    resolvedTargetOID: snapshot.resolvedTarget.oid,
+                    reviewedHeadOID: snapshot.reviewedHead.oid,
+                    effectiveBaseRole: .contributionBase,
+                    effectiveBaseOID: snapshot.contributionBase.oid
+                ),
+                files: snapshot.diff.files
+            ),
+            calculationDisposition: calculationDisposition,
+            calculationReason: calculationReason
+        )
+    }
 }
 
 public struct GitContributionDiffSnapshot: Codable, Equatable, Hashable, Sendable {

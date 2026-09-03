@@ -444,6 +444,31 @@ extension GitReviewDataIntegrationTests {
         #expect(try encoded(movement.snapshot) == encoded(completeAfterMovement.snapshot))
     }
 
+    @Test("external client fixture seeds cannot authorize libgit2 proportional work")
+    func externalClientFixtureSeedSelectsCompleteFallback() async throws {
+        // Arrange
+        let fixture = try IncrementalReviewFixture.make()
+        defer { fixture.remove() }
+        let client = LibGit2AgentStudioGitLocalClient()
+        let completeSnapshot = try await client.contributionDiff(fixture.contributionRequest()).snapshot
+        let fixtureSeed = GitContributionDiffResult.clientFixture(snapshot: completeSnapshot).successorSeed
+        try fixture.write("tracked-a.txt", contents: "base a\nworktree a\n")
+
+        // Act
+        let fallback = try await client.contributionDiff(
+            fixture.contributionRequest(
+                refreshInput: .proportional(
+                    seed: fixtureSeed,
+                    changedPaths: ["tracked-a.txt"]
+                )))
+        let complete = try await client.contributionDiff(fixture.contributionRequest())
+
+        // Assert
+        #expect(fallback.calculationDisposition == .proportionalFallback)
+        #expect(fallback.calculationReason == .seedIdentityMismatch)
+        #expect(try encoded(fallback.snapshot) == encoded(complete.snapshot))
+    }
+
     @Test("capacity and duplicate changed paths select bounded complete fallback reasons")
     func invalidChangedPathCollectionsSelectCompleteFallback() async throws {
         // Arrange

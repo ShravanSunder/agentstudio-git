@@ -37,6 +37,36 @@ public struct GitDirectReviewComparisonResult: Sendable {
         self.calculationDisposition = calculationDisposition
         self.calculationReason = calculationReason
     }
+
+    /// Constructs a deterministic result for an external in-process client fake.
+    ///
+    /// The opaque successor cannot authorize proportional work in the libgit2 client. Passing it
+    /// across client implementations therefore selects that client's complete fallback.
+    public static func clientFixture(
+        snapshot: GitDirectReviewComparisonSnapshot,
+        calculationDisposition: GitReviewCalculationDisposition = .complete,
+        calculationReason: GitReviewCalculationReason = .completeRequested
+    ) -> Self {
+        Self(
+            snapshot: snapshot,
+            successorSeed: GitReviewRefreshSeed(
+                key: GitReviewRefreshSeedKey(
+                    canonicalCommonDirectoryPath: "__agentstudio_git_client_fixture__",
+                    canonicalWorktreePath: "__agentstudio_git_client_fixture__",
+                    comparisonKind: .direct,
+                    comparisonOptionsVersion: 0,
+                    selectedTargetName: snapshot.resolvedTarget.shortName ?? "__client_fixture_target__",
+                    resolvedTargetOID: snapshot.resolvedTarget.oid,
+                    reviewedHeadOID: snapshot.reviewedHead.oid,
+                    effectiveBaseRole: .selectedTarget,
+                    effectiveBaseOID: snapshot.resolvedTarget.oid
+                ),
+                files: snapshot.diff.files
+            ),
+            calculationDisposition: calculationDisposition,
+            calculationReason: calculationReason
+        )
+    }
 }
 
 /// Correlated identity and diff facts for a direct target-to-working-tree comparison.

@@ -684,6 +684,42 @@ struct GitPublicContractTests {
         #expect(payload["maxSizeBytes"] as? Int == 64)
     }
 
+    @Test("external in-process clients can construct opaque review results")
+    func externalInProcessClientsCanConstructOpaqueReviewResults() throws {
+        // Arrange
+        let contributionSnapshot = GitContributionDiffSnapshot(
+            resolvedTarget: GitResolvedRevision(oid: "target-oid", shortName: "integration"),
+            reviewedHead: GitResolvedRevision(oid: "head-oid", shortName: "feature/review"),
+            contributionBase: GitResolvedRevision(oid: "base-oid", shortName: nil),
+            diff: GitDiffSnapshot(files: [])
+        )
+        let directSnapshot = GitDirectReviewComparisonSnapshot(
+            resolvedTarget: contributionSnapshot.resolvedTarget,
+            reviewedHead: contributionSnapshot.reviewedHead,
+            diff: contributionSnapshot.diff
+        )
+
+        // Act
+        let contributionResult = GitContributionDiffResult.clientFixture(
+            snapshot: contributionSnapshot,
+            calculationDisposition: .proportional,
+            calculationReason: .proportionalAccepted
+        )
+        let directResult = GitDirectReviewComparisonResult.clientFixture(
+            snapshot: directSnapshot
+        )
+
+        // Assert
+        #expect(contributionResult.snapshot == contributionSnapshot)
+        #expect(contributionResult.calculationDisposition == .proportional)
+        #expect(contributionResult.calculationReason == .proportionalAccepted)
+        #expect(directResult.snapshot == directSnapshot)
+        #expect(directResult.calculationDisposition == .complete)
+        #expect(directResult.calculationReason == .completeRequested)
+        #expect(!(type(of: contributionResult.successorSeed) is any Encodable.Type))
+        #expect(!(type(of: directResult.successorSeed) is any Encodable.Type))
+    }
+
     private func jsonDictionary<T: Encodable>(for value: T) throws -> [String: Any] {
         let data = try JSONEncoder().encode(value)
         let jsonObject = try JSONSerialization.jsonObject(with: data)
