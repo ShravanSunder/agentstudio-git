@@ -15,11 +15,29 @@ struct LibGit2DiffReader: Sendable {
     }
 
     func diff(baseTree: OpaquePointer, repository: OpaquePointer) throws -> GitDiffSnapshot {
-        let diff = try treeToWorkdirDiff(oldTree: baseTree, repository: repository)
+        var options = try diffOptions()
+        let diff = try treeToWorkdirDiff(oldTree: baseTree, options: &options, repository: repository)
         defer { git_diff_free(diff) }
 
         try findRenames(diff, includingUntracked: true)
         return GitDiffSnapshot(files: try files(diff: diff, repository: repository))
+    }
+
+    func diff(
+        baseTree: OpaquePointer,
+        literalPaths: [String],
+        repository: OpaquePointer
+    ) throws -> GitDiffSnapshot {
+        try withPathspec(literalPaths) { pathspec in
+            var options = try diffOptions()
+            options.flags |= GIT_DIFF_DISABLE_PATHSPEC_MATCH.rawValue
+            options.pathspec = pathspec
+            let diff = try treeToWorkdirDiff(oldTree: baseTree, options: &options, repository: repository)
+            defer { git_diff_free(diff) }
+
+            try findRenames(diff, includingUntracked: true)
+            return GitDiffSnapshot(files: try files(diff: diff, repository: repository))
+        }
     }
 
     func makeDiff(
@@ -111,14 +129,32 @@ struct LibGit2DiffReader: Sendable {
         return diff
     }
 
-    private func treeToWorkdirDiff(oldTree: OpaquePointer, repository: OpaquePointer) throws -> OpaquePointer {
+    private func treeToWorkdirDiff(
+        oldTree: OpaquePointer,
+        options: inout git_diff_options,
+        repository: OpaquePointer
+    ) throws -> OpaquePointer {
         var diff: OpaquePointer?
-        var options = try diffOptions()
         let result = git_diff_tree_to_workdir(&diff, repository, oldTree, &options)
         guard result >= 0, let diff else {
             throw LibGit2ErrorCapture.failure(code: result)
         }
         return diff
+    }
+
+    private func withPathspec<ReturnValue>(
+        _ paths: [String],
+        _ body: (git_strarray) throws -> ReturnValue
+    ) rethrows -> ReturnValue {
+        var cStrings: [UnsafeMutablePointer<CChar>?] = paths.map { strdup($0) }
+        defer {
+            for cString in cStrings {
+                free(cString)
+            }
+        }
+        return try cStrings.withUnsafeMutableBufferPointer { buffer in
+            try body(git_strarray(strings: buffer.baseAddress, count: paths.count))
+        }
     }
 
     private func treeToWorkdirWithIndexDiff(

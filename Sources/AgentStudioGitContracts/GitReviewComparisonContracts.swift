@@ -1,5 +1,97 @@
 import Foundation
 
+package enum GitReviewComparisonKind: String, Equatable, Sendable {
+    case contribution
+    case direct
+}
+
+package enum GitReviewEffectiveBaseRole: String, Equatable, Sendable {
+    case contributionBase
+    case selectedTarget
+}
+
+package struct GitReviewRefreshSeedKey: Equatable, Sendable {
+    package let canonicalCommonDirectoryPath: String
+    package let canonicalWorktreePath: String
+    package let comparisonKind: GitReviewComparisonKind
+    package let comparisonOptionsVersion: UInt32
+    package let selectedTargetName: String
+    package let resolvedTargetOID: String
+    package let reviewedHeadOID: String
+    package let effectiveBaseRole: GitReviewEffectiveBaseRole
+    package let effectiveBaseOID: String
+
+    package init(
+        canonicalCommonDirectoryPath: String,
+        canonicalWorktreePath: String,
+        comparisonKind: GitReviewComparisonKind,
+        comparisonOptionsVersion: UInt32,
+        selectedTargetName: String,
+        resolvedTargetOID: String,
+        reviewedHeadOID: String,
+        effectiveBaseRole: GitReviewEffectiveBaseRole,
+        effectiveBaseOID: String
+    ) {
+        self.canonicalCommonDirectoryPath = canonicalCommonDirectoryPath
+        self.canonicalWorktreePath = canonicalWorktreePath
+        self.comparisonKind = comparisonKind
+        self.comparisonOptionsVersion = comparisonOptionsVersion
+        self.selectedTargetName = selectedTargetName
+        self.resolvedTargetOID = resolvedTargetOID
+        self.reviewedHeadOID = reviewedHeadOID
+        self.effectiveBaseRole = effectiveBaseRole
+        self.effectiveBaseOID = effectiveBaseOID
+    }
+}
+
+package struct GitReviewRefreshSeedStorage: Sendable {
+    package let key: GitReviewRefreshSeedKey
+    package let files: [GitDiffFile]
+
+    package init(key: GitReviewRefreshSeedKey, files: [GitDiffFile]) {
+        self.key = key
+        self.files = files
+    }
+}
+
+/// Local-only calculation material that can be retained but not inspected or serialized by clients.
+public struct GitReviewRefreshSeed: Sendable {
+    package let storage: GitReviewRefreshSeedStorage
+
+    package init(key: GitReviewRefreshSeedKey, files: [GitDiffFile]) {
+        storage = GitReviewRefreshSeedStorage(key: key, files: files)
+    }
+}
+
+public enum GitReviewRefreshInput: Sendable {
+    case complete
+    case proportional(seed: GitReviewRefreshSeed, changedPaths: [String])
+}
+
+public enum GitReviewCalculationDisposition: String, Codable, CaseIterable, Sendable {
+    case complete
+    case proportional
+    case proportionalFallback
+}
+
+/// Bounded telemetry-safe reasons for the library's Review calculation choice.
+public enum GitReviewCalculationReason: String, Codable, CaseIterable, Sendable {
+    case completeRequested
+    case proportionalAccepted
+    case seedIdentityMismatch
+    case invalidPath
+    case structuralGitControlPath
+    case missingScopedRow
+    case ineligibleScopedRow
+    case duplicateScopedRow
+    case outOfScopeScopedRow
+    case incompatiblePredecessorRow
+    case candidatePathCollision
+    case capacityRejected
+    case identityMoved
+    case scopedCalculationFailed
+}
+
 public enum GitReviewComparisonBranchTarget: Codable, Equatable, Hashable, Sendable {
     case local(branchName: String, oid: String)
     case remoteTracking(remoteName: String, branchName: String, oid: String)

@@ -610,13 +610,13 @@ private struct StubLocalClient: AgentStudioGitLocalClient {
     }
 
     func contributionDiff(_: GitContributionDiffRequest) async throws(GitDataPlaneError)
-        -> GitContributionDiffSnapshot
+        -> GitContributionDiffResult
     {
         throw .unsupported(message: "not needed")
     }
 
     func directReviewComparison(_: GitDirectReviewComparisonRequest) async throws(GitDataPlaneError)
-        -> GitDirectReviewComparisonSnapshot
+        -> GitDirectReviewComparisonResult
     {
         throw .unsupported(message: "not needed")
     }

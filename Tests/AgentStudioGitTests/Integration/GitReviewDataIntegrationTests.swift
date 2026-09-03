@@ -317,7 +317,7 @@ struct GitReviewDataIntegrationTests {
         let client = LibGit2AgentStudioGitLocalClient()
 
         // Act
-        let snapshot = try await client.contributionDiff(fixture.request)
+        let snapshot = try await client.contributionDiff(fixture.request).snapshot
         let files = filesByPath(snapshot.diff.files)
 
         // Assert
@@ -341,11 +341,11 @@ struct GitReviewDataIntegrationTests {
             repositoryPath: fixture.request.repositoryPath,
             target: .named("\(fixture.request.target.name)^{commit}")
         )
-        let predecessor = try await client.contributionDiff(expressionRequest)
+        let predecessor = try await client.contributionDiff(expressionRequest).snapshot
 
         // Act
         let advancedTargetOID = try fixture.advanceTargetOnly()
-        let successor = try await client.contributionDiff(expressionRequest)
+        let successor = try await client.contributionDiff(expressionRequest).snapshot
 
         // Assert
         #expect(predecessor.resolvedTarget.oid != successor.resolvedTarget.oid)
@@ -361,7 +361,7 @@ struct GitReviewDataIntegrationTests {
         let fixture = try scenario.makeFixture()
         defer { fixture.remove() }
         // Act
-        let snapshot = try await LibGit2AgentStudioGitLocalClient().contributionDiff(fixture.request)
+        let snapshot = try await LibGit2AgentStudioGitLocalClient().contributionDiff(fixture.request).snapshot
         // Assert
         #expect(snapshot.resolvedTarget == fixture.expectedRevision)
     }
@@ -374,7 +374,7 @@ struct GitReviewDataIntegrationTests {
         let client = LibGit2AgentStudioGitLocalClient()
 
         // Act
-        let snapshot = try await client.contributionDiff(fixture.request)
+        let snapshot = try await client.contributionDiff(fixture.request).snapshot
         let files = filesByPath(snapshot.diff.files)
 
         // Assert
@@ -392,7 +392,7 @@ struct GitReviewDataIntegrationTests {
         let client = LibGit2AgentStudioGitLocalClient()
 
         // Act
-        let snapshot = try await client.contributionDiff(fixture.request)
+        let snapshot = try await client.contributionDiff(fixture.request).snapshot
         let overlap = try #require(filesByPath(snapshot.diff.files)["overlap.txt"])
 
         // Assert
@@ -661,7 +661,7 @@ struct GitReviewDataIntegrationTests {
                 repositoryPath: fixture.repositoryPath,
                 target: .named(fixture.baseOID)
             )
-        )
+        ).snapshot
         let files = filesByPath(snapshot.diff.files)
 
         // Assert

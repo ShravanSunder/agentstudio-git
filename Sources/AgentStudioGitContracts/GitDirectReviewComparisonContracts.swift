@@ -1,13 +1,41 @@
 import Foundation
 
-/// A single-read comparison between an exact target revision and the current working tree.
-public struct GitDirectReviewComparisonRequest: Codable, Equatable, Hashable, Sendable {
+/// In-process comparison input between an exact target revision and the current working tree.
+///
+/// The optional proportional capability intentionally keeps this request non-Codable.
+public struct GitDirectReviewComparisonRequest: Sendable {
     public let repositoryPath: URL
     public let target: GitRevisionTarget
+    public let refreshInput: GitReviewRefreshInput
 
-    public init(repositoryPath: URL, target: GitRevisionTarget) {
+    public init(
+        repositoryPath: URL,
+        target: GitRevisionTarget,
+        refreshInput: GitReviewRefreshInput = .complete
+    ) {
         self.repositoryPath = repositoryPath
         self.target = target
+        self.refreshInput = refreshInput
+    }
+}
+
+/// One complete direct projection plus local-only calculation continuity for its successor.
+public struct GitDirectReviewComparisonResult: Sendable {
+    public let snapshot: GitDirectReviewComparisonSnapshot
+    public let successorSeed: GitReviewRefreshSeed
+    public let calculationDisposition: GitReviewCalculationDisposition
+    public let calculationReason: GitReviewCalculationReason
+
+    package init(
+        snapshot: GitDirectReviewComparisonSnapshot,
+        successorSeed: GitReviewRefreshSeed,
+        calculationDisposition: GitReviewCalculationDisposition,
+        calculationReason: GitReviewCalculationReason
+    ) {
+        self.snapshot = snapshot
+        self.successorSeed = successorSeed
+        self.calculationDisposition = calculationDisposition
+        self.calculationReason = calculationReason
     }
 }
 

@@ -578,13 +578,13 @@ private struct BridgeReviewSourceAdapterCompileHarness {
             }
 
             func contributionDiff(_ request: GitContributionDiffRequest) async throws(GitDataPlaneError)
-                -> GitContributionDiffSnapshot
+                -> GitContributionDiffResult
             {
                 throw .unsupported(message: "unused")
             }
 
             func directReviewComparison(_ request: GitDirectReviewComparisonRequest) async throws(GitDataPlaneError)
-                -> GitDirectReviewComparisonSnapshot
+                -> GitDirectReviewComparisonResult
             {
                 throw .unsupported(message: "unused")
             }

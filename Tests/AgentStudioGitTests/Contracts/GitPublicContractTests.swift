@@ -219,13 +219,9 @@ struct GitPublicContractTests {
         )
     }
 
-    @Test("contribution requests and snapshots round-trip")
-    func contributionRequestsAndSnapshotsRoundTrip() throws {
+    @Test("review refresh capability stays local while complete snapshots remain codable")
+    func reviewRefreshCapabilityStaysLocalWhileCompleteSnapshotsRemainCodable() throws {
         // Arrange
-        let request = GitContributionDiffRequest(
-            repositoryPath: URL(fileURLWithPath: "/tmp/repo"),
-            target: .named("refs/heads/integration")
-        )
         let snapshot = GitContributionDiffSnapshot(
             resolvedTarget: GitResolvedRevision(oid: "target-oid", shortName: "refs/heads/integration"),
             reviewedHead: GitResolvedRevision(oid: "head-oid", shortName: "feature/review"),
@@ -252,27 +248,22 @@ struct GitPublicContractTests {
         )
 
         // Act
-        let decodedRequest = try JSONDecoder().decode(
-            GitContributionDiffRequest.self,
-            from: JSONEncoder().encode(request)
-        )
         let decodedSnapshot = try JSONDecoder().decode(
             GitContributionDiffSnapshot.self,
             from: JSONEncoder().encode(snapshot)
         )
 
         // Assert
-        #expect(decodedRequest == request)
         #expect(decodedSnapshot == snapshot)
+        #expect(!(GitReviewRefreshSeed.self is any Encodable.Type))
+        #expect(!(GitReviewRefreshInput.self is any Encodable.Type))
+        #expect(!(GitContributionDiffRequest.self is any Encodable.Type))
+        #expect(!(GitContributionDiffResult.self is any Encodable.Type))
     }
 
-    @Test("direct review comparison contracts round-trip")
-    func directReviewComparisonContractsRoundTrip() throws {
+    @Test("direct review complete snapshots remain codable")
+    func directReviewCompleteSnapshotsRemainCodable() throws {
         // Arrange
-        let request = GitDirectReviewComparisonRequest(
-            repositoryPath: URL(fileURLWithPath: "/tmp/repo"),
-            target: .named("0123456789abcdef0123456789abcdef01234567")
-        )
         let snapshot = GitDirectReviewComparisonSnapshot(
             resolvedTarget: GitResolvedRevision(oid: "target-oid", shortName: nil),
             reviewedHead: GitResolvedRevision(oid: "head-oid", shortName: "feature/review"),
@@ -280,18 +271,44 @@ struct GitPublicContractTests {
         )
 
         // Act
-        let decodedRequest = try JSONDecoder().decode(
-            GitDirectReviewComparisonRequest.self,
-            from: JSONEncoder().encode(request)
-        )
         let decodedSnapshot = try JSONDecoder().decode(
             GitDirectReviewComparisonSnapshot.self,
             from: JSONEncoder().encode(snapshot)
         )
 
         // Assert
-        #expect(decodedRequest == request)
         #expect(decodedSnapshot == snapshot)
+        #expect(!(GitDirectReviewComparisonRequest.self is any Encodable.Type))
+        #expect(!(GitDirectReviewComparisonResult.self is any Encodable.Type))
+    }
+
+    @Test("review calculation reasons are exhaustive and scrub-safe")
+    func reviewCalculationReasonsAreExhaustiveAndScrubSafe() {
+        // Arrange
+        let expectedReasons: [GitReviewCalculationReason] = [
+            .completeRequested,
+            .proportionalAccepted,
+            .seedIdentityMismatch,
+            .invalidPath,
+            .structuralGitControlPath,
+            .missingScopedRow,
+            .ineligibleScopedRow,
+            .duplicateScopedRow,
+            .outOfScopeScopedRow,
+            .incompatiblePredecessorRow,
+            .candidatePathCollision,
+            .capacityRejected,
+            .identityMoved,
+            .scopedCalculationFailed,
+        ]
+
+        // Act
+        let encodedReasons = expectedReasons.map(\.rawValue)
+
+        // Assert
+        #expect(GitReviewCalculationReason.allCases == expectedReasons)
+        #expect(Set(encodedReasons).count == expectedReasons.count)
+        #expect(encodedReasons.allSatisfy { !$0.contains("/") && !$0.contains(":") })
     }
 
     @Test("contribution failures round-trip without losing comparison facts")

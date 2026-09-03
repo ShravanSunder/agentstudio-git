@@ -199,7 +199,7 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
     }
 
     public func contributionDiff(_ request: GitContributionDiffRequest) async throws(GitDataPlaneError)
-        -> GitContributionDiffSnapshot
+        -> GitContributionDiffResult
     {
         try await executeBlockingRead {
             try LibGit2ContributionDiffReader().contributionDiff(request)
@@ -207,7 +207,7 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
     }
 
     public func directReviewComparison(_ request: GitDirectReviewComparisonRequest) async throws(GitDataPlaneError)
-        -> GitDirectReviewComparisonSnapshot
+        -> GitDirectReviewComparisonResult
     {
         try await executeBlockingRead {
             try LibGit2DirectReviewComparisonReader().compare(request)
