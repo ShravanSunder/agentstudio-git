@@ -7,8 +7,8 @@ import Testing
 
 @Suite("Git review data integration", .serialized)
 struct GitReviewDataIntegrationTests {
-    @Test("review metadata does not request encoded binary patch payloads")
-    func reviewMetadataDoesNotRequestEncodedBinaryPatchPayloads() throws {
+    @Test("review metadata omits binary patch payloads and unchanged context")
+    func reviewMetadataOmitsBinaryPatchPayloadsAndUnchangedContext() throws {
         // Arrange
         let encodedBinaryPatchPayloadFlag = UInt32(1 << 30)
 
@@ -17,6 +17,7 @@ struct GitReviewDataIntegrationTests {
 
         // Assert
         #expect(options.flags & encodedBinaryPatchPayloadFlag == 0)
+        #expect(options.context_lines == 0)
     }
 
     @Test("bounded review capture retains the designated default and reports tip time")

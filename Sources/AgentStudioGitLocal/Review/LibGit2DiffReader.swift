@@ -155,6 +155,7 @@ struct LibGit2DiffReader: Sendable {
             GIT_DIFF_INCLUDE_UNTRACKED.rawValue
             | GIT_DIFF_RECURSE_UNTRACKED_DIRS.rawValue
             | GIT_DIFF_INCLUDE_TYPECHANGE.rawValue
+        options.context_lines = 0
         return options
     }
 
