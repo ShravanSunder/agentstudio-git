@@ -3,8 +3,22 @@ import CryptoKit
 import Foundation
 import Testing
 
+@testable import AgentStudioGitLocal
+
 @Suite("Git review data integration", .serialized)
 struct GitReviewDataIntegrationTests {
+    @Test("review metadata does not request encoded binary patch payloads")
+    func reviewMetadataDoesNotRequestEncodedBinaryPatchPayloads() throws {
+        // Arrange
+        let encodedBinaryPatchPayloadFlag = UInt32(1 << 30)
+
+        // Act
+        let options = try LibGit2DiffReader().diffOptions()
+
+        // Assert
+        #expect(options.flags & encodedBinaryPatchPayloadFlag == 0)
+    }
+
     @Test("bounded review capture retains the designated default and reports tip time")
     func boundedReviewCaptureRetainsDefaultAndTipTime() async throws {
         // Arrange
