@@ -30,6 +30,7 @@ suites=(
   GitCommitRangeCountIntegrationTests
   GitDiffImpactSummaryIntegrationTests
   GitReviewDataIntegrationTests
+  GitLargeFilePointerReviewIntegrationTests
   GitWorkingTreeStatusCompatibilityTests
   BridgeReviewSourceCompatibilityTests
 )

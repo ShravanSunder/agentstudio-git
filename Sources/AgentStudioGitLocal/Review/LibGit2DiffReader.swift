@@ -3,6 +3,8 @@ import CLibGit2Local
 import Foundation
 
 struct LibGit2DiffReader: Sendable {
+    private let largeFilePointerCleanliness = LibGit2LargeFilePointerCleanliness()
+
     func diff(_ request: GitDiffRequest) throws -> GitDiffSnapshot {
         try LibGit2ReviewSupport.withRepository(at: request.repositoryPath) { repository in
             var options = try diffOptions()
@@ -10,7 +12,13 @@ struct LibGit2DiffReader: Sendable {
             defer { git_diff_free(diff) }
 
             try findRenames(diff)
-            return GitDiffSnapshot(files: try files(diff: diff, repository: repository))
+            return GitDiffSnapshot(
+                files: try files(
+                    diff: diff,
+                    repository: repository,
+                    includesWorkingTree: request.compare.kind == .workingTree
+                )
+            )
         }
     }
 
@@ -20,7 +28,9 @@ struct LibGit2DiffReader: Sendable {
         defer { git_diff_free(diff) }
 
         try findRenames(diff, includingUntracked: true)
-        return GitDiffSnapshot(files: try files(diff: diff, repository: repository))
+        return GitDiffSnapshot(
+            files: try files(diff: diff, repository: repository, includesWorkingTree: true)
+        )
     }
 
     func diff(
@@ -36,7 +46,9 @@ struct LibGit2DiffReader: Sendable {
             defer { git_diff_free(diff) }
 
             try findRenames(diff, includingUntracked: true)
-            return GitDiffSnapshot(files: try files(diff: diff, repository: repository))
+            return GitDiffSnapshot(
+                files: try files(diff: diff, repository: repository, includesWorkingTree: true)
+            )
         }
     }
 
@@ -217,15 +229,33 @@ struct LibGit2DiffReader: Sendable {
         }
     }
 
-    private func files(diff: OpaquePointer, repository: OpaquePointer) throws -> [GitDiffFile] {
-        try (0..<git_diff_num_deltas(diff)).map { index in
+    private func files(
+        diff: OpaquePointer,
+        repository: OpaquePointer,
+        includesWorkingTree: Bool
+    ) throws -> [GitDiffFile] {
+        var files: [GitDiffFile] = []
+        files.reserveCapacity(git_diff_num_deltas(diff))
+        for index in 0..<git_diff_num_deltas(diff) {
             guard let deltaPointer = git_diff_get_delta(diff, index) else {
                 throw GitDataPlaneError.unsupported(message: "libgit2 returned no diff delta at index \(index)")
             }
+            let preflightDelta = deltaPointer.pointee
+            let worktreePath = LibGit2ReviewSupport.path(preflightDelta.new_file.path)
+            if includesWorkingTree,
+                let worktreePath,
+                try largeFilePointerCleanliness.isCleanSmudgedFile(
+                    delta: preflightDelta,
+                    repository: repository,
+                    worktreePath: worktreePath
+                )
+            {
+                continue
+            }
             let lineStats = try lineStats(diff: diff, index: index)
-            return try file(delta: deltaPointer.pointee, lineStats: lineStats, repository: repository)
+            files.append(try file(delta: deltaPointer.pointee, lineStats: lineStats, repository: repository))
         }
-        .sorted { $0.path < $1.path }
+        return files.sorted { $0.path < $1.path }
     }
 
     private func lineStats(diff: OpaquePointer, index: Int) throws -> (additions: Int, deletions: Int) {
