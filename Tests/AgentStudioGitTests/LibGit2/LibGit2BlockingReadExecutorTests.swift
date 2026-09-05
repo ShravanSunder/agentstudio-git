@@ -158,6 +158,16 @@ struct LibGit2BlockingReadExecutorTests {
                     GitDiffRequest(repositoryPath: missingRepositoryPath, base: .head, compare: .workingTree)
                 )
             }
+        case .countCommitRange:
+            await assertMissingRepositoryCommitRangeUsesBlockingExecutor(
+                client: client,
+                missingRepositoryPath: missingRepositoryPath
+            )
+        case .summarizeDiffImpact:
+            await assertMissingRepositoryDiffImpactUsesBlockingExecutor(
+                client: client,
+                missingRepositoryPath: missingRepositoryPath
+            )
         case .contributionDiff:
             await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
                 _ = try await client.contributionDiff(
@@ -233,6 +243,41 @@ private enum BlockingReadTestError: Error, Equatable, Sendable {
     case expected
 }
 
+private func assertMissingRepositoryCommitRangeUsesBlockingExecutor(
+    client: LibGit2AgentStudioGitLocalClient,
+    missingRepositoryPath: URL
+) async {
+    await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
+        _ = try await client.countCommitRange(
+            GitCommitRangeCountRequest(
+                repositoryPath: missingRepositoryPath,
+                base: .named("base"),
+                candidate: .named("candidate"),
+                maximumCount: 10,
+                maximumTraversalCount: 64
+            )
+        )
+    }
+}
+
+private func assertMissingRepositoryDiffImpactUsesBlockingExecutor(
+    client: LibGit2AgentStudioGitLocalClient,
+    missingRepositoryPath: URL
+) async {
+    await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
+        _ = try await client.summarizeDiffImpact(
+            GitDiffImpactSummaryRequest(
+                repositoryPath: missingRepositoryPath,
+                base: .head,
+                compare: .workingTree,
+                maximumChangedFileCount: 25,
+                maximumChangedLineCount: 1000,
+                maximumDiffableBlobByteCount: 1_048_576
+            )
+        )
+    }
+}
+
 private enum BlockingReadAPI: String, CaseIterable, Sendable {
     case worktrees
     case validateWorktree
@@ -245,6 +290,8 @@ private enum BlockingReadAPI: String, CaseIterable, Sendable {
     case resolveRevision
     case readTree
     case diff
+    case countCommitRange
+    case summarizeDiffImpact
     case contributionDiff
     case directReviewComparison
     case content

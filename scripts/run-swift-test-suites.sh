@@ -27,9 +27,11 @@ suites=(
   GitIgnoreIntegrationTests
   GitTrackedPathIntegrationTests
   GitWorktreeIntegrationTests
+  GitCommitRangeCountIntegrationTests
+  GitDiffImpactSummaryIntegrationTests
   GitReviewDataIntegrationTests
-  GitWorkingTreeStatusCompatibilityTests
-  BridgeReviewSourceCompatibilityTests
+  GitLargeFilePointerReviewIntegrationTests
+  AgentStudioCompatibilityGateTests
 )
 
 for suite in "${suites[@]}"; do

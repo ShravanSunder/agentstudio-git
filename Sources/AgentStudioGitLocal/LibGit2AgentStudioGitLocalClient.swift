@@ -182,8 +182,24 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
         }
     }
 
+    public func countCommitRange(_ request: GitCommitRangeCountRequest) async throws(GitDataPlaneError)
+        -> GitCommitRangeCount
+    {
+        try await executeBlockingRead {
+            try LibGit2CommitRangeCounter().count(request)
+        }
+    }
+
+    public func summarizeDiffImpact(_ request: GitDiffImpactSummaryRequest) async throws(GitDataPlaneError)
+        -> GitDiffImpactSummary
+    {
+        try await executeBlockingRead {
+            try LibGit2DiffImpactSummarizer().summarize(request)
+        }
+    }
+
     public func contributionDiff(_ request: GitContributionDiffRequest) async throws(GitDataPlaneError)
-        -> GitContributionDiffSnapshot
+        -> GitContributionDiffResult
     {
         try await executeBlockingRead {
             try LibGit2ContributionDiffReader().contributionDiff(request)
@@ -191,7 +207,7 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
     }
 
     public func directReviewComparison(_ request: GitDirectReviewComparisonRequest) async throws(GitDataPlaneError)
-        -> GitDirectReviewComparisonSnapshot
+        -> GitDirectReviewComparisonResult
     {
         try await executeBlockingRead {
             try LibGit2DirectReviewComparisonReader().compare(request)

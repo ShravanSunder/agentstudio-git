@@ -4,6 +4,153 @@ import Testing
 
 @Suite("Git public contracts")
 struct GitPublicContractTests {
+    @Test("commit range requests and bounded outcomes use explicit wire discriminators")
+    func commitRangeContractsRoundTrip() throws {
+        // Arrange
+        let request = GitCommitRangeCountRequest(
+            repositoryPath: URL(fileURLWithPath: "/tmp/repo"),
+            base: .named("base"),
+            candidate: .named("candidate"),
+            maximumCount: 10,
+            maximumTraversalCount: 64
+        )
+        let outcomes: [GitCommitRangeCount] = [
+            .exact(3),
+            .atLeastLimit(10),
+            .traversalLimitReached(64),
+            .unrelated,
+        ]
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+
+        // Act
+        let decodedRequest = try JSONDecoder().decode(
+            GitCommitRangeCountRequest.self,
+            from: encoder.encode(request)
+        )
+        let encodedOutcomes = try outcomes.map { try encoder.encode($0) }
+        let decodedOutcomes = try encodedOutcomes.map {
+            try JSONDecoder().decode(GitCommitRangeCount.self, from: $0)
+        }
+
+        // Assert
+        #expect(decodedRequest == request)
+        #expect(decodedOutcomes == outcomes)
+        #expect(String(data: encodedOutcomes[0], encoding: .utf8) == #"{"count":3,"kind":"exact"}"#)
+        #expect(
+            String(data: encodedOutcomes[1], encoding: .utf8)
+                == #"{"count":10,"kind":"atLeastLimit"}"#
+        )
+        #expect(
+            String(data: encodedOutcomes[2], encoding: .utf8)
+                == #"{"count":64,"kind":"traversalLimitReached"}"#
+        )
+        #expect(String(data: encodedOutcomes[3], encoding: .utf8) == #"{"kind":"unrelated"}"#)
+    }
+
+    @Test("bounded diff impact requests and outcomes use explicit wire discriminators")
+    func boundedDiffImpactContractsRoundTrip() throws {
+        // Arrange
+        let request = GitDiffImpactSummaryRequest(
+            repositoryPath: URL(fileURLWithPath: "/tmp/repo"),
+            base: .commit("base"),
+            compare: .commit("candidate"),
+            maximumChangedFileCount: 25,
+            maximumChangedLineCount: 1000,
+            maximumDiffableBlobByteCount: 1_048_576
+        )
+        let summaries = [
+            GitDiffImpactSummary(
+                changedPaths: [GitDiffImpactPath(currentPath: "new.swift", previousPath: "old.swift")],
+                pathsAreComplete: true,
+                changedFileCount: .exact(1),
+                changedLineCount: .atLeastLimit(1000),
+                addedLineCount: 600,
+                deletedLineCount: 400
+            ),
+            GitDiffImpactSummary(
+                changedPaths: [GitDiffImpactPath(currentPath: nil, previousPath: "deleted.swift")],
+                pathsAreComplete: false,
+                changedFileCount: .indeterminate,
+                changedLineCount: .indeterminate,
+                addedLineCount: nil,
+                deletedLineCount: nil
+            ),
+        ]
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+
+        // Act
+        let decodedRequest = try JSONDecoder().decode(
+            GitDiffImpactSummaryRequest.self,
+            from: encoder.encode(request)
+        )
+        let decodedSummaries = try summaries.map {
+            try JSONDecoder().decode(GitDiffImpactSummary.self, from: encoder.encode($0))
+        }
+
+        // Assert
+        #expect(decodedRequest == request)
+        #expect(decodedSummaries == summaries)
+    }
+
+    @Test("bounded diff impact summaries reject line-count contradictions")
+    func boundedDiffImpactSummariesRejectLineCountContradictions() throws {
+        // Arrange
+        let encoder = JSONEncoder()
+        let invalidSummaries = [
+            GitDiffImpactSummary(
+                changedPaths: [],
+                pathsAreComplete: true,
+                changedFileCount: .exact(1),
+                changedLineCount: .exact(3),
+                addedLineCount: 1,
+                deletedLineCount: 1
+            ),
+            GitDiffImpactSummary(
+                changedPaths: [],
+                pathsAreComplete: true,
+                changedFileCount: .exact(1),
+                changedLineCount: .atLeastLimit(3),
+                addedLineCount: 1,
+                deletedLineCount: 1
+            ),
+            GitDiffImpactSummary(
+                changedPaths: [],
+                pathsAreComplete: true,
+                changedFileCount: .exact(1),
+                changedLineCount: .indeterminate,
+                addedLineCount: 1,
+                deletedLineCount: nil
+            ),
+        ]
+
+        // Act / Assert
+        for summary in invalidSummaries {
+            #expect(throws: EncodingError.self) {
+                _ = try encoder.encode(summary)
+            }
+        }
+
+        let validSummary = GitDiffImpactSummary(
+            changedPaths: [],
+            pathsAreComplete: true,
+            changedFileCount: .exact(1),
+            changedLineCount: .exact(3),
+            addedLineCount: 2,
+            deletedLineCount: 1
+        )
+        var invalidWireSummary = try #require(
+            JSONSerialization.jsonObject(with: encoder.encode(validSummary)) as? [String: Any]
+        )
+        invalidWireSummary["addedLineCount"] = 0
+        invalidWireSummary["deletedLineCount"] = 0
+        let invalidWireData = try JSONSerialization.data(withJSONObject: invalidWireSummary)
+        #expect(throws: DecodingError.self) {
+            _ = try JSONDecoder().decode(GitDiffImpactSummary.self, from: invalidWireData)
+        }
+    }
+
     @Test("bounded review comparison captures preserve timestamps, roles, and limits")
     func boundedReviewComparisonCapturesRoundTrip() throws {
         // Arrange
@@ -72,13 +219,9 @@ struct GitPublicContractTests {
         )
     }
 
-    @Test("contribution requests and snapshots round-trip")
-    func contributionRequestsAndSnapshotsRoundTrip() throws {
+    @Test("review refresh capability stays local while complete snapshots remain codable")
+    func reviewRefreshCapabilityStaysLocalWhileCompleteSnapshotsRemainCodable() throws {
         // Arrange
-        let request = GitContributionDiffRequest(
-            repositoryPath: URL(fileURLWithPath: "/tmp/repo"),
-            target: .named("refs/heads/integration")
-        )
         let snapshot = GitContributionDiffSnapshot(
             resolvedTarget: GitResolvedRevision(oid: "target-oid", shortName: "refs/heads/integration"),
             reviewedHead: GitResolvedRevision(oid: "head-oid", shortName: "feature/review"),
@@ -105,27 +248,22 @@ struct GitPublicContractTests {
         )
 
         // Act
-        let decodedRequest = try JSONDecoder().decode(
-            GitContributionDiffRequest.self,
-            from: JSONEncoder().encode(request)
-        )
         let decodedSnapshot = try JSONDecoder().decode(
             GitContributionDiffSnapshot.self,
             from: JSONEncoder().encode(snapshot)
         )
 
         // Assert
-        #expect(decodedRequest == request)
         #expect(decodedSnapshot == snapshot)
+        #expect(!(GitReviewRefreshSeed.self is any Encodable.Type))
+        #expect(!(GitReviewRefreshInput.self is any Encodable.Type))
+        #expect(!(GitContributionDiffRequest.self is any Encodable.Type))
+        #expect(!(GitContributionDiffResult.self is any Encodable.Type))
     }
 
-    @Test("direct review comparison contracts round-trip")
-    func directReviewComparisonContractsRoundTrip() throws {
+    @Test("direct review complete snapshots remain codable")
+    func directReviewCompleteSnapshotsRemainCodable() throws {
         // Arrange
-        let request = GitDirectReviewComparisonRequest(
-            repositoryPath: URL(fileURLWithPath: "/tmp/repo"),
-            target: .named("0123456789abcdef0123456789abcdef01234567")
-        )
         let snapshot = GitDirectReviewComparisonSnapshot(
             resolvedTarget: GitResolvedRevision(oid: "target-oid", shortName: nil),
             reviewedHead: GitResolvedRevision(oid: "head-oid", shortName: "feature/review"),
@@ -133,18 +271,44 @@ struct GitPublicContractTests {
         )
 
         // Act
-        let decodedRequest = try JSONDecoder().decode(
-            GitDirectReviewComparisonRequest.self,
-            from: JSONEncoder().encode(request)
-        )
         let decodedSnapshot = try JSONDecoder().decode(
             GitDirectReviewComparisonSnapshot.self,
             from: JSONEncoder().encode(snapshot)
         )
 
         // Assert
-        #expect(decodedRequest == request)
         #expect(decodedSnapshot == snapshot)
+        #expect(!(GitDirectReviewComparisonRequest.self is any Encodable.Type))
+        #expect(!(GitDirectReviewComparisonResult.self is any Encodable.Type))
+    }
+
+    @Test("review calculation reasons are exhaustive and scrub-safe")
+    func reviewCalculationReasonsAreExhaustiveAndScrubSafe() {
+        // Arrange
+        let expectedReasons: [GitReviewCalculationReason] = [
+            .completeRequested,
+            .proportionalAccepted,
+            .seedIdentityMismatch,
+            .invalidPath,
+            .structuralGitControlPath,
+            .missingScopedRow,
+            .ineligibleScopedRow,
+            .duplicateScopedRow,
+            .outOfScopeScopedRow,
+            .incompatiblePredecessorRow,
+            .candidatePathCollision,
+            .capacityRejected,
+            .identityMoved,
+            .scopedCalculationFailed,
+        ]
+
+        // Act
+        let encodedReasons = expectedReasons.map(\.rawValue)
+
+        // Assert
+        #expect(GitReviewCalculationReason.allCases == expectedReasons)
+        #expect(Set(encodedReasons).count == expectedReasons.count)
+        #expect(encodedReasons.allSatisfy { !$0.contains("/") && !$0.contains(":") })
     }
 
     @Test("contribution failures round-trip without losing comparison facts")
@@ -518,6 +682,42 @@ struct GitPublicContractTests {
         #expect(payload["stream"] as? String == "stdout")
         #expect(payload["sizeBytes"] as? Int == 256)
         #expect(payload["maxSizeBytes"] as? Int == 64)
+    }
+
+    @Test("external in-process clients can construct opaque review results")
+    func externalInProcessClientsCanConstructOpaqueReviewResults() throws {
+        // Arrange
+        let contributionSnapshot = GitContributionDiffSnapshot(
+            resolvedTarget: GitResolvedRevision(oid: "target-oid", shortName: "integration"),
+            reviewedHead: GitResolvedRevision(oid: "head-oid", shortName: "feature/review"),
+            contributionBase: GitResolvedRevision(oid: "base-oid", shortName: nil),
+            diff: GitDiffSnapshot(files: [])
+        )
+        let directSnapshot = GitDirectReviewComparisonSnapshot(
+            resolvedTarget: contributionSnapshot.resolvedTarget,
+            reviewedHead: contributionSnapshot.reviewedHead,
+            diff: contributionSnapshot.diff
+        )
+
+        // Act
+        let contributionResult = GitContributionDiffResult.clientFixture(
+            snapshot: contributionSnapshot,
+            calculationDisposition: .proportional,
+            calculationReason: .proportionalAccepted
+        )
+        let directResult = GitDirectReviewComparisonResult.clientFixture(
+            snapshot: directSnapshot
+        )
+
+        // Assert
+        #expect(contributionResult.snapshot == contributionSnapshot)
+        #expect(contributionResult.calculationDisposition == .proportional)
+        #expect(contributionResult.calculationReason == .proportionalAccepted)
+        #expect(directResult.snapshot == directSnapshot)
+        #expect(directResult.calculationDisposition == .complete)
+        #expect(directResult.calculationReason == .completeRequested)
+        #expect(!(type(of: contributionResult.successorSeed) is any Encodable.Type))
+        #expect(!(type(of: directResult.successorSeed) is any Encodable.Type))
     }
 
     private func jsonDictionary<T: Encodable>(for value: T) throws -> [String: Any] {
