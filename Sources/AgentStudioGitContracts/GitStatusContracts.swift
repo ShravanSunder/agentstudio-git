@@ -99,14 +99,12 @@ public enum GitOriginResolution: Codable, Equatable, Hashable, Sendable {
     }
 }
 
-public struct GitStatusSummary: Codable, Equatable, Hashable, Sendable {
+public struct GitStatusFactSummary: Codable, Equatable, Hashable, Sendable {
     public let changedFileCount: Int
     public let stagedFileCount: Int
     public let unstagedFileCount: Int
     public let untrackedFileCount: Int
     public let ignoredFileCount: Int
-    public let linesAdded: Int
-    public let linesDeleted: Int
     public let aheadCount: Int
     public let behindCount: Int
     public let hasUpstream: Bool
@@ -117,8 +115,6 @@ public struct GitStatusSummary: Codable, Equatable, Hashable, Sendable {
         unstagedFileCount: Int,
         untrackedFileCount: Int,
         ignoredFileCount: Int,
-        linesAdded: Int,
-        linesDeleted: Int,
         aheadCount: Int,
         behindCount: Int,
         hasUpstream: Bool
@@ -128,8 +124,6 @@ public struct GitStatusSummary: Codable, Equatable, Hashable, Sendable {
         self.unstagedFileCount = unstagedFileCount
         self.untrackedFileCount = untrackedFileCount
         self.ignoredFileCount = ignoredFileCount
-        self.linesAdded = linesAdded
-        self.linesDeleted = linesDeleted
         self.aheadCount = aheadCount
         self.behindCount = behindCount
         self.hasUpstream = hasUpstream
@@ -210,13 +204,13 @@ public struct GitStatusOptions: Codable, Equatable, Hashable, Sendable {
     }
 }
 
-public struct GitStatusSnapshot: Codable, Equatable, Hashable, Sendable {
+public struct GitStatusFactsSnapshot: Codable, Equatable, Hashable, Sendable {
     public let repositoryRoot: URL
     public let worktreePath: URL
     public let generatedAtUnixMilliseconds: Int64
     public let head: GitHeadSnapshot
     public let originResolution: GitOriginResolution
-    public let summary: GitStatusSummary
+    public let summary: GitStatusFactSummary
     public let entries: [GitStatusEntry]
 
     public init(
@@ -225,7 +219,7 @@ public struct GitStatusSnapshot: Codable, Equatable, Hashable, Sendable {
         generatedAtUnixMilliseconds: Int64,
         head: GitHeadSnapshot,
         originResolution: GitOriginResolution,
-        summary: GitStatusSummary,
+        summary: GitStatusFactSummary,
         entries: [GitStatusEntry]
     ) {
         self.repositoryRoot = repositoryRoot
@@ -235,5 +229,40 @@ public struct GitStatusSnapshot: Codable, Equatable, Hashable, Sendable {
         self.originResolution = originResolution
         self.summary = summary
         self.entries = entries
+    }
+}
+
+public struct GitStatusLineCountDetail: Codable, Equatable, Hashable, Sendable {
+    public let repositoryRoot: URL
+    public let worktreePath: URL
+    public let generatedAtUnixMilliseconds: Int64
+    public let linesAdded: Int
+    public let linesDeleted: Int
+
+    public init(
+        repositoryRoot: URL,
+        worktreePath: URL,
+        generatedAtUnixMilliseconds: Int64,
+        linesAdded: Int,
+        linesDeleted: Int
+    ) {
+        self.repositoryRoot = repositoryRoot
+        self.worktreePath = worktreePath
+        self.generatedAtUnixMilliseconds = generatedAtUnixMilliseconds
+        self.linesAdded = linesAdded
+        self.linesDeleted = linesDeleted
+    }
+}
+
+public struct GitCompleteStatusSnapshot: Codable, Equatable, Hashable, Sendable {
+    public let facts: GitStatusFactsSnapshot
+    public let lineCountDetail: GitStatusLineCountDetail
+
+    public init(
+        facts: GitStatusFactsSnapshot,
+        lineCountDetail: GitStatusLineCountDetail
+    ) {
+        self.facts = facts
+        self.lineCountDetail = lineCountDetail
     }
 }

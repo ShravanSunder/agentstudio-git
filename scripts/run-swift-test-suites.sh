@@ -24,6 +24,8 @@ suites=(
   LibGit2PackagingScriptTests
   SourceStructureTests
   GitStatusIntegrationTests
+  GitExactCleanBaselineIntegrationTests
+  GitStagedFetchIntegrationTests
   GitIgnoreIntegrationTests
   GitTrackedPathIntegrationTests
   GitWorktreeIntegrationTests

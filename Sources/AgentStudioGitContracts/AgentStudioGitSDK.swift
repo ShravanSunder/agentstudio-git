@@ -12,7 +12,16 @@ public protocol AgentStudioGitLocalClient: Sendable {
         -> GitWorktreeRemovalResult
     func lockWorktree(_ request: GitLockWorktreeRequest) async throws(GitDataPlaneError) -> GitWorktreeSnapshot
     func unlockWorktree(_ request: GitUnlockWorktreeRequest) async throws(GitDataPlaneError) -> GitWorktreeSnapshot
-    func status(for worktreePath: URL, options: GitStatusOptions) async throws(GitDataPlaneError) -> GitStatusSnapshot
+    func statusObservationPlan(for worktreePath: URL) async throws(GitDataPlaneError) -> GitStatusObservationPlan
+    func statusFacts(
+        for worktreePath: URL,
+        options: GitStatusOptions,
+        observationPlan: GitStatusObservationPlan?
+    ) async throws(GitDataPlaneError)
+        -> GitStatusFactsRead
+    func exactLineCountDetail(for worktreePath: URL) async throws(GitDataPlaneError) -> GitStatusLineCountDetail
+    func completeStatus(for worktreePath: URL, options: GitStatusOptions) async throws(GitDataPlaneError)
+        -> GitCompleteStatusSnapshot
     func trackedPaths(for worktreePath: URL, options: GitTrackedPathsOptions) async throws(GitDataPlaneError)
         -> GitTrackedPathsSnapshot
     func isPathIgnored(repositoryAt worktreePath: URL, relativePath: String) async throws(GitDataPlaneError) -> Bool
@@ -38,9 +47,26 @@ public protocol AgentStudioGitLocalClient: Sendable {
     func content(_ request: GitContentRequest) async throws(GitDataPlaneError) -> GitContentPayload
 }
 
+extension AgentStudioGitLocalClient {
+    public func statusFacts(for worktreePath: URL, options: GitStatusOptions) async throws(GitDataPlaneError)
+        -> GitStatusFactsRead
+    {
+        try await statusFacts(for: worktreePath, options: options, observationPlan: nil)
+    }
+}
+
 public protocol AgentStudioGitRemoteClient: Sendable {
     func clone(_ request: GitCloneRequest) async throws(GitDataPlaneError) -> GitCloneResult
     func fetch(_ request: GitFetchRequest) async throws(GitDataPlaneError) -> GitFetchResult
+    func captureRemoteTrackingSnapshot(_ request: GitRemoteTrackingSnapshotRequest)
+        async throws(GitDataPlaneError) -> GitRemoteTrackingSnapshot
+    func stageFetch(_ request: GitStagedFetchRequest) async throws(GitDataPlaneError) -> GitStagedFetchResult
+    func promoteStagedFetch(_ request: GitPromoteStagedFetchRequest)
+        async throws(GitDataPlaneError) -> GitPromoteStagedFetchResult
+    func cleanupStagedFetch(_ request: GitCleanupStagedFetchRequest)
+        async throws(GitDataPlaneError) -> GitCleanupStagedFetchResult
+    func cleanupAbandonedStagedFetches(_ request: GitCleanupAbandonedStagedFetchesRequest)
+        async throws(GitDataPlaneError) -> GitCleanupStagedFetchResult
     func push(_ request: GitPushRequest) async throws(GitDataPlaneError) -> GitPushResult
     func remoteReferences(_ request: GitRemoteReferencesRequest) async throws(GitDataPlaneError)
         -> [GitRemoteReference]

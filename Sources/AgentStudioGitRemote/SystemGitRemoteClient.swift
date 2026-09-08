@@ -129,8 +129,8 @@ public struct SystemGitRemoteClient: AgentStudioGitRemoteClient, Sendable {
         }
     }
 
-    private let configuration: Configuration
-    private let runner: GitProcessRunner
+    let configuration: Configuration
+    let runner: GitProcessRunner
     private let outputParser: GitRemoteOutputParser
 
     public init(configuration: Configuration = .init()) {
@@ -183,7 +183,7 @@ public struct SystemGitRemoteClient: AgentStudioGitRemoteClient, Sendable {
         return try outputParser.parse(result.stdout)
     }
 
-    private func validateRemoteProtocol(_ remote: String) throws(GitDataPlaneError) {
+    func validateRemoteProtocol(_ remote: String) throws(GitDataPlaneError) {
         guard !remote.hasPrefix("-") else {
             throw .unsupported(message: "remote must not start with '-'")
         }
@@ -194,6 +194,7 @@ public struct SystemGitRemoteClient: AgentStudioGitRemoteClient, Sendable {
             throw .unsupported(message: "protocol \(remoteProtocol.rawValue) is not allowed")
         }
     }
+
 }
 
 extension GitRemoteProtocol {

@@ -367,9 +367,9 @@ struct GitPublicContractTests {
         #expect(decodedOutcomes == outcomes)
     }
 
-    @Test("status snapshots round-trip with tri-state origin resolution")
-    func statusSnapshotRoundTripsWithOriginResolution() throws {
-        let snapshot = GitStatusSnapshot(
+    @Test("status facts and exact line detail round-trip independently")
+    func statusFactsAndExactLineDetailRoundTripIndependently() throws {
+        let facts = GitStatusFactsSnapshot(
             repositoryRoot: URL(fileURLWithPath: "/tmp/repo"),
             worktreePath: URL(fileURLWithPath: "/tmp/repo-linked"),
             generatedAtUnixMilliseconds: 1_781_053_200_000,
@@ -381,14 +381,12 @@ struct GitPublicContractTests {
                     rawURL: "https://github.com/example/repo.git"
                 )
             ),
-            summary: GitStatusSummary(
+            summary: GitStatusFactSummary(
                 changedFileCount: 1,
                 stagedFileCount: 1,
                 unstagedFileCount: 1,
                 untrackedFileCount: 0,
                 ignoredFileCount: 0,
-                linesAdded: 12,
-                linesDeleted: 3,
                 aheadCount: 2,
                 behindCount: 1,
                 hasUpstream: true
@@ -404,12 +402,48 @@ struct GitPublicContractTests {
                 )
             ]
         )
+        let detail = GitStatusLineCountDetail(
+            repositoryRoot: facts.repositoryRoot,
+            worktreePath: facts.worktreePath,
+            generatedAtUnixMilliseconds: 1_781_053_200_001,
+            linesAdded: 12,
+            linesDeleted: 3
+        )
+        let observationPlan = GitStatusObservationPlan(
+            identity: GitStatusObservationIdentity(rawValue: "opaque-plan"),
+            scopes: [
+                GitStatusObservationScope(kind: .subtree, path: facts.worktreePath),
+                GitStatusObservationScope(kind: .item, path: URL(fileURLWithPath: "/tmp/repo/.git/index")),
+            ],
+            support: .supported
+        )
+        let factsRead = GitStatusFactsRead(
+            facts: facts,
+            exactCleanBaseline: GitExactCleanBaseline(observationIdentity: observationPlan.identity)
+        )
 
-        let data = try JSONEncoder().encode(snapshot)
-        let decodedSnapshot = try JSONDecoder().decode(GitStatusSnapshot.self, from: data)
+        let decodedFacts = try JSONDecoder().decode(
+            GitStatusFactsSnapshot.self,
+            from: JSONEncoder().encode(facts)
+        )
+        let decodedDetail = try JSONDecoder().decode(
+            GitStatusLineCountDetail.self,
+            from: JSONEncoder().encode(detail)
+        )
+        let decodedPlan = try JSONDecoder().decode(
+            GitStatusObservationPlan.self,
+            from: JSONEncoder().encode(observationPlan)
+        )
+        let decodedRead = try JSONDecoder().decode(
+            GitStatusFactsRead.self,
+            from: JSONEncoder().encode(factsRead)
+        )
 
-        #expect(decodedSnapshot == snapshot)
-        #expect(decodedSnapshot.originResolution == snapshot.originResolution)
+        #expect(decodedFacts == facts)
+        #expect(decodedFacts.originResolution == facts.originResolution)
+        #expect(decodedDetail == detail)
+        #expect(decodedPlan == observationPlan)
+        #expect(decodedRead == factsRead)
     }
 
     @Test("status options keep pathspecs off the wire when unset")
@@ -573,6 +607,67 @@ struct GitPublicContractTests {
 
         #expect(dictionary["remoteURL"] as? String == "git@example.com:org/repo.git")
         #expect(dictionary["destinationPath"] as? String == "file:///tmp/checkout")
+    }
+
+    @Test("staged fetch contracts preserve captured provenance and atomic update intent")
+    func stagedFetchContractsPreserveCapturedProvenanceAndAtomicUpdateIntent() throws {
+        let repositoryPath = URL(fileURLWithPath: "/tmp/repo")
+        let stagingID = try #require(UUID(uuidString: "00000000-0000-7000-8000-000000000001"))
+        let snapshot = GitRemoteTrackingSnapshot(
+            repositoryPath: repositoryPath,
+            repositoryCommonDirectory: URL(fileURLWithPath: "/tmp/repo/.git"),
+            remoteName: "origin",
+            configuredRemoteURL: "https://example.com/org/repo.git",
+            effectiveFetchURL: "https://example.com/org/repo.git",
+            references: [
+                GitRemoteTrackingReference(
+                    canonicalRefName: "refs/remotes/origin/main",
+                    oid: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                )
+            ]
+        )
+        let stagedFetch = GitStagedFetchResult(
+            snapshot: snapshot,
+            handle: GitStagedFetchHandle(
+                repositoryCommonDirectory: snapshot.repositoryCommonDirectory,
+                stagingID: stagingID
+            ),
+            promotionGuard: GitStagedFetchPromotionGuard(
+                refName: "refs/agentstudio/staged/00000000-0000-7000-8000-000000000001/promotion-guard",
+                expectedOID: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            ),
+            updates: [
+                GitStagedFetchUpdate(
+                    stagingRefName:
+                        "refs/agentstudio/staged/00000000-0000-7000-8000-000000000001/remotes/origin/main",
+                    canonicalRefName: "refs/remotes/origin/main",
+                    newOID: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    expectedOldOID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                )
+            ],
+            verifications: [],
+            deletions: []
+        )
+
+        let decodedSnapshot = try JSONDecoder().decode(
+            GitRemoteTrackingSnapshot.self,
+            from: JSONEncoder().encode(snapshot)
+        )
+        let decodedStagedFetch = try JSONDecoder().decode(
+            GitStagedFetchResult.self,
+            from: JSONEncoder().encode(stagedFetch)
+        )
+        let indeterminate = GitDataPlaneError.remoteRefTransactionIndeterminate(
+            message: "promotion outcome requires reconciliation"
+        )
+        let decodedIndeterminate = try JSONDecoder().decode(
+            GitDataPlaneError.self,
+            from: JSONEncoder().encode(indeterminate)
+        )
+
+        #expect(decodedSnapshot == snapshot)
+        #expect(decodedStagedFetch == stagedFetch)
+        #expect(decodedIndeterminate == indeterminate)
     }
 
     @Test("content requests target review endpoints and carry optional size limits")

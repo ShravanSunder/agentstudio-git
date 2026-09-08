@@ -79,8 +79,15 @@ let package = Package(
         ),
         .target(
             name: "AgentStudioGitRemote",
-            dependencies: ["AgentStudioGitContracts"],
-            path: "Sources/AgentStudioGitRemote"
+            dependencies: [
+                "AgentStudioGitContracts",
+                "CLibGit2Local",
+            ],
+            path: "Sources/AgentStudioGitRemote",
+            linkerSettings: [
+                .linkedLibrary("z"),
+                .linkedLibrary("iconv"),
+            ]
         ),
         .target(
             name: "AgentStudioGit",

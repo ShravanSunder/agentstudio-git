@@ -2,38 +2,50 @@ import Darwin
 import Foundation
 
 struct PosixGitProcess {
+    struct SpawnRequest {
+        let executableURL: URL
+        let arguments: [String]
+        let environment: [String: String]
+        let currentDirectory: URL?
+        let stdinDescriptor: Int32?
+        let stdoutDescriptor: Int32
+        let stderrDescriptor: Int32
+    }
+
     let pid: pid_t
 
     var processGroupID: pid_t {
         pid
     }
 
-    static func spawn(
-        executableURL: URL,
-        arguments: [String],
-        environment: [String: String],
-        currentDirectory: URL?,
-        stdoutDescriptor: Int32,
-        stderrDescriptor: Int32
-    ) throws -> Self {
+    static func spawn(_ request: SpawnRequest) throws -> Self {
         var fileActions: posix_spawn_file_actions_t?
         try checkPOSIX(posix_spawn_file_actions_init(&fileActions), operation: "posix_spawn_file_actions_init")
         defer { posix_spawn_file_actions_destroy(&fileActions) }
 
-        try addOpenFileAction(&fileActions, descriptor: STDIN_FILENO, path: "/dev/null", flags: O_RDONLY, mode: 0)
+        if let stdinDescriptor = request.stdinDescriptor {
+            try addDuplicateFileAction(
+                &fileActions,
+                sourceDescriptor: stdinDescriptor,
+                targetDescriptor: STDIN_FILENO
+            )
+            try addCloseFileAction(&fileActions, descriptor: stdinDescriptor)
+        } else {
+            try addOpenFileAction(&fileActions, descriptor: STDIN_FILENO, path: "/dev/null", flags: O_RDONLY, mode: 0)
+        }
         try addDuplicateFileAction(
             &fileActions,
-            sourceDescriptor: stdoutDescriptor,
+            sourceDescriptor: request.stdoutDescriptor,
             targetDescriptor: STDOUT_FILENO
         )
         try addDuplicateFileAction(
             &fileActions,
-            sourceDescriptor: stderrDescriptor,
+            sourceDescriptor: request.stderrDescriptor,
             targetDescriptor: STDERR_FILENO
         )
-        try addCloseFileAction(&fileActions, descriptor: stdoutDescriptor)
-        try addCloseFileAction(&fileActions, descriptor: stderrDescriptor)
-        if let currentDirectory {
+        try addCloseFileAction(&fileActions, descriptor: request.stdoutDescriptor)
+        try addCloseFileAction(&fileActions, descriptor: request.stderrDescriptor)
+        if let currentDirectory = request.currentDirectory {
             try currentDirectory.path.withCString { directoryPath in
                 try checkPOSIX(
                     posix_spawn_file_actions_addchdir_np(&fileActions, directoryPath),
@@ -51,10 +63,10 @@ struct PosixGitProcess {
         )
         try checkPOSIX(posix_spawnattr_setpgroup(&attributes, 0), operation: "posix_spawnattr_setpgroup")
 
-        let argv = [executableURL.path] + arguments
-        let environmentVariables = environment.map { "\($0.key)=\($0.value)" }.sorted()
+        let argv = [request.executableURL.path] + request.arguments
+        let environmentVariables = request.environment.map { "\($0.key)=\($0.value)" }.sorted()
         var pid = pid_t()
-        let spawnResult = executableURL.path.withCString { executablePath in
+        let spawnResult = request.executableURL.path.withCString { executablePath in
             withCStringArray(argv) { argvPointer in
                 withCStringArray(environmentVariables) { environmentPointer in
                     posix_spawn(&pid, executablePath, &fileActions, &attributes, argvPointer, environmentPointer)
