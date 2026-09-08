@@ -4,6 +4,34 @@ import Testing
 
 @Suite("Exact clean Git baseline integration")
 struct GitExactCleanBaselineIntegrationTests {
+    @Test("empty and missing external includes cannot authorize unobserved clean renewal", arguments: [false, true])
+    func externalIncludeDependencyMustBeObservedOrUnsupported(createEmptyFile: Bool) async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-external-include")
+        defer { fixture.remove() }
+        let includePath = fixture.root.appending(path: "external.gitconfig")
+        if createEmptyFile {
+            try "".write(to: includePath, atomically: true, encoding: .utf8)
+        }
+        try fixture.git.run("config", "include.path", includePath.path)
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        // Act
+        let plan = try await client.statusObservationPlan(for: fixture.repositoryPath)
+        let observesInclude = plan.scopes.contains {
+            $0.path == includePath.standardizedFileURL.resolvingSymlinksInPath()
+        }
+
+        // Assert
+        #expect(plan.support == .unsupported || observesInclude)
+        let cleanRead = try await client.statusFacts(
+            for: fixture.repositoryPath, options: GitStatusOptions(), observationPlan: plan)
+        #expect(cleanRead.facts.entries.isEmpty)
+        if !observesInclude {
+            #expect(cleanRead.exactCleanBaseline == nil)
+        }
+    }
+
     @Test("full clean facts mint a baseline tied to the prepared observation plan")
     func fullCleanFactsMintBaseline() async throws {
         let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-exact-clean")

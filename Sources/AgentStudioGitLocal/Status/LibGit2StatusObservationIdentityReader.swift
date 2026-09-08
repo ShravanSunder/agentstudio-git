@@ -83,6 +83,14 @@ struct LibGit2StatusObservationIdentityReader: Sendable {
             guard nextResult >= 0, let entry else {
                 throw LibGit2ErrorCapture.failure(code: nextResult)
             }
+            if let namePointer = entry.pointee.name {
+                let name = String(cString: namePointer).lowercased()
+                if name == "include.path" || (name.hasPrefix("includeif.") && name.hasSuffix(".path")) {
+                    // Entry origins cannot enumerate empty, missing, or inactive include targets.
+                    // Keep exact reads available without renewing clean authority from incomplete scopes.
+                    complete = false
+                }
+            }
             guard let originPointer = entry.pointee.origin_path else {
                 complete = false
                 continue
