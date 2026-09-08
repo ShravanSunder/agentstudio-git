@@ -5,6 +5,43 @@ import Testing
 
 @Suite("Git staged fetch integration", .serialized)
 struct GitStagedFetchIntegrationTests {
+    @Test("commit-stage promotion failure reports indeterminate refs instead of safe rejection")
+    func promotionWriteFailureIsIndeterminate() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-promotion-write-failure")
+        defer { fixture.remove() }
+        let remotePath = fixture.root.appending(path: "origin.git")
+        try fixture.git.run("init", "--bare", remotePath.path, currentDirectory: fixture.root)
+        try fixture.git.run("remote", "add", "origin", remotePath.path)
+        try fixture.git.run("push", "-u", "origin", "main")
+        let client = SystemGitRemoteClient(configuration: .init(allowedProtocols: [.file]))
+        let captured = try await client.captureRemoteTrackingSnapshot(
+            .init(repositoryPath: fixture.repositoryPath, remoteName: "origin"))
+        try fixture.write("new.txt", contents: "new commit\n")
+        try fixture.git.run("add", "new.txt")
+        try fixture.git.run("commit", "-m", "new commit")
+        try fixture.git.run("push", "origin", "main")
+        let originalOID = try #require(
+            captured.references.first { $0.canonicalRefName == "refs/remotes/origin/main" }?.oid)
+        try fixture.git.run("update-ref", "refs/remotes/origin/main", originalOID)
+        let staged = try await client.stageFetch(.init(snapshot: captured, stagingID: UUID()))
+        let referencePath = captured.repositoryCommonDirectory.appending(path: "refs/remotes/origin/main")
+        try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: referencePath.path)
+        defer { try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: referencePath.path) }
+
+        // Act / Assert
+        do {
+            _ = try await client.promoteStagedFetch(.init(stagedFetch: staged))
+            Issue.record("Expected commit-stage failure replacing immutable reference")
+        } catch {
+            guard case .remoteRefTransactionIndeterminate = error else {
+                Issue.record("Commit-stage failure was not classified as indeterminate: \(error)")
+                return
+            }
+        }
+        #expect(try fixture.git.run("status", "--porcelain").isEmpty)
+    }
+
     @Test("canonical ref promotion is attributed to the current process")
     func canonicalRefPromotionIsAttributedToCurrentProcess() async throws {
         // Arrange

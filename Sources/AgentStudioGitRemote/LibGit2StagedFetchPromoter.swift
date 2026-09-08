@@ -64,7 +64,10 @@ enum LibGit2StagedFetchPromoter {
         }
         let commitResult = git_transaction_commit(transaction)
         guard commitResult >= 0 else {
-            throw libGit2Failure(code: commitResult, fallback: "could not commit ref promotion")
+            // libgit2 commits refs individually; an error cannot promise that no refs changed.
+            throw GitDataPlaneError.remoteRefTransactionIndeterminate(
+                message: "Remote reference promotion failed; re-read current references before publishing status"
+            )
         }
     }
 
