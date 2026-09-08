@@ -78,6 +78,20 @@ public struct GitRemoteTrackingSnapshot: Codable, Equatable, Hashable, Sendable 
     public let configuredRemoteURL: String
     public let effectiveFetchURL: String
     public let references: [GitRemoteTrackingReference]
+    private var credentialedFetchURL: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case repositoryPath, repositoryCommonDirectory, remoteName
+        case configuredRemoteURL, effectiveFetchURL, references
+    }
+
+    package func fetchURL() throws(GitDataPlaneError) -> String {
+        if let credentialedFetchURL { return credentialedFetchURL }
+        guard !effectiveFetchURL.contains("<redacted>") else {
+            throw .unsupported(message: "redacted remote snapshot must be recaptured before fetching")
+        }
+        return effectiveFetchURL
+    }
 
     public init(
         repositoryPath: URL,
@@ -90,9 +104,39 @@ public struct GitRemoteTrackingSnapshot: Codable, Equatable, Hashable, Sendable 
         self.repositoryPath = repositoryPath
         self.repositoryCommonDirectory = repositoryCommonDirectory
         self.remoteName = remoteName
-        self.configuredRemoteURL = configuredRemoteURL
-        self.effectiveFetchURL = effectiveFetchURL
+        self.configuredRemoteURL = Self.publicRemoteURL(configuredRemoteURL)
+        self.effectiveFetchURL = Self.publicRemoteURL(effectiveFetchURL)
+        self.credentialedFetchURL = self.effectiveFetchURL == effectiveFetchURL ? nil : effectiveFetchURL
         self.references = references
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            repositoryPath: try values.decode(URL.self, forKey: .repositoryPath),
+            repositoryCommonDirectory: try values.decode(URL.self, forKey: .repositoryCommonDirectory),
+            remoteName: try values.decode(String.self, forKey: .remoteName),
+            configuredRemoteURL: try values.decode(String.self, forKey: .configuredRemoteURL),
+            effectiveFetchURL: try values.decode(String.self, forKey: .effectiveFetchURL),
+            references: try values.decode([GitRemoteTrackingReference].self, forKey: .references)
+        )
+        // Serialized metadata cannot transfer credential custody to a fetch operation.
+        credentialedFetchURL = nil
+    }
+
+    private static func publicRemoteURL(_ value: String) -> String {
+        var result = value
+        for (pattern, replacement) in [
+            (#"(?i)\b(https?://)[^/\s@]+@"#, "$1<redacted>@"),
+            (#"([?&])([^=\s&#'\"]+)=([^&\s#'\"]+)"#, "$1$2=<redacted>"),
+        ] {
+            guard let expression = try? NSRegularExpression(pattern: pattern) else { continue }
+            result = expression.stringByReplacingMatches(
+                in: result, range: NSRange(result.startIndex..<result.endIndex, in: result),
+                withTemplate: replacement
+            )
+        }
+        return result
     }
 }
 

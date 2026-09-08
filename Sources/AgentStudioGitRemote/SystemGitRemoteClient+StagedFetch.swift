@@ -89,7 +89,7 @@ extension SystemGitRemoteClient {
             "--no-write-commit-graph",
             "--refmap=",
             "--",
-            request.snapshot.effectiveFetchURL,
+            try request.snapshot.fetchURL(),
             "+refs/heads/*:\(stagedRemoteNamespace)*",
         ])
 
@@ -278,7 +278,7 @@ extension SystemGitRemoteClient {
         else {
             throw GitDataPlaneError.unsupported(message: "remote tracking snapshot provenance is malformed")
         }
-        try validateRemoteProtocol(snapshot.effectiveFetchURL)
+        try validateRemoteProtocol(snapshot.fetchURL())
         let canonicalNamespace = canonicalRemoteNamespace(snapshot.remoteName)
         var refNames = Set<String>()
         for reference in snapshot.references {

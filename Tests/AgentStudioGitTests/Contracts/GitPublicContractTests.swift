@@ -4,6 +4,35 @@ import Testing
 
 @Suite("Git public contracts")
 struct GitPublicContractTests {
+    @Test("remote tracking snapshots do not expose synthetic URL credentials")
+    func remoteTrackingSnapshotProtectsCredentials() throws {
+        // Arrange
+        let remoteURL = "https://synthetic-user:synthetic-password@example.invalid/repo.git?token=synthetic-token"
+        let snapshot = GitRemoteTrackingSnapshot(
+            repositoryPath: URL(fileURLWithPath: "/fixture/repo"),
+            repositoryCommonDirectory: URL(fileURLWithPath: "/fixture/repo/.git"),
+            remoteName: "origin",
+            configuredRemoteURL: remoteURL,
+            effectiveFetchURL: remoteURL,
+            references: []
+        )
+
+        // Act
+        let encoded = try #require(String(data: JSONEncoder().encode(snapshot), encoding: .utf8))
+
+        // Assert
+        for secret in ["synthetic-user", "synthetic-password", "synthetic-token"] {
+            #expect(!snapshot.configuredRemoteURL.contains(secret))
+            #expect(!snapshot.effectiveFetchURL.contains(secret))
+            #expect(!encoded.contains(secret))
+        }
+        #expect(try snapshot.fetchURL() == remoteURL)
+        let decoded = try JSONDecoder().decode(GitRemoteTrackingSnapshot.self, from: Data(encoded.utf8))
+        #expect(throws: GitDataPlaneError.self) {
+            try decoded.fetchURL()
+        }
+    }
+
     @Test("commit range requests and bounded outcomes use explicit wire discriminators")
     func commitRangeContractsRoundTrip() throws {
         // Arrange
