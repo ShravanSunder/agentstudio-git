@@ -25,6 +25,7 @@ suites=(
   SourceStructureTests
   GitStatusIntegrationTests
   GitExactCleanBaselineIntegrationTests
+  GitImplicitStatusDependencyTests
   GitStagedFetchIntegrationTests
   GitIgnoreIntegrationTests
   GitTrackedPathIntegrationTests

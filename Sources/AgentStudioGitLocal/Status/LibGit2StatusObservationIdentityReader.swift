@@ -1,3 +1,4 @@
+import AgentStudioGitCInterop
 import AgentStudioGitContracts
 import CLibGit2Local
 import Foundation
@@ -21,15 +22,23 @@ struct LibGit2StatusObservationIdentityReader: Sendable {
         let commonDirectory = try requiredGitURL(git_repository_commondir(repository), label: "common Git directory")
         let indexPath = try GitIndexPathResolver().indexPath(repository: repository)
         var scopes = Set<GitStatusObservationScope>()
+        var directScopeCoverage = true
 
-        scopes.insert(scope(.subtree, worktreePath))
-        scopes.insert(scope(.item, indexPath))
-        scopes.insert(scope(.item, gitDirectory.appending(path: "HEAD")))
-        scopes.insert(scope(.item, gitDirectory.appending(path: "config.worktree")))
-        scopes.insert(scope(.subtree, commonDirectory.appending(path: "refs", directoryHint: .isDirectory)))
-        scopes.insert(scope(.item, commonDirectory.appending(path: "packed-refs")))
-        scopes.insert(scope(.item, commonDirectory.appending(path: "config")))
-        scopes.insert(scope(.item, commonDirectory.appending(path: "info/exclude")))
+        func observe(_ kind: GitStatusObservationScopeKind, _ path: URL) {
+            directScopeCoverage = directScopeCoverage && isDirectObservationPath(path)
+            scopes.insert(scope(kind, path))
+        }
+
+        observe(.subtree, worktreePath)
+        observe(.item, indexPath)
+        observe(.item, gitDirectory.appending(path: "HEAD"))
+        observe(.item, gitDirectory.appending(path: "config.worktree"))
+        observe(.item, gitDirectory.appending(path: "shallow"))
+        observe(.subtree, commonDirectory.appending(path: "refs", directoryHint: .isDirectory))
+        observe(.item, commonDirectory.appending(path: "packed-refs"))
+        observe(.item, commonDirectory.appending(path: "config"))
+        observe(.item, commonDirectory.appending(path: "info/exclude"))
+        observe(.item, commonDirectory.appending(path: "info/attributes"))
 
         let configDependencies = try configurationDependencies(repository: repository)
         scopes.formUnion(configDependencies.scopes)
@@ -37,8 +46,8 @@ struct LibGit2StatusObservationIdentityReader: Sendable {
         let gitModulesPath = worktreePath.appending(path: ".gitmodules")
         let hasSubmodules = FileManager.default.fileExists(atPath: gitModulesPath.path)
         if hasSubmodules {
-            scopes.insert(scope(.item, gitModulesPath))
-            scopes.insert(scope(.subtree, commonDirectory.appending(path: "modules", directoryHint: .isDirectory)))
+            observe(.item, gitModulesPath)
+            observe(.subtree, commonDirectory.appending(path: "modules", directoryHint: .isDirectory))
         }
 
         let sortedScopes = scopes.sorted {
@@ -51,7 +60,7 @@ struct LibGit2StatusObservationIdentityReader: Sendable {
         return GitStatusObservationPlan(
             identity: identity,
             scopes: sortedScopes,
-            support: configDependencies.complete ? .supported : .unsupported
+            support: configDependencies.complete && directScopeCoverage ? .supported : .unsupported
         )
     }
 
@@ -74,6 +83,31 @@ struct LibGit2StatusObservationIdentityReader: Sendable {
 
         var scopes = Set<GitStatusObservationScope>()
         var complete = true
+        // Observe candidates even when absent: creating a higher-precedence file changes Git's inputs.
+        for (level, filenames) in [
+            (GIT_CONFIG_LEVEL_GLOBAL, [".gitconfig"]),
+            (GIT_CONFIG_LEVEL_XDG, ["config", "attributes", "ignore"]),
+            (GIT_CONFIG_LEVEL_SYSTEM, ["gitconfig", "gitattributes"]),
+        ] {
+            var searchPathBuffer = git_buf(ptr: nil, reserved: 0, size: 0)
+            defer { git_buf_dispose(&searchPathBuffer) }
+            guard agentstudio_git_get_search_path(level, &searchPathBuffer) == 0 else {
+                complete = false
+                continue
+            }
+            let searchPath = searchPathBuffer.ptr.map { String(cString: $0) } ?? ""
+            for directory in searchPathDirectories(searchPath) {
+                guard directory.hasPrefix("/") else {
+                    complete = false
+                    continue
+                }
+                for filename in filenames {
+                    let candidatePath = URL(fileURLWithPath: directory).appending(path: filename)
+                    complete = complete && isDirectObservationPath(candidatePath)
+                    scopes.insert(scope(.item, candidatePath))
+                }
+            }
+        }
         while true {
             var entry: UnsafeMutablePointer<git_config_entry>?
             let nextResult = git_config_next(&entry, iterator)
@@ -100,23 +134,29 @@ struct LibGit2StatusObservationIdentityReader: Sendable {
                 complete = false
                 continue
             }
-            scopes.insert(scope(.item, URL(fileURLWithPath: originPath)))
+            let configurationPath = URL(fileURLWithPath: originPath)
+            complete = complete && isDirectObservationPath(configurationPath)
+            scopes.insert(scope(.item, configurationPath))
 
         }
 
-        var excludesPathBuffer = git_buf(ptr: nil, reserved: 0, size: 0)
-        defer { git_buf_dispose(&excludesPathBuffer) }
-        let excludesResult = "core.excludesfile".withCString {
-            git_config_get_path(&excludesPathBuffer, configuration, $0)
-        }
-        if excludesResult == 0, let pathPointer = excludesPathBuffer.ptr {
-            let excludesPath = String(cString: pathPointer)
-            guard excludesPath.hasPrefix("/") else {
-                return (scopes, false)
+        for dependencyKey in ["core.excludesfile", "core.attributesfile"] {
+            var dependencyPathBuffer = git_buf(ptr: nil, reserved: 0, size: 0)
+            defer { git_buf_dispose(&dependencyPathBuffer) }
+            let dependencyResult = dependencyKey.withCString {
+                git_config_get_path(&dependencyPathBuffer, configuration, $0)
             }
-            scopes.insert(scope(.item, URL(fileURLWithPath: excludesPath)))
-        } else if excludesResult != GIT_ENOTFOUND.rawValue {
-            complete = false
+            if dependencyResult == 0, let pathPointer = dependencyPathBuffer.ptr {
+                let dependencyPath = String(cString: pathPointer)
+                guard dependencyPath.hasPrefix("/") else {
+                    return (scopes, false)
+                }
+                let configuredDependency = URL(fileURLWithPath: dependencyPath)
+                complete = complete && isDirectObservationPath(configuredDependency)
+                scopes.insert(scope(.item, configuredDependency))
+            } else if dependencyResult != GIT_ENOTFOUND.rawValue {
+                complete = false
+            }
         }
         return (scopes, complete)
     }
@@ -125,8 +165,31 @@ struct LibGit2StatusObservationIdentityReader: Sendable {
         GitStatusObservationScope(kind: kind, path: canonicalURL(path))
     }
 
+    private func searchPathDirectories(_ searchPath: String) -> [String] {
+        var directories: [String] = []
+        var directory = ""
+        var previousCharacter: Character?
+        // Match pinned libgit2's macOS directory-list parsing, including escaped separators.
+        for character in searchPath {
+            if character == ":", previousCharacter != "\\" {
+                if !directory.isEmpty { directories.append(directory) }
+                directory = ""
+            } else {
+                directory.append(character)
+            }
+            previousCharacter = character
+        }
+        if !directory.isEmpty { directories.append(directory) }
+        return directories
+    }
+
     private func canonicalURL(_ path: URL) -> URL {
         path.standardizedFileURL.resolvingSymlinksInPath()
+    }
+
+    private func isDirectObservationPath(_ path: URL) -> Bool {
+        // Canonical scopes cannot prove that an unobserved alias was not retargeted.
+        canonicalURL(path) == path.standardizedFileURL
     }
 
     private func requiredGitURL(_ pointer: UnsafePointer<CChar>?, label: String) throws -> URL {

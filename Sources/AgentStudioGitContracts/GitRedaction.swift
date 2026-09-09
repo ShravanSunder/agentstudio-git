@@ -1,6 +1,25 @@
 import Foundation
 
 public enum GitRedaction {
+    package static func redactingRemoteURLMetadata(_ value: String) -> String {
+        var redactedValue = replacingMatches(
+            in: value,
+            pattern: #"(?i)\b(https?://)[^/\s@]+@"#,
+            template: "$1<redacted>@"
+        )
+        redactedValue = replacingMatches(
+            in: redactedValue,
+            pattern: #"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s@]*:[^/\s@]*@"#,
+            template: "$1<redacted>@"
+        )
+        redactedValue = replacingMatches(
+            in: redactedValue,
+            pattern: #"([?&])([^=\s&#'"]+)=([^&\s#'"]+)"#,
+            template: "$1$2=<redacted>"
+        )
+        return redactedValue
+    }
+
     public static func redact(_ value: String) -> String {
         var redactedValue = replacingMatches(
             in: value,

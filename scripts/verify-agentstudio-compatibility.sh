@@ -3,7 +3,16 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 AGENTSTUDIO_GIT_REMOTE_URL="https://github.com/ShravanSunder/agentstudio-git.git"
-AGENTSTUDIO_CONSUMER_SUITE_FILTER="AgentStudioGitWorkingTreeStatusProviderTests|BridgeGitReviewSourceProviderTests|BridgeGitReviewContributionSourceProviderTests|BridgeGitReviewBoundaryTests|BridgeReviewGitRefreshScopeTests|BridgeReviewDeltaBuilderTests|WorktreeAnnotationGitSourceMaterialProviderTests|WorktreeAnnotationSourceCaptureReviewProportionalTests"
+AGENTSTUDIO_CONSUMER_SUITE_FILTER="AgentStudioGitWorkingTreeStatusProviderTests|BridgeGitReviewSourceProviderTests|BridgeGitReviewBoundaryTests|BridgeReviewGitRefreshScopeTests|BridgeReviewDeltaBuilderTests|WorktreeAnnotationGitSourceMaterialProviderTests|ReviewAnnotationProportionalSourceCaptureTests"
+AGENTSTUDIO_REQUIRED_CONSUMER_SUITES=(
+  "AgentStudioGitWorkingTreeStatusProviderTests"
+  "BridgeGitReviewSourceProviderTests"
+  "BridgeGitReviewBoundaryTests"
+  "Bridge Review Git refresh scope"
+  "BridgeReviewDeltaBuilderTests"
+  "Worktree annotation agentstudio-git source material"
+  "Worktree annotation Review proportional source capture"
+)
 
 if [ -z "${AGENTSTUDIO_GIT_AGENTSTUDIO_PATH:-}" ]; then
   cat >&2 <<'EOF'
@@ -114,5 +123,13 @@ if ! grep -Eq 'Test run with [1-9][0-9]* tests? in [1-9][0-9]* suites? passed' "
   echo "AgentStudio compatibility failed: consumer task did not report a positive Swift Testing terminal count." >&2
   exit 2
 fi
+
+for required_consumer_suite in "${AGENTSTUDIO_REQUIRED_CONSUMER_SUITES[@]}"; do
+  if ! grep -Fq "✔ Suite $required_consumer_suite passed after " "$agentstudio_test_output" \
+    && ! grep -Fq "✔ Suite \"$required_consumer_suite\" passed after " "$agentstudio_test_output"; then
+    echo "AgentStudio compatibility failed: required consumer suite did not pass: $required_consumer_suite" >&2
+    exit 2
+  fi
+done
 
 echo "AgentStudio compatibility: real consumer suites passed at the exact SDK candidate pin."

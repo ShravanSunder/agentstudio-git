@@ -270,6 +270,41 @@ struct GitStatusIntegrationTests {
         #expect(remote.url.absoluteString == sshURL)
     }
 
+    @Test("origin snapshots redact SSH passwords and agree with captured remote provenance")
+    func originSnapshotsRedactSSHPasswordsAndAgreeWithCapturedRemoteProvenance() async throws {
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-status-origin-ssh-redaction")
+        defer { fixture.remove() }
+        let credentialedURL = "ssh://synthetic-user:synthetic-password@example.invalid/org/repo.git"
+        let client = LibGit2AgentStudioGitLocalClient()
+        let trackingSnapshot = GitRemoteTrackingSnapshot(
+            repositoryPath: fixture.repositoryPath,
+            repositoryCommonDirectory: fixture.repositoryPath.appending(path: ".git"),
+            remoteName: "origin",
+            configuredRemoteURL: credentialedURL,
+            effectiveFetchURL: credentialedURL,
+            references: []
+        )
+
+        try fixture.git.run("remote", "add", "origin", credentialedURL)
+
+        let status = try await client.statusFacts(for: fixture.repositoryPath, options: GitStatusOptions()).facts
+
+        guard case .resolved(let remote) = status.originResolution else {
+            Issue.record("expected resolved origin, got \(status.originResolution)")
+            return
+        }
+        let encoded = try #require(String(data: JSONEncoder().encode(status), encoding: .utf8))
+        #expect(remote.rawURL == "ssh://<redacted>@example.invalid/org/repo.git")
+        #expect(remote.rawURL == trackingSnapshot.configuredRemoteURL)
+        #expect(remote.url.absoluteString == "ssh://example.invalid/org/repo.git")
+        #expect(try trackingSnapshot.fetchURL() == credentialedURL)
+        for secret in ["synthetic-user", "synthetic-password"] {
+            #expect(!remote.rawURL.contains(secret))
+            #expect(!remote.url.absoluteString.contains(secret))
+            #expect(!encoded.contains(secret))
+        }
+    }
+
     @Test("origin snapshots preserve local paths under dot ssh directories")
     func originSnapshotsPreserveLocalPathsUnderDotSSHDirectories() async throws {
         let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-status-origin-dot-ssh")

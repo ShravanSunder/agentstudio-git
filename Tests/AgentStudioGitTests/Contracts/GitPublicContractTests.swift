@@ -4,32 +4,59 @@ import Testing
 
 @Suite("Git public contracts")
 struct GitPublicContractTests {
-    @Test("remote tracking snapshots do not expose synthetic URL credentials")
+    @Test("remote tracking snapshots redact URI credentials without losing private fetch provenance")
     func remoteTrackingSnapshotProtectsCredentials() throws {
         // Arrange
-        let remoteURL = "https://synthetic-user:synthetic-password@example.invalid/repo.git?token=synthetic-token"
-        let snapshot = GitRemoteTrackingSnapshot(
-            repositoryPath: URL(fileURLWithPath: "/fixture/repo"),
-            repositoryCommonDirectory: URL(fileURLWithPath: "/fixture/repo/.git"),
-            remoteName: "origin",
-            configuredRemoteURL: remoteURL,
-            effectiveFetchURL: remoteURL,
-            references: []
-        )
+        let cases = [
+            (
+                remoteURL:
+                    "https://synthetic-user:synthetic-password@example.invalid/repo.git?token=synthetic-token",
+                publicURL: "https://<redacted>@example.invalid/repo.git?token=<redacted>",
+                secrets: ["synthetic-user", "synthetic-password", "synthetic-token"]
+            ),
+            (
+                remoteURL: "ssh://synthetic-user:synthetic-password@example.invalid/repo.git",
+                publicURL: "ssh://<redacted>@example.invalid/repo.git",
+                secrets: ["synthetic-user", "synthetic-password"]
+            ),
+            (
+                remoteURL: "git://synthetic-user:synthetic-password@example.invalid/repo.git",
+                publicURL: "git://<redacted>@example.invalid/repo.git",
+                secrets: ["synthetic-user", "synthetic-password"]
+            ),
+            (
+                remoteURL: "file://synthetic-user:synthetic-password@example.invalid/repo.git",
+                publicURL: "file://<redacted>@example.invalid/repo.git",
+                secrets: ["synthetic-user", "synthetic-password"]
+            ),
+        ]
 
-        // Act
-        let encoded = try #require(String(data: JSONEncoder().encode(snapshot), encoding: .utf8))
+        for testCase in cases {
+            let snapshot = GitRemoteTrackingSnapshot(
+                repositoryPath: URL(fileURLWithPath: "/fixture/repo"),
+                repositoryCommonDirectory: URL(fileURLWithPath: "/fixture/repo/.git"),
+                remoteName: "origin",
+                configuredRemoteURL: testCase.remoteURL,
+                effectiveFetchURL: testCase.remoteURL,
+                references: []
+            )
 
-        // Assert
-        for secret in ["synthetic-user", "synthetic-password", "synthetic-token"] {
-            #expect(!snapshot.configuredRemoteURL.contains(secret))
-            #expect(!snapshot.effectiveFetchURL.contains(secret))
-            #expect(!encoded.contains(secret))
-        }
-        #expect(try snapshot.fetchURL() == remoteURL)
-        let decoded = try JSONDecoder().decode(GitRemoteTrackingSnapshot.self, from: Data(encoded.utf8))
-        #expect(throws: GitDataPlaneError.self) {
-            try decoded.fetchURL()
+            // Act
+            let encoded = try #require(String(data: JSONEncoder().encode(snapshot), encoding: .utf8))
+
+            // Assert
+            #expect(snapshot.configuredRemoteURL == testCase.publicURL)
+            #expect(snapshot.effectiveFetchURL == testCase.publicURL)
+            for secret in testCase.secrets {
+                #expect(!snapshot.configuredRemoteURL.contains(secret))
+                #expect(!snapshot.effectiveFetchURL.contains(secret))
+                #expect(!encoded.contains(secret))
+            }
+            #expect(try snapshot.fetchURL() == testCase.remoteURL)
+            let decoded = try JSONDecoder().decode(GitRemoteTrackingSnapshot.self, from: Data(encoded.utf8))
+            #expect(throws: GitDataPlaneError.self) {
+                try decoded.fetchURL()
+            }
         }
     }
 

@@ -104,8 +104,8 @@ public struct GitRemoteTrackingSnapshot: Codable, Equatable, Hashable, Sendable 
         self.repositoryPath = repositoryPath
         self.repositoryCommonDirectory = repositoryCommonDirectory
         self.remoteName = remoteName
-        self.configuredRemoteURL = Self.publicRemoteURL(configuredRemoteURL)
-        self.effectiveFetchURL = Self.publicRemoteURL(effectiveFetchURL)
+        self.configuredRemoteURL = GitRedaction.redactingRemoteURLMetadata(configuredRemoteURL)
+        self.effectiveFetchURL = GitRedaction.redactingRemoteURLMetadata(effectiveFetchURL)
         self.credentialedFetchURL = self.effectiveFetchURL == effectiveFetchURL ? nil : effectiveFetchURL
         self.references = references
     }
@@ -122,21 +122,6 @@ public struct GitRemoteTrackingSnapshot: Codable, Equatable, Hashable, Sendable 
         )
         // Serialized metadata cannot transfer credential custody to a fetch operation.
         credentialedFetchURL = nil
-    }
-
-    private static func publicRemoteURL(_ value: String) -> String {
-        var result = value
-        for (pattern, replacement) in [
-            (#"(?i)\b(https?://)[^/\s@]+@"#, "$1<redacted>@"),
-            (#"([?&])([^=\s&#'\"]+)=([^&\s#'\"]+)"#, "$1$2=<redacted>"),
-        ] {
-            guard let expression = try? NSRegularExpression(pattern: pattern) else { continue }
-            result = expression.stringByReplacingMatches(
-                in: result, range: NSRange(result.startIndex..<result.endIndex, in: result),
-                withTemplate: replacement
-            )
-        }
-        return result
     }
 }
 

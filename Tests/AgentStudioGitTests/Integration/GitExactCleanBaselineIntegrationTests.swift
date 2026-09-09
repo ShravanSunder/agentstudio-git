@@ -4,6 +4,78 @@ import Testing
 
 @Suite("Exact clean Git baseline integration")
 struct GitExactCleanBaselineIntegrationTests {
+    enum AttributeLocation: CaseIterable {
+        case common, configured, commonSymlink, configuredSymlink
+
+        var usesConfiguration: Bool { self == .configured || self == .configuredSymlink }
+        var usesSymlink: Bool { self == .commonSymlink || self == .configuredSymlink }
+    }
+
+    @Test(
+        "linked clean authority observes attribute inputs outside its worktree", arguments: AttributeLocation.allCases)
+    func linkedAttributeChangesMustBeObserved(location: AttributeLocation) async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-attribute-observation")
+        defer { fixture.remove() }
+        try fixture.git.run("config", "core.autocrlf", "false")
+        let attributePath =
+            location.usesConfiguration
+            ? fixture.root.appending(path: "external-attributes")
+            : fixture.repositoryPath.appending(path: ".git/info/attributes")
+        let initialAttributeTarget =
+            location.usesSymlink
+            ? fixture.root.appending(path: "initial-attribute-target") : attributePath
+        try "line-endings.txt -text\n".write(to: initialAttributeTarget, atomically: true, encoding: .utf8)
+        if location.usesSymlink {
+            try FileManager.default.createSymbolicLink(at: attributePath, withDestinationURL: initialAttributeTarget)
+        }
+        if location.usesConfiguration {
+            try fixture.git.run("config", "core.attributesFile", attributePath.path)
+        }
+        try fixture.write("line-endings.txt", contents: "first\r\nsecond\r\n")
+        try fixture.git.run("add", "line-endings.txt")
+        try fixture.git.run("commit", "-m", "track exact line endings")
+        let linkedPath = try fixture.addLinkedWorktree(named: "linked", branch: "linked-attributes")
+        // Keep index stat data stale: NO_REFRESH must hash content without timing-dependent sleeps.
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 4_102_444_800)],
+            ofItemAtPath: linkedPath.appending(path: "line-endings.txt").path
+        )
+        let client = LibGit2AgentStudioGitLocalClient()
+        let plan = try await client.statusObservationPlan(for: linkedPath)
+        let before = try await client.statusFacts(
+            for: linkedPath, options: GitStatusOptions(), observationPlan: plan
+        )
+        #expect(before.facts.entries.isEmpty)
+        let observedAttributePath = attributePath.standardizedFileURL
+
+        // Act: only the attribute dependency changes, not the worktree file or index.
+        if location.usesSymlink {
+            let replacementTarget = fixture.root.appending(path: "replacement-attribute-target")
+            try "line-endings.txt text eol=lf\n".write(to: replacementTarget, atomically: true, encoding: .utf8)
+            try FileManager.default.removeItem(at: attributePath)
+            try FileManager.default.createSymbolicLink(at: attributePath, withDestinationURL: replacementTarget)
+        } else {
+            try "line-endings.txt text eol=lf\n".write(to: attributePath, atomically: true, encoding: .utf8)
+        }
+        let after = try await client.statusFacts(for: linkedPath, options: GitStatusOptions())
+
+        // Assert: exact Git sees the difference; continuity must observe its input or decline authority.
+        #expect(after.facts.entries.contains { $0.path == "line-endings.txt" && $0.worktreeState == .modified })
+        #expect(
+            plan.support == .unsupported
+                || plan.scopes.contains { scope in
+                    scope.path == observedAttributePath
+                        || (scope.kind == .subtree && observedAttributePath.path.hasPrefix(scope.path.path + "/"))
+                }
+        )
+        if plan.support == .unsupported {
+            #expect(before.exactCleanBaseline == nil)
+        } else {
+            #expect(before.exactCleanBaseline?.observationIdentity == plan.identity)
+        }
+    }
+
     @Test("empty and missing external includes cannot authorize unobserved clean renewal", arguments: [false, true])
     func externalIncludeDependencyMustBeObservedOrUnsupported(createEmptyFile: Bool) async throws {
         // Arrange

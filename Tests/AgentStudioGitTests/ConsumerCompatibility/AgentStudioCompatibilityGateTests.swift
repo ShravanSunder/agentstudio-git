@@ -122,6 +122,82 @@ struct AgentStudioCompatibilityGateTests {
         #expect(try fixture.recordedMiseArguments().contains("test:swift"))
     }
 
+    @Test("gate rejects a successful AgentStudio task missing one required consumer suite")
+    func gateRejectsSuccessfulAgentStudioTaskMissingRequiredConsumerSuite() throws {
+        let fixture = try AgentStudioCompatibilityGateFixture.make(
+            configuration: AgentStudioCompatibilityGateFixture.Configuration(
+                swiftTestingTerminalOutput: AgentStudioCompatibilityGateFixture.swiftTestingOutput(
+                    omittingCompletionFor: AgentStudioCompatibilityGateFixture.proportionalSourceCaptureSuite
+                )
+            )
+        )
+        defer { fixture.remove() }
+
+        let result = try fixture.runGate()
+
+        #expect(result.exitCode == 2)
+        #expect(result.combinedOutput.contains("required consumer suite did not pass"))
+        #expect(result.combinedOutput.contains(AgentStudioCompatibilityGateFixture.proportionalSourceCaptureSuite))
+        #expect(try fixture.recordedMiseArguments().contains("test:swift"))
+    }
+
+    @Test("gate rejects truncated output that only starts one required consumer suite")
+    func gateRejectsTruncatedOutputWithStartedButUnfinishedRequiredConsumerSuite() throws {
+        let fixture = try AgentStudioCompatibilityGateFixture.make(
+            configuration: AgentStudioCompatibilityGateFixture.Configuration(
+                swiftTestingTerminalOutput: AgentStudioCompatibilityGateFixture.swiftTestingOutput(
+                    startingWithoutCompletionFor: AgentStudioCompatibilityGateFixture.proportionalSourceCaptureSuite
+                )
+            )
+        )
+        defer { fixture.remove() }
+
+        let result = try fixture.runGate()
+
+        #expect(result.exitCode == 2)
+        #expect(result.combinedOutput.contains("required consumer suite did not pass"))
+        #expect(result.combinedOutput.contains(AgentStudioCompatibilityGateFixture.proportionalSourceCaptureSuite))
+        #expect(try fixture.recordedMiseArguments().contains("test:swift"))
+    }
+
+    @Test("gate rejects diagnostic text that resembles a required suite completion")
+    func gateRejectsDiagnosticTextWithoutSwiftTestingSuiteCompletionMarker() throws {
+        let incompleteOutput = AgentStudioCompatibilityGateFixture.swiftTestingOutput(
+            omittingCompletionFor: AgentStudioCompatibilityGateFixture.proportionalSourceCaptureSuite
+        )
+        let diagnosticOutput =
+            "diagnostic: Suite \"\(AgentStudioCompatibilityGateFixture.proportionalSourceCaptureSuite)\" "
+            + "passed after an internal retry"
+        let fixture = try AgentStudioCompatibilityGateFixture.make(
+            configuration: AgentStudioCompatibilityGateFixture.Configuration(
+                swiftTestingTerminalOutput: "\(incompleteOutput)\n\(diagnosticOutput)"
+            )
+        )
+        defer { fixture.remove() }
+
+        let result = try fixture.runGate()
+
+        #expect(result.exitCode == 2)
+        #expect(result.combinedOutput.contains("required consumer suite did not pass"))
+        #expect(result.combinedOutput.contains(AgentStudioCompatibilityGateFixture.proportionalSourceCaptureSuite))
+        #expect(try fixture.recordedMiseArguments().contains("test:swift"))
+    }
+
+    @Test("gate accepts successful completion from every canonical consumer suite")
+    func gateAcceptsSuccessfulCompletionFromEveryCanonicalConsumerSuite() throws {
+        let fixture = try AgentStudioCompatibilityGateFixture.make(
+            configuration: AgentStudioCompatibilityGateFixture.Configuration(
+                swiftTestingTerminalOutput: AgentStudioCompatibilityGateFixture.swiftTestingOutput()
+            )
+        )
+        defer { fixture.remove() }
+
+        let result = try fixture.runGate()
+
+        #expect(result.exitCode == 0)
+        #expect(result.combinedOutput.contains("real consumer suites passed at the exact SDK candidate pin"))
+    }
+
     @Test("gate rejects a configured path that is not an AgentStudio checkout")
     func gateRejectsInvalidConfiguredCheckout() throws {
         let fixture = try AgentStudioCompatibilityGateFixture.make()
@@ -139,11 +215,39 @@ struct AgentStudioCompatibilityGateTests {
 private struct AgentStudioCompatibilityGateFixture {
     static let candidateRevision = String(repeating: "a", count: 40)
     static let otherRevision = String(repeating: "b", count: 40)
+    static let proportionalSourceCaptureSuite = "Worktree annotation Review proportional source capture"
     static let consumerSuiteFilter =
         "AgentStudioGitWorkingTreeStatusProviderTests|BridgeGitReviewSourceProviderTests|"
-        + "BridgeGitReviewContributionSourceProviderTests|BridgeGitReviewBoundaryTests|"
-        + "BridgeReviewGitRefreshScopeTests|BridgeReviewDeltaBuilderTests|"
-        + "WorktreeAnnotationGitSourceMaterialProviderTests|" + "WorktreeAnnotationSourceCaptureReviewProportionalTests"
+        + "BridgeGitReviewBoundaryTests|BridgeReviewGitRefreshScopeTests|BridgeReviewDeltaBuilderTests|"
+        + "WorktreeAnnotationGitSourceMaterialProviderTests|ReviewAnnotationProportionalSourceCaptureTests"
+
+    private static let requiredConsumerSuiteCompletionLines = [
+        "✔ Suite AgentStudioGitWorkingTreeStatusProviderTests passed after 0.001 seconds.",
+        "✔ Suite BridgeGitReviewSourceProviderTests passed after 0.001 seconds.",
+        "✔ Suite BridgeGitReviewBoundaryTests passed after 0.001 seconds.",
+        "✔ Suite \"Bridge Review Git refresh scope\" passed after 0.001 seconds.",
+        "✔ Suite BridgeReviewDeltaBuilderTests passed after 0.001 seconds.",
+        "✔ Suite \"Worktree annotation agentstudio-git source material\" passed after 0.001 seconds.",
+        "✔ Suite \"\(proportionalSourceCaptureSuite)\" passed after 0.001 seconds.",
+    ]
+
+    static func swiftTestingOutput(
+        omittingCompletionFor omittedSuite: String? = nil,
+        startingWithoutCompletionFor startedSuite: String? = nil
+    ) -> String {
+        var lines = requiredConsumerSuiteCompletionLines.filter { completionLine in
+            guard let omittedSuite else {
+                return true
+            }
+            return !completionLine.contains(omittedSuite)
+        }
+        if let startedSuite {
+            lines.removeAll { $0.contains(startedSuite) }
+            lines.append("◇ Suite \"\(startedSuite)\" started.")
+        }
+        lines.append("✔ Test run with 70 tests in 7 suites passed after 0.010 seconds.")
+        return lines.joined(separator: "\n")
+    }
 
     struct Configuration {
         let manifestRevision: String
@@ -159,7 +263,7 @@ private struct AgentStudioCompatibilityGateFixture {
             dirtySDKProductionPath: String? = nil,
             miseExitCode: Int32 = 0,
             postTaskResolvedRevision: String? = nil,
-            swiftTestingTerminalOutput: String = "Test run with 1 test in 1 suite passed after 0.001 seconds."
+            swiftTestingTerminalOutput: String = AgentStudioCompatibilityGateFixture.swiftTestingOutput()
         ) {
             self.manifestRevision = manifestRevision
             self.resolvedRevision = resolvedRevision
