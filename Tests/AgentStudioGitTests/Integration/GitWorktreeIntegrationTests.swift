@@ -4,6 +4,15 @@ import Testing
 
 @Suite("Git worktree integration", .serialized)
 struct GitWorktreeIntegrationTests {
+    @Test("fixture Git commands disable implicit maintenance before returning")
+    func fixtureGitCommandsDisableImplicitMaintenance() throws {
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-fixture-maintenance")
+        defer { fixture.remove() }
+        let automaticMaintenance = try fixture.git.run("config", "--get", "--bool", "maintenance.auto")
+        #expect(automaticMaintenance.trimmingCharacters(in: .whitespacesAndNewlines) == "false")
+        #expect(try fixture.git.succeeds("config", "--get", "--bool", "maintenance.auto"))
+    }
+
     @Test("discovery filesystem snapshots reject incomplete enumeration")
     func discoveryFilesystemSnapshotsRejectIncompleteEnumeration() throws {
         let fixtureRoot = FileManager.default.temporaryDirectory
