@@ -24,12 +24,17 @@ suites=(
   LibGit2PackagingScriptTests
   SourceStructureTests
   GitStatusIntegrationTests
+  GitExactCleanBaselineIntegrationTests
+  GitImplicitStatusDependencyTests
+  GitStagedFetchIntegrationTests
   GitIgnoreIntegrationTests
   GitTrackedPathIntegrationTests
   GitWorktreeIntegrationTests
+  GitCommitRangeCountIntegrationTests
+  GitDiffImpactSummaryIntegrationTests
   GitReviewDataIntegrationTests
-  GitWorkingTreeStatusCompatibilityTests
-  BridgeReviewSourceCompatibilityTests
+  GitLargeFilePointerReviewIntegrationTests
+  AgentStudioCompatibilityGateTests
 )
 
 for suite in "${suites[@]}"; do

@@ -128,7 +128,7 @@ struct LibGit2PackagingScriptTests {
         #expect(scriptContents.contains("if [ \"${#swift_test_arguments[@]}\" -gt 0 ]; then"))
         #expect(scriptContents.contains("GitProcessRunnerTests"))
         #expect(scriptContents.contains("SystemGitRemoteClientTests"))
-        #expect(scriptContents.contains("BridgeReviewSourceCompatibilityTests"))
+        #expect(scriptContents.contains("AgentStudioCompatibilityGateTests"))
         #expect(runnerSuites == sourceSuites)
     }
 

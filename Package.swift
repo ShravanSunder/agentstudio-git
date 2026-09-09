@@ -23,7 +23,8 @@ if localLibGit2ArtifactModeEnabled {
     let configuredBinaryURL = nonEmptyEnvironmentValue("AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL")
     let configuredBinaryChecksum = nonEmptyEnvironmentValue("AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM")
     if (configuredBinaryURL == nil) != (configuredBinaryChecksum == nil) {
-        fatalError("AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL and AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM must be set together")
+        fatalError(
+            "AGENTSTUDIO_GIT_LIBGIT2_BINARY_URL and AGENTSTUDIO_GIT_LIBGIT2_BINARY_CHECKSUM must be set together")
     }
 
     let binaryURL = configuredBinaryURL ?? hostedLibGit2BinaryURL
@@ -38,7 +39,7 @@ if localLibGit2ArtifactModeEnabled {
 let package = Package(
     name: "agentstudio-git",
     platforms: [
-        .macOS(.v14),
+        .macOS(.v14)
     ],
     products: [
         .library(
@@ -70,6 +71,7 @@ let package = Package(
             dependencies: [
                 "AgentStudioGitContracts",
                 "CLibGit2Local",
+                "AgentStudioGitCInterop",
             ],
             path: "Sources/AgentStudioGitLocal",
             linkerSettings: [
@@ -79,8 +81,15 @@ let package = Package(
         ),
         .target(
             name: "AgentStudioGitRemote",
-            dependencies: ["AgentStudioGitContracts"],
-            path: "Sources/AgentStudioGitRemote"
+            dependencies: [
+                "AgentStudioGitContracts",
+                "CLibGit2Local",
+            ],
+            path: "Sources/AgentStudioGitRemote",
+            linkerSettings: [
+                .linkedLibrary("z"),
+                .linkedLibrary("iconv"),
+            ]
         ),
         .target(
             name: "AgentStudioGit",
@@ -90,6 +99,11 @@ let package = Package(
                 "AgentStudioGitRemote",
             ],
             path: "Sources/AgentStudioGit"
+        ),
+        .target(
+            name: "AgentStudioGitCInterop",
+            dependencies: ["CLibGit2Local"],
+            path: "Sources/AgentStudioGitCInterop"
         ),
         libGit2BinaryTarget,
         .testTarget(

@@ -126,6 +126,13 @@ enum LibGit2ReviewSupport {
         return URL(fileURLWithPath: String(cString: workdirPointer), isDirectory: true)
     }
 
+    static func repositoryCommonDirectory(_ repository: OpaquePointer) throws -> URL {
+        guard let commonDirectoryPointer = git_repository_commondir(repository) else {
+            throw GitDataPlaneError.unsupported(message: "repository has no common Git directory")
+        }
+        return URL(fileURLWithPath: String(cString: commonDirectoryPointer), isDirectory: true)
+    }
+
     static func containedWorkingTreeFile(repository: OpaquePointer, path: String) throws -> URL {
         try validateRepositoryRelativePath(path)
 

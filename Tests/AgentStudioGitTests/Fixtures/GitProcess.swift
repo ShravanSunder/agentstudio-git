@@ -10,7 +10,11 @@ struct GitProcess {
     }
 
     @discardableResult
-    func run(_ arguments: [String], currentDirectory: URL? = nil) throws -> String {
+    func run(
+        _ arguments: [String],
+        currentDirectory: URL? = nil,
+        standardInput: Data? = nil
+    ) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments =
@@ -24,6 +28,8 @@ struct GitProcess {
                 "commit.gpgsign=false",
                 "-c",
                 "init.defaultBranch=main",
+                "-c",
+                "maintenance.auto=false",
             ] + arguments
         process.currentDirectoryURL = currentDirectory ?? repositoryPath
         process.environment = ProcessInfo.processInfo.environment.merging(
@@ -38,10 +44,15 @@ struct GitProcess {
 
         let output = Pipe()
         let error = Pipe()
-        process.standardInput = FileHandle.nullDevice
+        let input = standardInput.map { _ in Pipe() }
+        process.standardInput = input ?? FileHandle.nullDevice
         process.standardOutput = output
         process.standardError = error
         try process.run()
+        if let standardInput, let input {
+            input.fileHandleForWriting.write(standardInput)
+            try input.fileHandleForWriting.close()
+        }
         process.waitUntilExit()
 
         let stdout = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
@@ -81,6 +92,8 @@ struct GitProcess {
                 "commit.gpgsign=false",
                 "-c",
                 "init.defaultBranch=main",
+                "-c",
+                "maintenance.auto=false",
             ] + arguments
         process.currentDirectoryURL = currentDirectory ?? repositoryPath
         process.environment = ProcessInfo.processInfo.environment.merging(

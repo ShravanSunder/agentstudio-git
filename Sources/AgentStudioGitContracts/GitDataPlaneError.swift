@@ -17,6 +17,7 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
     case processTimedOut(GitRemoteProcessFailure)
     case processCancelled(GitRemoteProcessFailure)
     case processOutputTooLarge(stream: GitProcessOutputStream, sizeBytes: Int64, maxSizeBytes: Int64)
+    case remoteRefTransactionIndeterminate(message: String)
     case libgit2Failure(code: Int32, klass: Int32, message: String)
     case unsupported(message: String)
 
@@ -37,6 +38,7 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
         case processTimedOut
         case processCancelled
         case processOutputTooLarge
+        case remoteRefTransactionIndeterminate
         case libgit2Failure
         case unsupported
     }
@@ -134,6 +136,14 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
                 sizeBytes: payload.decode(Int64.self, forKey: .sizeBytes),
                 maxSizeBytes: payload.decode(Int64.self, forKey: .maxSizeBytes)
             )
+        } else if container.contains(.remoteRefTransactionIndeterminate) {
+            let payload = try container.nestedContainer(
+                keyedBy: PayloadKeys.self,
+                forKey: .remoteRefTransactionIndeterminate
+            )
+            self = try .remoteRefTransactionIndeterminate(
+                message: payload.decode(String.self, forKey: .message)
+            )
         } else if container.contains(.libgit2Failure) {
             let payload = try container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .libgit2Failure)
             self = try .libgit2Failure(
@@ -207,6 +217,12 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
             try payload.encode(stream, forKey: .stream)
             try payload.encode(sizeBytes, forKey: .sizeBytes)
             try payload.encode(maxSizeBytes, forKey: .maxSizeBytes)
+        case .remoteRefTransactionIndeterminate(let message):
+            var payload = container.nestedContainer(
+                keyedBy: PayloadKeys.self,
+                forKey: .remoteRefTransactionIndeterminate
+            )
+            try payload.encode(message, forKey: .message)
         case .libgit2Failure(let code, let klass, let message):
             var payload = container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .libgit2Failure)
             try payload.encode(code, forKey: .code)

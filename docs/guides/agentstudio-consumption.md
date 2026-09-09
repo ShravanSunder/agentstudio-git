@@ -106,7 +106,7 @@ development overrides. A released SDK version should be self-contained in
 
 ## Remote/Auth Policy
 
-Remote/auth work is intentionally system-Git-backed. The SDK does not store credentials and does not implement a custom credential vault. `SystemGitRemoteClient.Configuration` owns:
+Remote/auth work is intentionally system-Git-backed. The SDK does not persist credentials and does not implement a custom credential vault. `SystemGitRemoteClient.Configuration` owns:
 
 - trusted executable selection
 - inherited environment policy
@@ -116,6 +116,26 @@ Remote/auth work is intentionally system-Git-backed. The SDK does not store cred
 - additional trusted environment values
 
 Defaults inherit the user's environment, strip Git tracing variables, set `LC_ALL=C`, suppress terminal prompts with `GIT_TERMINAL_PROMPT=0`, disable Git/SSH askpass helpers, normalize SSH batch mode to `-oBatchMode=yes`, enforce the configured timeout, and allow HTTPS plus SSH. Timeout cleanup kills the spawned process group so Git SSH/helper descendants are covered. Interactive prompting is a trusted opt-in for a caller that owns UI or terminal behavior.
+
+Public remote metadata redacts HTTP(S) userinfo and password-bearing URI
+userinfo for other schemes, while preserving ordinary username-only SSH URLs.
+Live tracking snapshots retain the actual fetch URL privately in memory; it is
+not encoded. A decoded redacted snapshot must be recaptured before fetching.
+
+## Clean-Continuity Observation
+
+Observation plans include common Git attributes, configured attributes/ignore
+files, and candidates from libgit2's actual global, XDG and system search paths,
+including missing files that could later appear. The private C interop target
+only exposes the variadic library path query to Swift; it owns no watcher or
+cache and does not alter the shipped libgit2 artifact.
+
+Configuration includes and alias-dependent paths whose replacement cannot be
+proved by canonical scopes remain unsupported for clean-continuity renewal.
+Ordinary exact Git reads remain available; unsupported observation never means
+that an uncertain result is clean. Ref promotion can partially apply before a
+commit-stage failure: callers must treat the outcome as failed/indeterminate,
+invalidate stale authority and reread actual state without assuming rollback.
 
 ## AgentStudio Adapter Boundary
 
@@ -157,7 +177,13 @@ The hosted-artifact verifier is the external gate for alternate hosted artifact
 download proof. It requires a real public HTTPS URL and the matching SwiftPM
 checksum, so it is not run by default CI.
 
-The AgentStudio compatibility verifier requires `AGENTSTUDIO_GIT_AGENTSTUDIO_PATH` because this repository cannot prove the app seams from an isolated checkout.
+The AgentStudio compatibility verifier requires `AGENTSTUDIO_GIT_AGENTSTUDIO_PATH` because this repository cannot prove the app seams from an isolated checkout. It requires successful completion of all seven canonical consumer suites, including annotation and proportional Review consumers, at the exact SDK revision. An older App checkout that contains only the complete-read consumers provides partial evidence and does not pass this full gate.
+
+Keep C and Swift sanitizer compilers in the same Xcode toolchain. If a Homebrew
+Clang is selected while Swift comes from Xcode, set `CC` to the Clang returned by
+`xcrun --find clang` under the same `DEVELOPER_DIR` for the command. Do not disable
+C instrumentation to work around mixed-runtime linker errors. The package's C
+interop wrapper is instrumented; the hosted prebuilt libgit2 binary is not.
 
 For live remote/auth proof, run:
 

@@ -183,54 +183,23 @@ struct LibGit2BranchReader: Sendable {
 
     private func publicRemoteURL(from rawURL: String) -> URL {
         guard var components = URLComponents(string: rawURL),
-            let scheme = components.scheme?.lowercased(),
-            ["http", "https"].contains(scheme)
+            let scheme = components.scheme?.lowercased()
         else {
-            return remoteURL(from: rawURL)
+            return remoteURL(from: GitRedaction.redactingRemoteURLMetadata(rawURL))
         }
 
-        components.user = nil
-        components.password = nil
+        if ["http", "https"].contains(scheme) || components.password != nil {
+            components.user = nil
+            components.password = nil
+        }
         guard let credentialStrippedURL = components.url else {
             return remoteURL(from: originRawURLForWire(from: rawURL))
         }
-        return remoteURL(from: redactingURLQueryValues(in: credentialStrippedURL.absoluteString))
+        return remoteURL(from: GitRedaction.redactingRemoteURLMetadata(credentialStrippedURL.absoluteString))
     }
 
     private func originRawURLForWire(from rawURL: String) -> String {
-        guard let scheme = URLComponents(string: rawURL)?.scheme?.lowercased(),
-            ["http", "https"].contains(scheme)
-        else {
-            return redactingURLQueryValues(in: rawURL)
-        }
-
-        let credentialRedactedURL = replacingMatches(
-            in: rawURL,
-            pattern: #"(?i)\b(https?://)[^/\s@]+@"#,
-            template: "$1<redacted>@"
-        )
-        return redactingURLQueryValues(in: credentialRedactedURL)
-    }
-
-    private func redactingURLQueryValues(in value: String) -> String {
-        replacingMatches(
-            in: value,
-            pattern: #"([?&])([^=\s&#'"]+)=([^&\s#'"]+)"#,
-            template: "$1$2=<redacted>"
-        )
-    }
-
-    private func replacingMatches(in value: String, pattern: String, template: String) -> String {
-        guard let expression = try? NSRegularExpression(pattern: pattern) else {
-            return value
-        }
-        let range = NSRange(value.startIndex..<value.endIndex, in: value)
-        return expression.stringByReplacingMatches(
-            in: value,
-            options: [],
-            range: range,
-            withTemplate: template
-        )
+        GitRedaction.redactingRemoteURLMetadata(rawURL)
     }
 
     private func withRepository<ReturnValue>(

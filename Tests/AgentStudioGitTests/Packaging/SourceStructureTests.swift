@@ -48,6 +48,55 @@ struct SourceStructureTests {
         #expect(ignoreReaderSource.contains("defer { git_repository_free(repository) }"))
     }
 
+    @Test("status fact reads cannot invoke exact line detail")
+    func statusFactReadsCannotInvokeExactLineDetail() throws {
+        let readerSource = try sourceContents(
+            "Sources/AgentStudioGitLocal/Status/LibGit2StatusReader.swift"
+        )
+        let factsStart = try #require(
+            readerSource.range(of: "private func statusFacts(")
+        )
+        let detailStart = try #require(
+            readerSource.range(
+                of: "private func exactLineCountDetail(repository:",
+                range: factsStart.upperBound..<readerSource.endIndex
+            )
+        )
+        let factsImplementation = readerSource[factsStart.lowerBound..<detailStart.lowerBound]
+
+        #expect(!factsImplementation.contains("shortstat"))
+        #expect(!factsImplementation.contains("git_diff_tree_to_workdir_with_index"))
+    }
+
+    @Test("ordinary status facts do not resolve continuity dependencies")
+    func ordinaryStatusFactsDoNotResolveContinuityDependencies() throws {
+        let readerSource = try sourceContents(
+            "Sources/AgentStudioGitLocal/Status/LibGit2StatusReader.swift"
+        )
+        let factsStart = try #require(readerSource.range(of: "private func statusFacts("))
+        let snapshotStart = try #require(
+            readerSource.range(
+                of: "private func statusFactsSnapshot(", range: factsStart.upperBound..<readerSource.endIndex)
+        )
+        let factsImplementation = readerSource[factsStart.lowerBound..<snapshotStart.lowerBound]
+        let noPlanGuard = try #require(factsImplementation.range(of: "guard let observationPlan else"))
+        let planResolution = try #require(
+            factsImplementation.range(of: "observationIdentityReader.plan(repository: repository)")
+        )
+
+        #expect(noPlanGuard.lowerBound < planResolution.lowerBound)
+    }
+
+    @Test("baseline-capable status includes unreadable entries")
+    func baselineCapableStatusIncludesUnreadableEntries() throws {
+        let readerSource = try sourceContents(
+            "Sources/AgentStudioGitLocal/Status/LibGit2StatusReader.swift"
+        )
+
+        #expect(readerSource.contains("GIT_STATUS_OPT_INCLUDE_UNREADABLE.rawValue"))
+        #expect(readerSource.contains("statusContains(flags, GIT_STATUS_WT_UNREADABLE)"))
+    }
+
     private func sourceSwiftFiles() throws -> [String] {
         try filePaths(under: "Sources").filter { $0.hasSuffix(".swift") }
     }

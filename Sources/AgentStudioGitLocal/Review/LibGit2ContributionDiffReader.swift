@@ -3,42 +3,173 @@ import CLibGit2Local
 import Foundation
 
 struct LibGit2ContributionDiffReader: Sendable {
-    func contributionDiff(_ request: GitContributionDiffRequest) throws -> GitContributionDiffSnapshot {
+    private let beforeIdentityRecheck: @Sendable () -> Void
+
+    init(beforeIdentityRecheck: @escaping @Sendable () -> Void = {}) {
+        self.beforeIdentityRecheck = beforeIdentityRecheck
+    }
+
+    func contributionDiff(_ request: GitContributionDiffRequest) throws -> GitContributionDiffResult {
         try LibGit2ReviewSupport.withRepository(at: request.repositoryPath) { repository in
-            let resolvedTarget = try resolveTargetCommit(request.target, repository: repository)
-            defer { git_commit_free(resolvedTarget.commit) }
-            let reviewedHead = try resolveReviewedHead(repository: repository)
-            defer { git_commit_free(reviewedHead.commit) }
+            switch request.refreshInput {
+            case .complete:
+                return try completeResult(
+                    request: request,
+                    repository: repository,
+                    disposition: .complete,
+                    reason: .completeRequested
+                )
+            case .proportional(let seed, let changedPaths):
+                let decision = try withResolvedComparison(request: request, repository: repository) { comparison in
+                    let attempt = LibGit2ReviewRefreshCalculator().proportionalAttempt(
+                        seed: seed,
+                        changedPaths: changedPaths,
+                        currentKey: comparison.key,
+                        baseTree: comparison.baseTree,
+                        repository: repository,
+                        resolveCurrentKey: {
+                            beforeIdentityRecheck()
+                            return try currentKey(request: request, repository: repository)
+                        }
+                    )
+                    switch attempt {
+                    case .accepted(let diff):
+                        return ContributionRefreshDecision.result(
+                            GitContributionDiffResult(
+                                snapshot: snapshot(comparison: comparison, diff: diff),
+                                successorSeed: GitReviewRefreshSeed(key: comparison.key, files: diff.files),
+                                calculationDisposition: .proportional,
+                                calculationReason: .proportionalAccepted
+                            ))
+                    case .requiresComplete(let reason):
+                        return ContributionRefreshDecision.fallback(reason)
+                    }
+                }
+                switch decision {
+                case .result(let result):
+                    return result
+                case .fallback(let reason):
+                    return try completeResult(
+                        request: request,
+                        repository: repository,
+                        disposition: .proportionalFallback,
+                        reason: reason
+                    )
+                }
+            }
+        }
+    }
 
-            let targetOID = try requiredCommitOID(resolvedTarget.commit)
-            let headOID = try requiredCommitOID(reviewedHead.commit)
-            let contributionBaseOID = try uniqueContributionBase(
-                targetOID: targetOID,
-                headOID: headOID,
-                repository: repository
+    private func completeResult(
+        request: GitContributionDiffRequest,
+        repository: OpaquePointer,
+        disposition: GitReviewCalculationDisposition,
+        reason: GitReviewCalculationReason
+    ) throws -> GitContributionDiffResult {
+        try withResolvedComparison(request: request, repository: repository) { comparison in
+            let calculation = try LibGit2ReviewRefreshCalculator().completeCalculation(
+                key: comparison.key,
+                baseTree: comparison.baseTree,
+                repository: repository,
+                disposition: disposition,
+                reason: reason
             )
-            let contributionBase = try lookupRequiredCommit(oid: contributionBaseOID, repository: repository)
-            defer { git_commit_free(contributionBase) }
-            let contributionBaseTree = try requiredTree(commit: contributionBase)
-            defer { git_tree_free(contributionBaseTree) }
-
-            let diff = try LibGit2DiffReader().diff(baseTree: contributionBaseTree, repository: repository)
-            return GitContributionDiffSnapshot(
-                resolvedTarget: GitResolvedRevision(
-                    oid: LibGit2ReviewSupport.oidString(targetOID),
-                    shortName: resolvedTarget.shortName
-                ),
-                reviewedHead: GitResolvedRevision(
-                    oid: LibGit2ReviewSupport.oidString(headOID),
-                    shortName: reviewedHead.shortName
-                ),
-                contributionBase: GitResolvedRevision(
-                    oid: LibGit2ReviewSupport.oidString(contributionBaseOID),
-                    shortName: nil
-                ),
-                diff: diff
+            return GitContributionDiffResult(
+                snapshot: snapshot(comparison: comparison, diff: calculation.diff),
+                successorSeed: calculation.successorSeed,
+                calculationDisposition: calculation.disposition,
+                calculationReason: calculation.reason
             )
         }
+    }
+
+    private func currentKey(
+        request: GitContributionDiffRequest,
+        repository: OpaquePointer
+    ) throws -> GitReviewRefreshSeedKey {
+        try withResolvedComparison(request: request, repository: repository) { $0.key }
+    }
+
+    private func withResolvedComparison<ReturnValue>(
+        request: GitContributionDiffRequest,
+        repository: OpaquePointer,
+        _ body: (ResolvedContributionComparison) throws -> ReturnValue
+    ) throws -> ReturnValue {
+        let resolvedTarget = try resolveTargetCommit(request.target, repository: repository)
+        defer { git_commit_free(resolvedTarget.commit) }
+        let reviewedHead = try resolveReviewedHead(repository: repository)
+        defer { git_commit_free(reviewedHead.commit) }
+        let targetOID = try requiredCommitOID(resolvedTarget.commit)
+        let headOID = try requiredCommitOID(reviewedHead.commit)
+        let contributionBaseOID = try uniqueContributionBase(
+            targetOID: targetOID,
+            headOID: headOID,
+            repository: repository
+        )
+        let contributionBase = try lookupRequiredCommit(oid: contributionBaseOID, repository: repository)
+        defer { git_commit_free(contributionBase) }
+        let contributionBaseTree = try requiredTree(commit: contributionBase)
+        defer { git_tree_free(contributionBaseTree) }
+
+        let targetOIDString = LibGit2ReviewSupport.oidString(targetOID)
+        let headOIDString = LibGit2ReviewSupport.oidString(headOID)
+        let contributionBaseOIDString = LibGit2ReviewSupport.oidString(contributionBaseOID)
+        let comparison = ResolvedContributionComparison(
+            target: GitResolvedRevision(oid: targetOIDString, shortName: resolvedTarget.shortName),
+            reviewedHead: GitResolvedRevision(oid: headOIDString, shortName: reviewedHead.shortName),
+            contributionBase: GitResolvedRevision(oid: contributionBaseOIDString, shortName: nil),
+            key: try refreshSeedKey(
+                request: request,
+                targetOID: targetOIDString,
+                headOID: headOIDString,
+                contributionBaseOID: contributionBaseOIDString,
+                repository: repository
+            ),
+            baseTree: contributionBaseTree
+        )
+        return try body(comparison)
+    }
+
+    private func refreshSeedKey(
+        request: GitContributionDiffRequest,
+        targetOID: String,
+        headOID: String,
+        contributionBaseOID: String,
+        repository: OpaquePointer
+    ) throws -> GitReviewRefreshSeedKey {
+        GitReviewRefreshSeedKey(
+            canonicalCommonDirectoryPath: try LibGit2ReviewSupport.repositoryCommonDirectory(repository)
+                .standardizedFileURL
+                .resolvingSymlinksInPath()
+                .path,
+            canonicalWorktreePath: try canonicalWorktreePath(repository: repository),
+            comparisonKind: .contribution,
+            comparisonOptionsVersion: LibGit2ReviewRefreshCalculator.comparisonOptionsVersion,
+            selectedTargetName: request.target.name,
+            resolvedTargetOID: targetOID,
+            reviewedHeadOID: headOID,
+            effectiveBaseRole: .contributionBase,
+            effectiveBaseOID: contributionBaseOID
+        )
+    }
+
+    private func canonicalWorktreePath(repository: OpaquePointer) throws -> String {
+        try LibGit2ReviewSupport.repositoryWorkDirectory(repository)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+            .path
+    }
+
+    private func snapshot(
+        comparison: ResolvedContributionComparison,
+        diff: GitDiffSnapshot
+    ) -> GitContributionDiffSnapshot {
+        GitContributionDiffSnapshot(
+            resolvedTarget: comparison.target,
+            reviewedHead: comparison.reviewedHead,
+            contributionBase: comparison.contributionBase,
+            diff: diff
+        )
     }
 
     /// The caller owns the returned commit and must release it with `git_commit_free`.
@@ -228,4 +359,17 @@ struct LibGit2ContributionDiffReader: Sendable {
         }
         return oidPointer.pointee
     }
+}
+
+private struct ResolvedContributionComparison {
+    let target: GitResolvedRevision
+    let reviewedHead: GitResolvedRevision
+    let contributionBase: GitResolvedRevision
+    let key: GitReviewRefreshSeedKey
+    let baseTree: OpaquePointer
+}
+
+private enum ContributionRefreshDecision {
+    case result(GitContributionDiffResult)
+    case fallback(GitReviewCalculationReason)
 }

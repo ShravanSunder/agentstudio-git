@@ -110,9 +110,17 @@ struct LibGit2BlockingReadExecutorTests {
                 GitValidateWorktreeRequest(worktreePath: missingRepositoryPath)
             )
             #expect(validation == GitWorktreeValidation(snapshot: nil, isValid: false))
-        case .status:
+        case .statusFacts:
             await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
-                _ = try await client.status(for: missingRepositoryPath, options: GitStatusOptions())
+                _ = try await client.statusFacts(for: missingRepositoryPath, options: GitStatusOptions())
+            }
+        case .exactLineCountDetail:
+            await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
+                _ = try await client.exactLineCountDetail(for: missingRepositoryPath)
+            }
+        case .completeStatus:
+            await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
+                _ = try await client.completeStatus(for: missingRepositoryPath, options: GitStatusOptions())
             }
         case .trackedPaths:
             await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
@@ -158,24 +166,26 @@ struct LibGit2BlockingReadExecutorTests {
                     GitDiffRequest(repositoryPath: missingRepositoryPath, base: .head, compare: .workingTree)
                 )
             }
+        case .countCommitRange:
+            await assertMissingRepositoryCommitRangeUsesBlockingExecutor(
+                client: client,
+                missingRepositoryPath: missingRepositoryPath
+            )
+        case .summarizeDiffImpact:
+            await assertMissingRepositoryDiffImpactUsesBlockingExecutor(
+                client: client,
+                missingRepositoryPath: missingRepositoryPath
+            )
         case .contributionDiff:
-            await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
-                _ = try await client.contributionDiff(
-                    GitContributionDiffRequest(
-                        repositoryPath: missingRepositoryPath,
-                        target: .named("refs/heads/main")
-                    )
-                )
-            }
+            await assertMissingRepositoryContributionDiffUsesBlockingExecutor(
+                client: client,
+                missingRepositoryPath: missingRepositoryPath
+            )
         case .directReviewComparison:
-            await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
-                _ = try await client.directReviewComparison(
-                    GitDirectReviewComparisonRequest(
-                        repositoryPath: missingRepositoryPath,
-                        target: .named("refs/heads/main")
-                    )
-                )
-            }
+            await assertMissingRepositoryDirectReviewUsesBlockingExecutor(
+                client: client,
+                missingRepositoryPath: missingRepositoryPath
+            )
         case .content:
             await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
                 _ = try await client.content(
@@ -233,10 +243,75 @@ private enum BlockingReadTestError: Error, Equatable, Sendable {
     case expected
 }
 
+private func assertMissingRepositoryCommitRangeUsesBlockingExecutor(
+    client: LibGit2AgentStudioGitLocalClient,
+    missingRepositoryPath: URL
+) async {
+    await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
+        _ = try await client.countCommitRange(
+            GitCommitRangeCountRequest(
+                repositoryPath: missingRepositoryPath,
+                base: .named("base"),
+                candidate: .named("candidate"),
+                maximumCount: 10,
+                maximumTraversalCount: 64
+            )
+        )
+    }
+}
+
+private func assertMissingRepositoryDiffImpactUsesBlockingExecutor(
+    client: LibGit2AgentStudioGitLocalClient,
+    missingRepositoryPath: URL
+) async {
+    await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
+        _ = try await client.summarizeDiffImpact(
+            GitDiffImpactSummaryRequest(
+                repositoryPath: missingRepositoryPath,
+                base: .head,
+                compare: .workingTree,
+                maximumChangedFileCount: 25,
+                maximumChangedLineCount: 1000,
+                maximumDiffableBlobByteCount: 1_048_576
+            )
+        )
+    }
+}
+
+private func assertMissingRepositoryContributionDiffUsesBlockingExecutor(
+    client: LibGit2AgentStudioGitLocalClient,
+    missingRepositoryPath: URL
+) async {
+    await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
+        _ = try await client.contributionDiff(
+            GitContributionDiffRequest(
+                repositoryPath: missingRepositoryPath,
+                target: .named("refs/heads/main")
+            )
+        )
+    }
+}
+
+private func assertMissingRepositoryDirectReviewUsesBlockingExecutor(
+    client: LibGit2AgentStudioGitLocalClient,
+    missingRepositoryPath: URL
+) async {
+    await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
+        _ = try await client.directReviewComparison(
+            GitDirectReviewComparisonRequest(
+                repositoryPath: missingRepositoryPath,
+                target: .named("refs/heads/main")
+            )
+        )
+    }
+}
+
 private enum BlockingReadAPI: String, CaseIterable, Sendable {
     case worktrees
     case validateWorktree
-    case status
+    case statusFacts
+    case exactLineCountDetail
+    case completeStatus
     case trackedPaths
     case isPathIgnored
     case ignoredPaths
@@ -245,6 +320,8 @@ private enum BlockingReadAPI: String, CaseIterable, Sendable {
     case resolveRevision
     case readTree
     case diff
+    case countCommitRange
+    case summarizeDiffImpact
     case contributionDiff
     case directReviewComparison
     case content
