@@ -22,7 +22,7 @@ struct LibGit2StatusObservationIdentityReader: Sendable {
         let commonDirectory = try requiredGitURL(git_repository_commondir(repository), label: "common Git directory")
         let indexPath = try GitIndexPathResolver().indexPath(repository: repository)
         var scopes = Set<GitStatusObservationScope>()
-        var directScopeCoverage = true
+        var directScopeCoverage = try hasDirectWorktreeAttributes(repository: repository, worktreePath: worktreePath)
 
         func observe(_ kind: GitStatusObservationScopeKind, _ path: URL) {
             directScopeCoverage = directScopeCoverage && isDirectObservationPath(path)
@@ -159,6 +159,38 @@ struct LibGit2StatusObservationIdentityReader: Sendable {
             }
         }
         return (scopes, complete)
+    }
+
+    private func hasDirectWorktreeAttributes(repository: OpaquePointer, worktreePath: URL) throws -> Bool {
+        var index: OpaquePointer?
+        let indexResult = git_repository_index(&index, repository)
+        guard indexResult >= 0, let index else {
+            throw LibGit2ErrorCapture.failure(code: indexResult)
+        }
+        defer { git_index_free(index) }
+
+        // libgit2 reads attributes along each indexed path's ancestors. A subtree
+        // watch cannot cover an external symlink target; keep exact reads instead.
+        var checkedDirectories = Set<URL>()
+        for entryIndex in 0..<git_index_entrycount(index) {
+            guard let entry = git_index_get_byindex(index, entryIndex), let path = entry.pointee.path else {
+                return false
+            }
+            var directory = worktreePath.appending(path: String(cString: path)).deletingLastPathComponent()
+            while checkedDirectories.insert(directory).inserted {
+                let attributesPath = directory.appending(path: ".gitattributes")
+                if !isDirectObservationPath(attributesPath)
+                    || (try? FileManager.default.destinationOfSymbolicLink(atPath: attributesPath.path)) != nil
+                {
+                    return false
+                }
+                if directory == worktreePath { break }
+                let parentDirectory = directory.deletingLastPathComponent()
+                guard parentDirectory != directory else { return false }
+                directory = parentDirectory
+            }
+        }
+        return true
     }
 
     private func scope(_ kind: GitStatusObservationScopeKind, _ path: URL) -> GitStatusObservationScope {

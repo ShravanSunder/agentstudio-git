@@ -4,6 +4,42 @@ import Testing
 
 @Suite("Exact clean Git baseline integration")
 struct GitExactCleanBaselineIntegrationTests {
+    @Test("worktree attribute aliases cannot authorize unobserved clean renewal", arguments: ["", "nested/deeper/"])
+    func worktreeAttributeAliasMustNotMintBaseline(directory: String) async throws {
+        // Arrange: only the external target will change after the clean read.
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-worktree-attribute-alias")
+        defer { fixture.remove() }
+        try fixture.git.run("config", "core.autocrlf", "false")
+        let externalAttributes = fixture.root.appending(path: "external-attributes")
+        try "line-endings.txt -text\n".write(to: externalAttributes, atomically: true, encoding: .utf8)
+        let relativeFile = directory + "line-endings.txt"
+        try fixture.write(relativeFile, contents: "first\r\nsecond\r\n")
+        try fixture.git.run("add", relativeFile)
+        try fixture.git.run("commit", "-m", "track literal line endings")
+        let attributeAlias = fixture.repositoryPath.appending(path: directory + ".gitattributes")
+        try FileManager.default.createSymbolicLink(at: attributeAlias, withDestinationURL: externalAttributes)
+        try fixture.git.run("add", directory + ".gitattributes")
+        try fixture.git.run("commit", "-m", "track attribute alias")
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 4_102_444_800)],
+            ofItemAtPath: fixture.repositoryPath.appending(path: relativeFile).path
+        )
+        let client = LibGit2AgentStudioGitLocalClient()
+        let plan = try await client.statusObservationPlan(for: fixture.repositoryPath)
+        let before = try await client.statusFacts(
+            for: fixture.repositoryPath, options: GitStatusOptions(), observationPlan: plan)
+        #expect(before.facts.entries.isEmpty)
+
+        // Act
+        try "line-endings.txt text eol=lf\n".write(to: externalAttributes, atomically: true, encoding: .utf8)
+        let after = try await client.statusFacts(for: fixture.repositoryPath, options: GitStatusOptions())
+
+        // Assert: exact reads remain valid, but an unwatched input cannot renew clean authority.
+        #expect(after.facts.entries.contains { $0.path == relativeFile && $0.worktreeState == .modified })
+        #expect(plan.support == .unsupported)
+        #expect(before.exactCleanBaseline == nil)
+    }
+
     enum AttributeLocation: CaseIterable {
         case common, configured, commonSymlink, configuredSymlink
 
