@@ -377,8 +377,11 @@ The re-homer then:
 3. reproduces sparse patterns and relevant worktree-specific configuration
    under destination administration while leaving sparse-index compression
    disabled;
-4. writes and reopens the destination index;
-5. validates index flags and sparse-absent filesystem paths directly against
+4. refreshes stat data by diffing the new index against the destination
+   working tree with `GIT_DIFF_UPDATE_INDEX`, never `git_index_update_all`,
+   which would stage working-tree content;
+5. writes and reopens the destination index;
+6. validates index flags and sparse-absent filesystem paths directly against
    the immutable sparse plan rather than depending on libgit2 status to infer
    the flags correctly.
 
@@ -388,6 +391,14 @@ without reporting intentionally absent paths as deletions.
 
 This preserves sparse observable behavior while making all staged, conflicted,
 or in-progress source content ordinary destination working-tree differences.
+
+Step 4 exists because source stat data cannot be reused (clones have new inodes
+and change times) and the SDK status reader runs with
+`GIT_STATUS_OPT_NO_REFRESH` and never writes the index. Without the refresh,
+every status on the fork content-hashes every unchanged tracked file, on every
+call, until some other process writes the index. The refresh is the one
+hashing pass over tracked content — about 3.3 s for 50,040 entries in the
+measured `git reset --mixed` equivalent — paid once inside the transaction.
 
 ## Validation and publication
 
@@ -404,6 +415,7 @@ checks:
   in the report's corresponding field without classifying a created node as
   skipped;
 - root and nested index trees, status semantics, and sparse behavior;
+- tracked entries unchanged from the captured tree carry refreshed stat data;
 - initialized submodule and nested repository open/status operations;
 - uninitialized submodules remain uninitialized;
 - canonical resolution of `.git`, `commondir`, `core.worktree`, and alternate

@@ -57,7 +57,7 @@ use.
 | ID | Priority | Authorized need or outcome | Why it matters |
 | --- | --- | --- | --- |
 | U-01 | P0 | Existing normal worktree creation must retain its current public call, behavior, branch modes, result, platform support, and wire shape. | Current consumers must not pay a migration or behavior cost for the new capability. |
-| U-02 | P0 | The SDK must add a distinct APFS CoW fork that reproduces the source worktree's present filesystem contents, including dirty tracked, untracked, and ignored entries. | Prepared dependencies, caches, generated output, and exploratory edits are the storage and workflow value of the feature. |
+| U-02 | P0 | The SDK must add a distinct APFS Worktree Fork that reproduces the source worktree's present filesystem contents, including dirty tracked, untracked, and ignored entries. | Prepared dependencies, caches, generated output, and exploratory edits are the storage and workflow value of the feature. |
 | U-03 | P0 | A fork must start at the source worktree's captured `HEAD`; its Git index must represent that commit rather than the source index. | The result has one clear meaning: source files are inherited, while staged source changes become unstaged destination changes. |
 | U-04 | P0 | A successful fork must use genuine APFS copy-on-write for regular data, with no silent physical-copy fallback. | Returning success after duplicating large data would violate the primary storage promise. |
 | U-05 | P0 | The operation must reject unsupported hosts and storage before mutation. It is available only on macOS 26 or later, with APFS source and destination on the same clone-capable filesystem. | Eligibility must be predictable and failure must not leave partial Git state. |
@@ -88,8 +88,10 @@ whole-directory fast path requires a separate owner decision.
 
 ## Settled behavior
 
+- Product names: normal creation is a **Worktree**; the copy-on-write
+  operation is a **Worktree Fork**.
 - Normal creation remains the clean Git checkout operation.
-- CoW fork is a separate operation whose source is an existing worktree.
+- Worktree Fork is a separate operation whose source is an existing worktree.
 - The source `HEAD` is captured once as the destination base.
 - Source index staging is not inherited.
 - Dirty tracked, untracked, ignored, generated, dependency, and cache content
@@ -123,6 +125,12 @@ Current research and local macOS 26.5.2 measurements establish feasibility:
   special-entry control and carries Apple's hierarchy-clone warning;
 - building a 50,040-entry destination index took about 3.29 seconds and was a
   larger phase than strict materialization;
+- an index read from a tree carries no stat data, and the SDK status reader
+  never refreshes or writes the index (`GIT_STATUS_OPT_NO_REFRESH`), so every
+  later status re-hashes every unchanged tracked file: 0.65–2.2 s per status on
+  20,000 tracked files versus 0.07 s after one refresh (Git CLI proxy with
+  index writes disabled, 2026-09-23). The refresh cost belongs inside the
+  fork, once;
 - a cloned 64 MiB file consumed only a small free-space delta initially and
   remained independent after an 8 MiB destination overwrite;
 - Git's own worktree/submodule tests place an initialized linked-worktree

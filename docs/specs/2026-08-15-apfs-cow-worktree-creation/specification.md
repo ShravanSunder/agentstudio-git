@@ -13,17 +13,17 @@ The package exposes two different operations:
 normal create
   commit and Git checkout are the filesystem source of truth
 
-APFS CoW fork
+APFS Worktree Fork
   one source worktree's current filesystem is the byte source of truth
   its captured HEAD is the destination Git/index source of truth
 ```
 
-The CoW fork does not replace or alter normal creation.
+The Worktree Fork does not replace or alter normal creation.
 
 ```text
 Agent Studio and other Swift SDK clients
   ──► normal create request
-  ──► APFS CoW fork request
+  ──► APFS Worktree Fork request
        │
        ▼
   AgentStudioGitLocalClient as one opaque SDK boundary
@@ -67,7 +67,7 @@ shape MUST remain unchanged. Decoding an existing payload MUST continue to
 produce the same normal request. Existing normal success and failure behavior
 MUST not depend on CoW availability.
 
-### New CoW fork
+### New Worktree Fork
 
 The package MUST add a separate method:
 
@@ -212,7 +212,11 @@ created for the destination, never a copy of the source root `.git` entry.
 
 The destination `HEAD` MUST remain the captured source `HEAD` commit. Its index
 MUST be rebuilt from that commit without rewriting materialized working files.
-Consequently:
+Before success, every tracked index entry whose destination working file
+matches the captured tree MUST carry current destination stat data, so a later
+status that does not refresh the index does not re-hash unchanged files. That
+refresh MUST NOT stage working-tree content: a modified entry keeps the
+captured tree's object ID. Consequently:
 
 | Source state | Destination state relative to captured `HEAD` |
 | --- | --- |
@@ -341,12 +345,12 @@ contract identities:
 | Requirements source | Problem | Outcome | Normative requirement | Observable contract home | Proof |
 | --- | --- | --- | --- | --- | --- |
 | U-01, U-12 | P-01 — adding CoW could break existing clients | O-01 — no regression | R-01 — preserve normal API, behavior, source conformance, errors, and wire shape | C-01 — Existing normal creation; Compatibility and encoding | V-01 |
-| U-02 | P-02 — normal checkout loses prepared filesystem state | O-02 — useful fork | R-02 — capture all tracked, dirty, untracked, and ignored content under explicit entry rules | C-02 — New CoW fork; Included state | V-02 |
+| U-02 | P-02 — normal checkout loses prepared filesystem state | O-02 — useful fork | R-02 — capture all tracked, dirty, untracked, and ignored content under explicit entry rules | C-02 — New Worktree Fork; Included state | V-02 |
 | U-03 | P-03 — copied bytes and Git identity can describe different bases | O-02 — useful fork | R-03 — capture source HEAD and rebuild indexes from it without source staging | C-03 — Root worktree and index | V-02 |
 | U-04, U-05 | P-04 — a copy may silently consume full storage | O-03 — storage truth | R-04 — clone every required regular payload or fail on a preflighted eligible APFS volume | C-04 — Eligibility; Filesystem capture | V-03 |
 | U-06, U-07 | P-05 — copied Git pointers make prepared complex worktrees unsafe | O-04 — Git independence | R-05 — preserve and isolate hard links, sparse state, submodules, and nested repositories | C-05 — Sparse worktrees; Submodules; Nested Git repositories | V-04 |
 | U-08 | P-06 — a multi-phase failure can leave branch, admin, and file residue | O-05 — safe failure | R-06 — compensate and verify every transaction-created artifact or report exact residue | C-06 — Completion, cancellation, and failure | V-05 |
-| U-09 | P-07 — a snapshot hides policy-driven omissions | O-02, O-05 | R-07 — return validated snapshot plus ordered materialization report | C-07 — New CoW fork; Completion validation | V-06 |
+| U-09 | P-07 — a snapshot hides policy-driven omissions | O-02, O-05 | R-07 — return validated snapshot plus ordered materialization report | C-07 — New Worktree Fork; Completion validation | V-06 |
 | U-10 | P-08 — blocking traversal and actor reentrancy threaten responsiveness and ordering | O-06 — responsive serialization | R-08 — execute off the cooperative executor while retaining same-repository mutation custody | C-08 — Execution and serialization | V-07 |
 | U-11 | P-09 — CoW may be mistaken for synchronization or snapshot isolation | O-03 — storage truth | R-09 — provide independent divergence with explicit mixed-time traversal semantics | C-09 — Containment and source races | V-03, V-08 |
 | U-13 | P-10 — mock or status evidence cannot prove APFS/Git behavior | O-01 through O-06 | R-10 — prove contracts at their real unit, Git, APFS, concurrency, and performance boundaries | C-10 — Proof obligations | V-01 through V-08 |
@@ -354,7 +358,7 @@ contract identities:
 | Proof ID | Requirements | Evidence that distinguishes pass from fail |
 | --- | --- | --- |
 | V-01 | U-01, U-12 | Contract round trips, exact old JSON-shape comparison, legacy payload decode, source-conformer compilation, and normal-mode integration behavior. |
-| V-02 | U-02, U-03 | Real repository integration showing clean, staged, unstaged, deleted, untracked, and ignored source states and the defined destination status matrix. |
+| V-02 | U-02, U-03 | Real repository integration showing clean, staged, unstaged, deleted, untracked, and ignored source states and the defined destination status matrix, plus a post-success status with index refresh disabled that re-hashes no unchanged tracked file while modified entries stay unstaged. |
 | V-03 | U-04, U-05, U-11 | Real APFS clone-capability and same-volume checks, free-space/allocation evidence, and bidirectional modification independence; incompatible platform/filesystem cases reject before mutation. |
 | V-04 | U-06, U-07 | Real initialized/uninitialized/recursive submodule, nested standalone/linked Git repository, cone and non-cone sparse checkout including a sparse-index source, and hard-link fixtures; Git commands work independently, sparse paths retain their behavior, and pointer scans find no source administration. |
 | V-05 | U-08 | Failure injection after each transaction phase and cancellation while leaves are in flight; destination, metadata, and created branch absence are inspected, including a forced cleanup-residue case. |
