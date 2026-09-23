@@ -19,6 +19,9 @@ struct WorktreeForkAdministrationCloner: Sendable {
     static let alternatesRelativePath = "objects/info/alternates"
 
     let reportPath: String
+    /// Link text for every symlink planning classified, keyed by administration-relative path. A symlink
+    /// that is not listed (appeared after planning, or inside a mirrored store) fails the transaction.
+    var symlinkTargets: [String: String] = [:]
 
     static func isExcluded(_ relativePath: String) -> Bool {
         let name = WorktreeForkDescriptors.splitParent(relativePath).name
@@ -133,13 +136,13 @@ struct WorktreeForkAdministrationCloner: Sendable {
                 throw .entryFailed(relativePath: reportPath, reason: .strictCloneFailed, errorNumber: errno)
             }
         case .symbolicLink:
-            var buffer = [CChar](repeating: 0, count: Int(PATH_MAX) + 1)
-            let length = name.withCString { readlinkat(source, $0, &buffer, buffer.count - 1) }
-            guard length >= 0 else {
-                throw .sourceChanged(relativePath: reportPath, reason: .entryMissing)
+            guard let target = symlinkTargets[childPath] else {
+                throw .sourceChanged(relativePath: reportPath, reason: .entryIdentityChanged)
             }
-            buffer[length] = 0
-            guard name.withCString({ symlinkat(buffer, destination, $0) }) == 0 else {
+            let created = target.withCString { targetPointer in
+                name.withCString { symlinkat(targetPointer, destination, $0) }
+            }
+            guard created == 0 else {
                 throw .entryFailed(relativePath: reportPath, reason: .entryCreationFailed, errorNumber: errno)
             }
         case .fifo, .unixSocket, .characterDevice, .blockDevice, .unknown:

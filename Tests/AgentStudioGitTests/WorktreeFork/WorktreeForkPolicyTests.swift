@@ -248,6 +248,50 @@ struct WorktreeForkPolicyTests {
         #expect(GitWorktreeForkFileProbe.exists(replaced.appending(path: "owner.txt")))
     }
 
+    @Test("administrative symlinks are classified internal or external, and mirrored stores may not contain any")
+    func administrativeSymlinksAreClassified() throws {
+        // Arrange
+        let root = try #require(
+            realpath(FileManager.default.temporaryDirectory.path, nil).map { pointer in
+                defer { free(pointer) }
+                return URL(fileURLWithPath: String(cString: pointer))
+            }
+        ).appending(path: "agentstudio-git-admin-links-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let administration = root.appending(path: "admin")
+        let store = root.appending(path: "store")
+        try FileManager.default.createDirectory(
+            at: administration.appending(path: "hooks"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: store, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            atPath: administration.appending(path: "hooks-link").path, withDestinationPath: "hooks")
+        try FileManager.default.createSymbolicLink(
+            at: administration.appending(path: "objects"), withDestinationURL: store)
+        try FileManager.default.createSymbolicLink(
+            atPath: administration.appending(path: "index.lock").path, withDestinationPath: "/etc")
+
+        // Act
+        let classified = try WorktreeForkAdministrativeSymlinks.classify(
+            administrationRoot: administration, reportPath: "node/.git")
+        try FileManager.default.createSymbolicLink(
+            atPath: store.appending(path: "escape").path, withDestinationPath: "/etc")
+
+        // Assert
+        #expect(classified["hooks-link"] == .internalTarget(relativeToAdministration: "hooks"))
+        guard case .externalStore(let mirroredStore) = classified["objects"] else {
+            Issue.record("objects must classify as an external store")
+            return
+        }
+        #expect(mirroredStore.path == store.path)
+        #expect(classified.count == 2)
+        #expect(
+            throws: GitWorktreeForkError.entryFailed(
+                relativePath: "node/.git", reason: .unresolvableGitAdministration, errorNumber: nil)
+        ) {
+            try WorktreeForkAdministrativeSymlinks.requireNoSymlinks(in: store, reportPath: "node/.git")
+        }
+    }
+
     @Test("ineligible hosts and volumes are rejected through the client before any mutation")
     func ineligibleHostsAndVolumesAreRejectedBeforeMutation() async throws {
         // Arrange

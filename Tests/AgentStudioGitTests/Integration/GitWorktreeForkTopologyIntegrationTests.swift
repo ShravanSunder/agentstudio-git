@@ -203,6 +203,45 @@ struct GitWorktreeForkTopologyIntegrationTests {
         #expect(try fixture.statusLines(at: fixture.source.appending(path: "deps/library")).isEmpty)
     }
 
+    @Test("administrative symlinks are re-homed: internal ones stay internal, external object stores are mirrored")
+    func administrativeSymlinksAreRehomed() async throws {
+        // Arrange
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-admin-symlinks")
+        defer { fixture.remove() }
+        try fixture.write(".gitignore", "vendor/\n")
+        try fixture.git.run("add", ".gitignore")
+        try fixture.git.run("commit", "-qm", "ignore vendor")
+        let tool = fixture.source.appending(path: "vendor/tool")
+        _ = try makeRepository(at: tool, file: "tool.txt", fixture: fixture)
+        let externalObjects = fixture.repository.root.appending(path: "external-objects")
+        try FileManager.default.moveItem(at: tool.appending(path: ".git/objects"), to: externalObjects)
+        try FileManager.default.createSymbolicLink(
+            at: tool.appending(path: ".git/objects"), withDestinationURL: externalObjects)
+        try FileManager.default.createSymbolicLink(
+            atPath: tool.appending(path: ".git/description-link").path, withDestinationPath: "description")
+        let sourceHead = try fixture.blobID("HEAD", at: tool)
+        let destination = fixture.destination()
+
+        // Act
+        _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+
+        // Assert
+        let destinationTool = destination.appending(path: "vendor/tool")
+        let destinationOwned = [
+            try canonical(destination).path + "/", try canonical(fixture.linkedWorktreeAdministration()).path + "/",
+        ]
+        for link in [".git/objects", ".git/description-link"] {
+            let resolved = try canonical(destinationTool.appending(path: link)).path + "/"
+            #expect(destinationOwned.contains { resolved.hasPrefix($0) }, "\(link) → \(resolved)")
+        }
+        #expect(
+            try canonical(destinationTool.appending(path: ".git/description-link")).path
+                == canonical(destinationTool.appending(path: ".git/description")).path)
+        #expect(try fixture.blobID("HEAD", at: destinationTool) == sourceHead)
+        #expect(try fixture.git.succeeds("cat-file", "-e", "HEAD:tool.txt", currentDirectory: destinationTool))
+        #expect(try fixture.statusLines(at: destinationTool).isEmpty)
+    }
+
     @Test("a traversing submodule name is rejected before mutation and never deletes what it points at")
     func traversingSubmoduleNameIsRejectedBeforeMutation() async throws {
         // Arrange

@@ -43,15 +43,31 @@ struct WorktreeForkGitTopologyPlanner: Sendable {
                     headReferenceName: captured.headReferenceName,
                     sparse: captured.sparse,
                     sourceIndex: WorktreeForkCleanEntryAdoption.captureSourceIndex(gitDirectory: captured.gitDirectory),
-                    alternateObjectStores: captured.alternates
+                    alternateObjectStores: captured.alternates,
+                    administrativeSymlinks: captured.administrativeSymlinks
                 ))
+        }
+        let mirroredObjectStores = Array(
+            Set(
+                nodes.flatMap(\.alternateObjectStores)
+                    + nodes.flatMap { node in
+                        node.administrativeSymlinks.values.compactMap { symlink -> URL? in
+                            if case .externalStore(let store) = symlink {
+                                return store
+                            }
+                            return nil
+                        }
+                    })
+        ).sorted { $0.path < $1.path }
+        for store in mirroredObjectStores {
+            try WorktreeForkAdministrativeSymlinks.requireNoSymlinks(in: store, reportPath: store.lastPathComponent)
         }
         return WorktreeForkGitTopology(
             rootSparse: rootSparse,
             rootSourceIndex: WorktreeForkCleanEntryAdoption.captureSourceIndex(gitDirectory: rootGitDirectory),
             nodes: nodes,
             uninitializedSubmodulePaths: uninitializedSubmodules(registrations, nodes: nodes),
-            mirroredObjectStores: Array(Set(nodes.flatMap(\.alternateObjectStores))).sorted { $0.path < $1.path }
+            mirroredObjectStores: mirroredObjectStores
         )
     }
 
@@ -119,6 +135,8 @@ struct WorktreeForkGitTopologyPlanner: Sendable {
             sparse: try WorktreeForkSparseCapture.capture(
                 repository: repository, gitDirectory: gitDirectory, treeEntries: treeEntries),
             alternates: try Self.alternateClosure(of: commonDirectory.appending(path: "objects"), gitEntryPath),
+            administrativeSymlinks: try WorktreeForkAdministrativeSymlinks.classify(
+                administrationRoot: commonDirectory, reportPath: gitEntryPath),
             registrations: try WorktreeForkSubmoduleRegistrations(treeEntries: treeEntries, repository: repository)
         )
     }
@@ -211,6 +229,7 @@ private struct WorktreeForkCapturedNode {
     let headReferenceName: String?
     let sparse: WorktreeForkSparsePlan?
     let alternates: [URL]
+    let administrativeSymlinks: [String: WorktreeForkAdministrativeSymlink]
     let registrations: WorktreeForkSubmoduleRegistrations
 }
 

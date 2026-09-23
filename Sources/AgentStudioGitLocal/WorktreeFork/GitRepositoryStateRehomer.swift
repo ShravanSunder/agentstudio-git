@@ -91,7 +91,8 @@ struct GitRepositoryStateRehomer: Sendable {
         created: (WorktreeForkEntryIdentity) -> Void
     ) throws(GitWorktreeForkError) {
         let reportPath = "\(node.relativePath)/.git"
-        let cloner = WorktreeForkAdministrationCloner(reportPath: reportPath)
+        var cloner = WorktreeForkAdministrationCloner(reportPath: reportPath)
+        cloner.symlinkTargets = try symlinkTargets(node, administration: administration, mirrorByStore: mirrorByStore)
         try cloner.cloneTree(from: node.sourceCommonDirectory, to: administration, created: created)
         if node.sourceGitDirectory != node.sourceCommonDirectory {
             try overlayPrivateAdministration(node, administration: administration, reportPath: reportPath)
@@ -118,6 +119,32 @@ struct GitRepositoryStateRehomer: Sendable {
         if let sparse = node.sparse {
             try writeSparseState(sparse, administration: administration, reportPath: reportPath)
         }
+    }
+
+    /// Destination link text for each classified administrative symlink: internal links point at the
+    /// destination copy of their target, external stores at their destination-owned mirror.
+    private func symlinkTargets(
+        _ node: WorktreeForkGitNode,
+        administration: URL,
+        mirrorByStore: [URL: URL]
+    ) throws(GitWorktreeForkError) -> [String: String] {
+        var targets: [String: String] = [:]
+        for (relativePath, symlink) in node.administrativeSymlinks {
+            switch symlink {
+            case .internalTarget(let relativeTarget):
+                let linkDirectory = administration.appending(path: relativePath).deletingLastPathComponent()
+                targets[relativePath] = WorktreeForkRelativePath.from(
+                    linkDirectory, to: administration.appending(path: relativeTarget))
+            case .externalStore(let store):
+                guard let mirror = mirrorByStore[store] else {
+                    throw .entryFailed(
+                        relativePath: "\(node.relativePath)/.git", reason: .unresolvableGitAdministration,
+                        errorNumber: nil)
+                }
+                targets[relativePath] = mirror.path
+            }
+        }
+        return targets
     }
 
     /// A gitfile-reached node keeps its worktree-private identity (`HEAD` is rewritten from the plan) and

@@ -40,6 +40,8 @@ struct WorktreeForkGitNode: Sendable {
     let sourceIndex: WorktreeForkSourceIndexSnapshot?
     /// Canonical object directories this node's common object store borrows from.
     let alternateObjectStores: [URL]
+    /// Symlinks inside the node's common administration, keyed by administration-relative path.
+    let administrativeSymlinks: [String: WorktreeForkAdministrativeSymlink]
 }
 
 /// Sparse intent for one Git node, captured from its source administration.

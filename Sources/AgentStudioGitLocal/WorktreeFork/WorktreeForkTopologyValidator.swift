@@ -56,9 +56,14 @@ struct WorktreeForkTopologyValidator: Sendable {
             (try? GitRepositoryStateRehomer.directAlternates(
                 rehomed.destinationAdministration.appending(path: "objects"), reportPath
             ).map(\.path)) ?? []
+        pointers += WorktreeForkAdministrativeSymlinks.symlinks(
+            beneath: rehomed.destinationAdministration, skipping: { _ in false }
+        ).map { $0.1.path }
         for pointer in pointers {
-            let resolved = (canonicalPath(pointer) ?? pointer) + "/"
-            guard allowedPrefixes.contains(where: { resolved.hasPrefix($0) }) else {
+            // Every pointer must resolve; a dangling link is never accepted by its own location.
+            guard let resolved = canonicalPath(pointer).map({ $0 + "/" }),
+                allowedPrefixes.contains(where: { resolved.hasPrefix($0) })
+            else {
                 throw .validationFailed(reason: .sourceAdministrationReference, relativePath: reportPath)
             }
         }
