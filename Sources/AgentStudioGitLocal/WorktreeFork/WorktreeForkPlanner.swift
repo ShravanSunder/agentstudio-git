@@ -1,0 +1,234 @@
+import AgentStudioGitContracts
+import CLibGit2Local
+import Darwin
+import Foundation
+
+/// A plan plus the open source root descriptor it was classified through. The fork writer owns the
+/// descriptor for the whole transaction and closes it on every exit path.
+struct WorktreeForkPreparedSource: Sendable {
+    let plan: WorktreeForkPlan
+    let sourceRootDescriptor: Int32
+}
+
+/// Owns immutable source classification and every rejection that must happen before mutation: host and
+/// volume eligibility, source/destination preconditions, captured `HEAD`, and branch-mode rules.
+struct WorktreeForkPlanner: Sendable {
+    let runtime: LibGit2Runtime
+    let hostFacts: WorktreeForkHostFactsProvider
+    let cancellation: WorktreeForkCancellation
+
+    func prepare(_ request: GitForkWorktreeRequest) throws(GitWorktreeForkError) -> WorktreeForkPreparedSource {
+        if let hostRejection = WorktreeForkEligibility.hostRejection(
+            operatingSystemMajorVersion: hostFacts.operatingSystemMajorVersion())
+        {
+            throw .rejected(reason: hostRejection)
+        }
+        let destination = try resolveDestination(request.destinationPath)
+        let sourceRoot = try resolved(request.sourceWorktreePath, rejection: .sourceNotWorktreeRoot)
+        if Self.overlaps(sourceRoot, destination.root) {
+            throw .rejected(reason: .overlappingRoots)
+        }
+        let gitCapture = try captureGitState(sourceRoot: sourceRoot, destination: destination, mode: request.mode)
+        let eligibilityFacts = WorktreeForkEligibilityFacts(
+            operatingSystemMajorVersion: hostFacts.operatingSystemMajorVersion(),
+            source: try hostFacts.volumeFacts(sourceRoot),
+            destinationParent: try hostFacts.volumeFacts(destination.parent),
+            mirroredAdministrativeStores: []
+        )
+        if let rejection = WorktreeForkEligibility.rejection(for: eligibilityFacts) {
+            throw .rejected(reason: rejection)
+        }
+        try cancellation.throwIfCancelled()
+
+        let sourceRootDescriptor: Int32
+        switch WorktreeForkDescriptors.openRoot(atCanonicalPath: sourceRoot) {
+        case .success(let descriptor):
+            sourceRootDescriptor = descriptor
+        case .failure(let failure):
+            throw .entryFailed(relativePath: ".", reason: .unreadableEntry, errorNumber: failure.code)
+        }
+        do throws(GitWorktreeForkError) {
+            let filesystem = try WorktreeForkSourceWalker(cancellation: cancellation)
+                .walk(sourceRootDescriptor: sourceRootDescriptor)
+            if let nestedGitEntry = filesystem.nestedGitEntryPaths.first {
+                throw .entryFailed(
+                    relativePath: nestedGitEntry, reason: .unresolvableGitAdministration, errorNumber: nil)
+            }
+            let plan = WorktreeForkPlan(
+                sourceRoot: sourceRoot,
+                destinationRoot: destination.root,
+                destinationRequestPath: request.destinationPath,
+                worktreeName: destination.worktreeName,
+                commonDirectory: gitCapture.commonDirectory,
+                capturedHead: gitCapture.capturedHead,
+                branchIdentity: gitCapture.branchIdentity,
+                filesystem: filesystem
+            )
+            return WorktreeForkPreparedSource(plan: plan, sourceRootDescriptor: sourceRootDescriptor)
+        } catch {
+            close(sourceRootDescriptor)
+            throw error
+        }
+    }
+
+    private func resolveDestination(_ path: URL) throws(GitWorktreeForkError) -> WorktreeForkDestination {
+        let name = path.standardizedFileURL.lastPathComponent
+        guard !name.isEmpty, name != ".", name != "..", name != "/" else {
+            throw .rejected(reason: .invalidDestinationPath)
+        }
+        let parent = try resolved(
+            path.standardizedFileURL.deletingLastPathComponent(), rejection: .destinationParentMissing)
+        let root = parent.appending(path: name, directoryHint: .isDirectory)
+        if case .success = WorktreeForkDescriptors.lstatPath(root) {
+            throw .rejected(reason: .destinationExists)
+        }
+        return WorktreeForkDestination(parent: parent, root: root, worktreeName: name)
+    }
+
+    private func resolved(
+        _ path: URL,
+        rejection: GitWorktreeForkRejectionReason
+    ) throws(GitWorktreeForkError) -> URL {
+        switch WorktreeForkDescriptors.realpathURL(path) {
+        case .success(let canonical):
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: canonical.path, isDirectory: &isDirectory),
+                isDirectory.boolValue
+            else {
+                throw .rejected(reason: rejection)
+            }
+            return canonical
+        case .failure:
+            throw .rejected(reason: rejection)
+        }
+    }
+
+    private func captureGitState(
+        sourceRoot: URL,
+        destination: WorktreeForkDestination,
+        mode: GitForkWorktreeMode
+    ) throws(GitWorktreeForkError) -> WorktreeForkGitCapture {
+        do {
+            try runtime.ensureInitialized()
+        } catch let error as GitDataPlaneError {
+            throw .gitFailure(error)
+        } catch {
+            throw .gitFailure(.unsupported(message: String(describing: error)))
+        }
+        var repository: OpaquePointer?
+        let openResult = sourceRoot.path.withCString {
+            git_repository_open_ext(&repository, $0, GIT_REPOSITORY_OPEN_NO_SEARCH.rawValue, nil)
+        }
+        guard openResult >= 0, let repository else {
+            throw .rejected(reason: .sourceNotWorktreeRoot)
+        }
+        defer { git_repository_free(repository) }
+        guard git_repository_is_bare(repository) == 0, let workdir = git_repository_workdir(repository),
+            case .success(let canonicalWorkdir) = WorktreeForkDescriptors.realpathURL(
+                URL(fileURLWithPath: String(cString: workdir))),
+            canonicalWorkdir.path == sourceRoot.path
+        else {
+            throw .rejected(reason: .sourceNotWorktreeRoot)
+        }
+        guard let commonDirectoryPointer = git_repository_commondir(repository),
+            case .success(let commonDirectory) = WorktreeForkDescriptors.realpathURL(
+                URL(fileURLWithPath: String(cString: commonDirectoryPointer)))
+        else {
+            throw .rejected(reason: .sourceNotWorktreeRoot)
+        }
+        let capturedHead = try captureHead(repository)
+        let administrationPath = commonDirectory.appending(path: "worktrees").appending(path: destination.worktreeName)
+        if case .success = WorktreeForkDescriptors.lstatPath(administrationPath) {
+            throw .rejected(reason: .linkedWorktreeNameInUse)
+        }
+        let branchIdentity = try validateBranchIdentity(mode, capturedHead: capturedHead, repository: repository)
+        return WorktreeForkGitCapture(
+            commonDirectory: commonDirectory,
+            capturedHead: capturedHead,
+            branchIdentity: branchIdentity
+        )
+    }
+
+    private func captureHead(_ repository: OpaquePointer) throws(GitWorktreeForkError) -> WorktreeForkCapturedHead {
+        var headOID = git_oid()
+        guard git_reference_name_to_id(&headOID, repository, "HEAD") >= 0 else {
+            throw .rejected(reason: .sourceHeadUnavailable)
+        }
+        var commit: OpaquePointer?
+        guard git_commit_lookup(&commit, repository, &headOID) >= 0, let commit else {
+            throw .rejected(reason: .sourceHeadUnavailable)
+        }
+        defer { git_commit_free(commit) }
+        guard let treeOID = git_commit_tree_id(commit) else {
+            throw .rejected(reason: .sourceHeadUnavailable)
+        }
+        return WorktreeForkCapturedHead(commitOID: oidString(&headOID), treeOID: oidString(treeOID))
+    }
+
+    private func validateBranchIdentity(
+        _ mode: GitForkWorktreeMode,
+        capturedHead: WorktreeForkCapturedHead,
+        repository: OpaquePointer
+    ) throws(GitWorktreeForkError) -> WorktreeForkBranchIdentity {
+        switch mode {
+        case .detached:
+            return .detached
+        case .newBranch(let name):
+            try requireValidBranchName(name)
+            var existing: OpaquePointer?
+            let lookupResult = name.withCString { git_branch_lookup(&existing, repository, $0, GIT_BRANCH_LOCAL) }
+            if let existing {
+                git_reference_free(existing)
+            }
+            guard lookupResult == GIT_ENOTFOUND.rawValue else {
+                throw lookupResult >= 0
+                    ? .rejected(reason: .branchAlreadyExists)
+                    : .gitFailure(LibGit2ErrorCapture.failure(code: lookupResult))
+            }
+            return .newBranch(referenceName: "refs/heads/\(name)")
+        case .existingBranch(let name):
+            try requireValidBranchName(name)
+            var reference: OpaquePointer?
+            let lookupResult = name.withCString { git_branch_lookup(&reference, repository, $0, GIT_BRANCH_LOCAL) }
+            guard lookupResult >= 0, let reference else {
+                throw lookupResult == GIT_ENOTFOUND.rawValue
+                    ? .rejected(reason: .branchNotFound) : .gitFailure(LibGit2ErrorCapture.failure(code: lookupResult))
+            }
+            defer { git_reference_free(reference) }
+            guard let target = git_reference_target(reference), oidString(target) == capturedHead.commitOID else {
+                throw .rejected(reason: .branchNotAtCapturedHead)
+            }
+            guard git_branch_is_checked_out(reference) == 0 else {
+                throw .rejected(reason: .branchCheckedOut)
+            }
+            return .existingBranch(referenceName: "refs/heads/\(name)")
+        }
+    }
+
+    private func requireValidBranchName(_ name: String) throws(GitWorktreeForkError) {
+        var isValid: Int32 = 0
+        guard name.withCString({ git_branch_name_is_valid(&isValid, $0) }) >= 0, isValid == 1 else {
+            throw .rejected(reason: .invalidBranchName)
+        }
+    }
+
+    /// Both roots are realpath-canonical. Foundation standardization is deliberately avoided: it strips a
+    /// leading `/private` only when the path exists, so an existing source and a new destination diverge.
+    static func overlaps(_ first: URL, _ second: URL) -> Bool {
+        let firstPath = first.path
+        let secondPath = second.path
+        return firstPath == secondPath || secondPath.hasPrefix(firstPath + "/") || firstPath.hasPrefix(secondPath + "/")
+    }
+}
+
+private struct WorktreeForkDestination {
+    let parent: URL
+    let root: URL
+    let worktreeName: String
+}
+
+private struct WorktreeForkGitCapture {
+    let commonDirectory: URL
+    let capturedHead: WorktreeForkCapturedHead
+    let branchIdentity: WorktreeForkBranchIdentity
+}

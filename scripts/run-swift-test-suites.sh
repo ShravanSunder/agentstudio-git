@@ -20,6 +20,7 @@ suites=(
   GitRepositoryIdentityTests
   GitRepositoryWriterRegistryTests
   GitRepositoryWriterLaneTests
+  WorktreeForkPolicyTests
   GitProcessRunnerTests
   SystemGitRemoteClientTests
   GitRemoteOutputParserTests
@@ -32,6 +33,9 @@ suites=(
   GitIgnoreIntegrationTests
   GitTrackedPathIntegrationTests
   GitWorktreeIntegrationTests
+  GitWorktreeForkIntegrationTests
+  GitWorktreeForkStorageIntegrationTests
+  GitWorktreeForkRollbackIntegrationTests
   GitCommitRangeCountIntegrationTests
   GitDiffImpactSummaryIntegrationTests
   GitReviewDataIntegrationTests

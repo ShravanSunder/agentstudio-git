@@ -7,6 +7,7 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
     private let writerRegistry: GitRepositoryWriterRegistry
     private let worktreeReader: LibGit2WorktreeReader
     private let worktreeWriter: LibGit2WorktreeWriter
+    private let worktreeForkWriter: LibGit2WorktreeForkWriter
     private let blockingReadExecutor: LibGit2BlockingReadExecutor
 
     public init() {
@@ -15,6 +16,7 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
             writerRegistry: .shared,
             worktreeReader: LibGit2WorktreeReader(),
             worktreeWriter: LibGit2WorktreeWriter(),
+            worktreeForkWriter: LibGit2WorktreeForkWriter(),
             blockingReadExecutor: .shared
         )
     }
@@ -24,12 +26,14 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
         writerRegistry: GitRepositoryWriterRegistry = .shared,
         worktreeReader: LibGit2WorktreeReader = LibGit2WorktreeReader(),
         worktreeWriter: LibGit2WorktreeWriter = LibGit2WorktreeWriter(),
+        worktreeForkWriter: LibGit2WorktreeForkWriter = LibGit2WorktreeForkWriter(),
         blockingReadExecutor: LibGit2BlockingReadExecutor = .shared
     ) {
         self.identityResolver = identityResolver
         self.writerRegistry = writerRegistry
         self.worktreeReader = worktreeReader
         self.worktreeWriter = worktreeWriter
+        self.worktreeForkWriter = worktreeForkWriter
         self.blockingReadExecutor = blockingReadExecutor
     }
 
@@ -64,6 +68,36 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
                 try worktreeWriter.createWorktree(request)
             }
         }
+    }
+
+    /// Submits the whole fork transaction to the source repository's lane. Task cancellation is forwarded
+    /// into the transaction, which rolls back before the lane releases custody and the call resumes.
+    public func forkWorktree(_ request: GitForkWorktreeRequest) async throws(GitWorktreeForkError)
+        -> GitForkWorktreeResult
+    {
+        let identity: GitRepositoryIdentity
+        do {
+            identity = try await repositoryIdentity(for: request.sourceWorktreePath)
+        } catch .repositoryNotFound {
+            throw .rejected(reason: .sourceNotWorktreeRoot)
+        } catch {
+            throw .gitFailure(error)
+        }
+        let lane = await writerRegistry.writer(for: identity)
+        let cancellation = WorktreeForkCancellation()
+        let forkWriter = worktreeForkWriter
+        let outcome = await withTaskCancellationHandler {
+            await lane.run { () -> Result<GitForkWorktreeResult, GitWorktreeForkError> in
+                do throws(GitWorktreeForkError) {
+                    return .success(try forkWriter.forkWorktree(request, cancellation: cancellation))
+                } catch {
+                    return .failure(error)
+                }
+            }
+        } onCancel: {
+            cancellation.cancel()
+        }
+        return try outcome.get()
     }
 
     public func pruneStaleWorktree(_ request: GitPruneStaleWorktreeRequest) async throws(GitDataPlaneError)
