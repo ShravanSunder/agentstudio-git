@@ -57,6 +57,7 @@ struct WorktreeForkValidator: Sendable {
         else {
             throw .validationFailed(reason: .headMismatch, relativePath: nil)
         }
+        try validateConfiguredWorktree(repository, plan: plan)
         switch plan.branchIdentity {
         case .detached:
             guard git_repository_head_detached(repository) == 1 else {
@@ -71,6 +72,31 @@ struct WorktreeForkValidator: Sendable {
             guard let name = git_reference_name(head), String(cString: name) == referenceName else {
                 throw .validationFailed(reason: .branchMismatch, relativePath: nil)
             }
+        }
+    }
+
+    /// The fork's effective `core.worktree`, from any configuration level, must be absent or the fork itself.
+    private func validateConfiguredWorktree(
+        _ repository: OpaquePointer,
+        plan: WorktreeForkPlan
+    ) throws(GitWorktreeForkError) {
+        var configuration: OpaquePointer?
+        guard git_repository_config_snapshot(&configuration, repository) >= 0, let configuration else {
+            throw .validationFailed(reason: .worktreeRegistrationInvalid, relativePath: nil)
+        }
+        defer { git_config_free(configuration) }
+        var value: UnsafePointer<CChar>?
+        guard git_config_get_string(&value, configuration, "core.worktree") >= 0, let value else {
+            return
+        }
+        let configured = String(cString: value)
+        let administration = plan.commonDirectory.appending(path: "worktrees").appending(path: plan.worktreeName)
+        let resolved =
+            configured.hasPrefix("/") ? URL(fileURLWithPath: configured) : administration.appending(path: configured)
+        guard case .success(let canonical) = WorktreeForkDescriptors.realpathURL(resolved),
+            canonical.path == plan.destinationRoot.path
+        else {
+            throw .validationFailed(reason: .sourceAdministrationReference, relativePath: nil)
         }
     }
 

@@ -242,6 +242,36 @@ struct GitWorktreeForkTopologyIntegrationTests {
         #expect(try fixture.statusLines(at: destinationTool).isEmpty)
     }
 
+    @Test("a worktree-scoped core.worktree is never carried into destination configuration")
+    func worktreeScopedCoreWorktreeIsNotCarriedIntoDestination() async throws {
+        // Arrange
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-config-worktree")
+        defer { fixture.remove() }
+        for path in ["kept/one.txt", "dropped/two.txt"] {
+            try fixture.write(path, "\(path)\n")
+        }
+        try fixture.git.run("add", ".")
+        try fixture.git.run("commit", "-qm", "tree")
+        try fixture.git.run("config", "extensions.worktreeConfig", "true")
+        let sourceRoot = try canonical(fixture.source).path
+        try fixture.git.run("config", "--worktree", "core.worktree", sourceRoot)
+        try fixture.git.run("sparse-checkout", "set", "--cone", "kept")
+        let destination = fixture.destination()
+
+        // Act
+        _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+
+        // Assert
+        let topLevel = try fixture.git.run(["rev-parse", "--show-toplevel"], currentDirectory: destination)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(try canonical(URL(fileURLWithPath: topLevel)).path == canonical(destination).path)
+        #expect(
+            !(try fixture.git.succeeds("config", "--worktree", "--get", "core.worktree", currentDirectory: destination))
+        )
+        #expect(try fixture.git.run(["sparse-checkout", "list"], currentDirectory: destination) == "kept\n")
+        #expect(try fixture.statusLines(at: destination).isEmpty)
+    }
+
     @Test("a traversing submodule name is rejected before mutation and never deletes what it points at")
     func traversingSubmoduleNameIsRejectedBeforeMutation() async throws {
         // Arrange

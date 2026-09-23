@@ -119,6 +119,7 @@ struct GitRepositoryStateRehomer: Sendable {
         if let sparse = node.sparse {
             try writeSparseState(sparse, administration: administration, reportPath: reportPath)
         }
+        try sanitizeWorktreeConfiguration(in: administration)
     }
 
     /// Destination link text for each classified administrative symlink: internal links point at the
@@ -154,10 +155,28 @@ struct GitRepositoryStateRehomer: Sendable {
         administration: URL,
         reportPath: String
     ) throws(GitWorktreeForkError) {
+        // The cloned common directory's config.worktree belongs to that repository's main worktree, not
+        // to this one; only the node's own worktree-private configuration may carry over.
+        let destinationConfiguration = administration.appending(path: "config.worktree")
+        if case .success = WorktreeForkDescriptors.lstatPath(destinationConfiguration),
+            (try? FileManager.default.removeItem(at: destinationConfiguration)) == nil
+        {
+            throw .entryFailed(relativePath: reportPath, reason: .entryCreationFailed, errorNumber: nil)
+        }
         let privateConfiguration = node.sourceGitDirectory.appending(path: "config.worktree")
         if let contents = try? Data(contentsOf: privateConfiguration) {
-            try writeData(contents, to: administration.appending(path: "config.worktree"), reportPath: reportPath)
+            try writeData(contents, to: destinationConfiguration, reportPath: reportPath)
         }
+    }
+
+    /// A worktree-scoped `core.worktree` (Git moves the main worktree's there when worktree config is
+    /// enabled) or `core.bare` would point the destination at the source; neither is ever carried over.
+    private func sanitizeWorktreeConfiguration(in administration: URL) throws(GitWorktreeForkError) {
+        let configuration = administration.appending(path: "config.worktree")
+        guard case .success = WorktreeForkDescriptors.lstatPath(configuration) else {
+            return
+        }
+        try WorktreeForkConfigurationFile.apply([.delete("core.worktree"), .delete("core.bare")], to: configuration)
     }
 
     private func headContents(_ node: WorktreeForkGitNode) -> String {
@@ -229,7 +248,8 @@ struct GitRepositoryStateRehomer: Sendable {
         }
         let destination = administration.appending(path: "config.worktree")
         try writeData(worktreeConfiguration, to: destination, reportPath: reportPath)
-        try WorktreeForkConfigurationFile.apply([.setBool("index.sparse", false)], to: destination)
+        try WorktreeForkConfigurationFile.apply(
+            [.setBool("index.sparse", false), .delete("core.worktree"), .delete("core.bare")], to: destination)
     }
 
     static func directAlternates(_ objectsDirectory: URL, _ reportPath: String) throws(GitWorktreeForkError) -> [URL] {
