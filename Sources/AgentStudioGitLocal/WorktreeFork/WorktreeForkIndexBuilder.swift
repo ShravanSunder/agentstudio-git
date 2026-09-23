@@ -6,6 +6,8 @@ import Foundation
 /// tree, are absent, or are skip-worktree. Every other tracked entry must carry refreshed stat data.
 struct WorktreeForkIndexRefreshEvidence: Equatable, Sendable {
     let unrefreshedPaths: Set<String>
+    /// Entries that took the clone's `lstat` without hashing because they were provably clean.
+    let adoptedPaths: Set<String>
 }
 
 /// Rebuilds a repository's index from its captured `HEAD` tree, never from source staging, then refreshes
@@ -14,7 +16,8 @@ struct WorktreeForkIndexBuilder: Sendable {
     func buildIndex(
         worktreePath: URL,
         capturedHead: WorktreeForkCapturedHead?,
-        skipWorktreePaths: Set<String>
+        skipWorktreePaths: Set<String>,
+        adoption: WorktreeForkAdoptionContext?
     ) throws(GitWorktreeForkError) -> WorktreeForkIndexRefreshEvidence {
         let repository = try openRepository(worktreePath)
         defer { git_repository_free(repository) }
@@ -32,8 +35,89 @@ struct WorktreeForkIndexBuilder: Sendable {
             try check(git_index_clear(index))
         }
         try applySkipWorktree(skipWorktreePaths, to: index)
+        let adoptedPaths =
+            try adoption.map { context throws(GitWorktreeForkError) in
+                try adoptCleanEntries(context, index: index, worktreePath: worktreePath)
+            } ?? []
         try check(git_index_write(index))
-        return try refreshStatData(repository: repository, index: index)
+        let refreshPaths = trackedPathsNeedingRefresh(index, excluding: adoptedPaths)
+        let unrefreshed =
+            refreshPaths.isEmpty
+            ? Set<String>()
+            : try refreshStatData(
+                repository: repository, index: index, onlyPaths: adoptedPaths.isEmpty ? nil : refreshPaths)
+        return WorktreeForkIndexRefreshEvidence(unrefreshedPaths: unrefreshed, adoptedPaths: adoptedPaths)
+    }
+
+    /// Gives each provably clean entry the clone's own `lstat` data. The source index only proves
+    /// cleanliness; no source stat is copied.
+    private func adoptCleanEntries(
+        _ context: WorktreeForkAdoptionContext,
+        index: OpaquePointer,
+        worktreePath: URL
+    ) throws(GitWorktreeForkError) -> Set<String> {
+        let skipWorktree = UInt16(GIT_INDEX_ENTRY_SKIP_WORKTREE.rawValue)
+        var adoptable: [String] = []
+        for position in 0..<git_index_entrycount(index) {
+            guard let entry = git_index_get_byindex(index, position)?.pointee, let pathPointer = entry.path,
+                entry.flags_extended & skipWorktree == 0
+            else {
+                continue
+            }
+            let path = String(cString: pathPointer)
+            let rootPath = WorktreeForkDescriptors.joined(context.nodePrefix, path)
+            var capturedOID = entry.id
+            if WorktreeForkCleanEntryAdoption.isAdoptable(
+                path: path,
+                capturedObjectID: oidString(&capturedOID),
+                capturedMode: entry.mode,
+                sourceIndex: context.sourceIndex,
+                plannedStat: context.plannedStats[rootPath],
+                cloneVerified: context.verifiedClonePaths.contains(rootPath)
+            ) {
+                adoptable.append(path)
+            }
+        }
+        var adopted = Set<String>()
+        for path in adoptable {
+            guard let existing = path.withCString({ git_index_get_bypath(index, $0, 0) })?.pointee,
+                case .success(let info) = WorktreeForkDescriptors.lstatPath(worktreePath.appending(path: path))
+            else {
+                continue
+            }
+            var updated = existing
+            updated.ctime = git_index_time(
+                seconds: Int32(truncatingIfNeeded: info.st_ctimespec.tv_sec),
+                nanoseconds: UInt32(truncatingIfNeeded: info.st_ctimespec.tv_nsec))
+            updated.mtime = git_index_time(
+                seconds: Int32(truncatingIfNeeded: info.st_mtimespec.tv_sec),
+                nanoseconds: UInt32(truncatingIfNeeded: info.st_mtimespec.tv_nsec))
+            updated.dev = UInt32(truncatingIfNeeded: info.st_dev)
+            updated.ino = UInt32(truncatingIfNeeded: info.st_ino)
+            updated.uid = info.st_uid
+            updated.gid = info.st_gid
+            updated.file_size = UInt32(truncatingIfNeeded: info.st_size)
+            try check(git_index_add(index, &updated))
+            adopted.insert(path)
+        }
+        return adopted
+    }
+
+    private func trackedPathsNeedingRefresh(_ index: OpaquePointer, excluding adopted: Set<String>) -> [String] {
+        let skipWorktree = UInt16(GIT_INDEX_ENTRY_SKIP_WORKTREE.rawValue)
+        var paths: [String] = []
+        for position in 0..<git_index_entrycount(index) {
+            guard let entry = git_index_get_byindex(index, position)?.pointee, let pathPointer = entry.path,
+                entry.flags_extended & skipWorktree == 0
+            else {
+                continue
+            }
+            let path = String(cString: pathPointer)
+            if !adopted.contains(path) {
+                paths.append(path)
+            }
+        }
+        return paths
     }
 
     private func readCapturedTree(
@@ -72,16 +156,30 @@ struct WorktreeForkIndexBuilder: Sendable {
     /// Diffs the index against the working tree with `GIT_DIFF_UPDATE_INDEX`, which re-hashes each entry
     /// whose stat data is unknown and, only when the hash equals the captured blob, stores the working
     /// file's stat data and writes the index. Content is never staged (unlike `git_index_update_all`).
+    /// `onlyPaths` restricts the refresh to exact paths so adopted entries are never re-hashed.
     private func refreshStatData(
         repository: OpaquePointer,
-        index: OpaquePointer
-    ) throws(GitWorktreeForkError) -> WorktreeForkIndexRefreshEvidence {
+        index: OpaquePointer,
+        onlyPaths: [String]?
+    ) throws(GitWorktreeForkError) -> Set<String> {
         var options = git_diff_options()
         try check(git_diff_options_init(&options, UInt32(GIT_DIFF_OPTIONS_VERSION)))
         options.flags = GIT_DIFF_UPDATE_INDEX.rawValue
         options.ignore_submodules = GIT_SUBMODULE_IGNORE_ALL
         var diff: OpaquePointer?
-        try check(git_diff_index_to_workdir(&diff, repository, index, &options))
+        if let onlyPaths {
+            options.flags |= GIT_DIFF_DISABLE_PATHSPEC_MATCH.rawValue
+            let cStrings = onlyPaths.map { strdup($0) }
+            defer { cStrings.forEach { free($0) } }
+            var pointers: [UnsafeMutablePointer<CChar>?] = cStrings
+            let result = pointers.withUnsafeMutableBufferPointer { buffer in
+                options.pathspec = git_strarray(strings: buffer.baseAddress, count: buffer.count)
+                return git_diff_index_to_workdir(&diff, repository, index, &options)
+            }
+            try check(result)
+        } else {
+            try check(git_diff_index_to_workdir(&diff, repository, index, &options))
+        }
         guard let diff else {
             throw .gitFailure(.unsupported(message: "index refresh produced no diff"))
         }
@@ -93,7 +191,7 @@ struct WorktreeForkIndexBuilder: Sendable {
             }
             unrefreshed.insert(String(cString: path))
         }
-        return WorktreeForkIndexRefreshEvidence(unrefreshedPaths: unrefreshed)
+        return unrefreshed
     }
 
     private func openRepository(_ path: URL) throws(GitWorktreeForkError) -> OpaquePointer {

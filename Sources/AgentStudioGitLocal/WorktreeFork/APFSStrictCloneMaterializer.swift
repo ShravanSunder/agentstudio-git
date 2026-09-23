@@ -13,6 +13,8 @@ struct WorktreeForkMaterializationObservations: Equatable, Sendable {
     var createdDirectoryCount = 0
     var logicalRegularFileBytes: Int64 = 0
     var normalizedEntries: [GitWorktreeMaterializationNormalizedEntry] = []
+    /// Regular files cloned from a descriptor whose fstat equalled the planned stat.
+    var statMatchedClonePaths: Set<String> = []
 
     mutating func merge(_ other: Self) {
         clonedRegularFileCount += other.clonedRegularFileCount
@@ -22,6 +24,7 @@ struct WorktreeForkMaterializationObservations: Equatable, Sendable {
         createdDirectoryCount += other.createdDirectoryCount
         logicalRegularFileBytes += other.logicalRegularFileBytes
         normalizedEntries.append(contentsOf: other.normalizedEntries)
+        statMatchedClonePaths.formUnion(other.statMatchedClonePaths)
     }
 }
 

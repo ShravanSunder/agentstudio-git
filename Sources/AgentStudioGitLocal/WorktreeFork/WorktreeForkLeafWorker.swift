@@ -63,6 +63,9 @@ struct WorktreeForkLeafWorker: Sendable {
         )
         observations.clonedRegularFileCount += 1
         observations.logicalRegularFileBytes += destinationInfo.st_size
+        if WorktreeForkObservedStat(sourceInfo) == leaf.plannedStat {
+            observations.statMatchedClonePaths.insert(leaf.relativePath)
+        }
     }
 
     private func recreateSymbolicLink(

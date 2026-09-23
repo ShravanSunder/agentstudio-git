@@ -66,7 +66,7 @@ struct WorktreeForkTopologyValidator: Sendable {
             worktreePath: rehomed.destinationWorktree,
             treeOID: rehomed.node.capturedHead?.treeOID,
             expectedSkipWorktree: rehomed.node.sparse?.skipWorktreePaths ?? [],
-            evidence: evidence ?? WorktreeForkIndexRefreshEvidence(unrefreshedPaths: []),
+            evidence: evidence ?? WorktreeForkIndexRefreshEvidence(unrefreshedPaths: [], adoptedPaths: []),
             reportPrefix: reportPath
         )
     }

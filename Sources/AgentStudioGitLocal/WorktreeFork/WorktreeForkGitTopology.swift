@@ -3,9 +3,9 @@ import Foundation
 /// Captured Git structure beneath the source root: every initialized nested Git node, the registered
 /// submodules that stay uninitialized, sparse intent, and the object stores that need CoW mirrors.
 struct WorktreeForkGitTopology: Sendable {
-    static let empty = Self(rootSparse: nil, nodes: [], uninitializedSubmodulePaths: [], mirroredObjectStores: [])
-
     let rootSparse: WorktreeForkSparsePlan?
+    /// Nil when libgit2 cannot read the root source index (for example a sparse index).
+    let rootSourceIndex: WorktreeForkSourceIndexSnapshot?
     /// Parent-before-child.
     let nodes: [WorktreeForkGitNode]
     let uninitializedSubmodulePaths: [String]
@@ -37,6 +37,7 @@ struct WorktreeForkGitNode: Sendable {
     /// `refs/heads/...` when `HEAD` is symbolic; nil when detached.
     let headReferenceName: String?
     let sparse: WorktreeForkSparsePlan?
+    let sourceIndex: WorktreeForkSourceIndexSnapshot?
     /// Canonical object directories this node's common object store borrows from.
     let alternateObjectStores: [URL]
 }

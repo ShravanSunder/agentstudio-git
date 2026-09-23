@@ -42,11 +42,13 @@ struct WorktreeForkGitTopologyPlanner: Sendable {
                     capturedHead: captured.head,
                     headReferenceName: captured.headReferenceName,
                     sparse: captured.sparse,
+                    sourceIndex: WorktreeForkCleanEntryAdoption.captureSourceIndex(gitDirectory: captured.gitDirectory),
                     alternateObjectStores: captured.alternates
                 ))
         }
         return WorktreeForkGitTopology(
             rootSparse: rootSparse,
+            rootSourceIndex: WorktreeForkCleanEntryAdoption.captureSourceIndex(gitDirectory: rootGitDirectory),
             nodes: nodes,
             uninitializedSubmodulePaths: uninitializedSubmodules(registrations, nodes: nodes),
             mirroredObjectStores: Array(Set(nodes.flatMap(\.alternateObjectStores))).sorted { $0.path < $1.path }

@@ -48,6 +48,9 @@ struct WorktreeForkPlannedLeaf: Equatable, Sendable {
     let relativePath: String
     let kind: WorktreeForkLeafKind
     let identity: WorktreeForkEntryIdentity
+    /// The stat observed while planning; a clone whose source descriptor still matches it is byte-identical
+    /// to what the source index vouched for.
+    let plannedStat: WorktreeForkObservedStat
 }
 
 /// Leaves of one directory, chunked so a huge directory still spreads across workers.

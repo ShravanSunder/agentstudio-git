@@ -154,7 +154,13 @@ struct WorktreeForkSourceWalker: Sendable {
         _ kind: WorktreeForkLeafKind,
         _ identity: WorktreeForkEntryIdentity
     ) -> WorktreeForkPlannedLeaf {
-        WorktreeForkPlannedLeaf(name: entry.name, relativePath: relativePath, kind: kind, identity: identity)
+        WorktreeForkPlannedLeaf(
+            name: entry.name,
+            relativePath: relativePath,
+            kind: kind,
+            identity: identity,
+            plannedStat: WorktreeForkObservedStat(entry.info)
+        )
     }
 
     private func batches(

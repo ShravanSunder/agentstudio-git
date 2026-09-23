@@ -12,17 +12,20 @@ struct LibGit2WorktreeForkWriter: Sendable {
     private let reader: LibGit2WorktreeReader
     private let hostFacts: WorktreeForkHostFactsProvider
     private let faults: WorktreeForkFaultInjector
+    private let indexObserver: WorktreeForkIndexObserver
 
     init(
         runtime: LibGit2Runtime = .shared,
         reader: LibGit2WorktreeReader = LibGit2WorktreeReader(),
         hostFacts: WorktreeForkHostFactsProvider = .live,
-        faults: WorktreeForkFaultInjector = .production
+        faults: WorktreeForkFaultInjector = .production,
+        indexObserver: WorktreeForkIndexObserver = .production
     ) {
         self.runtime = runtime
         self.reader = reader
         self.hostFacts = hostFacts
         self.faults = faults
+        self.indexObserver = indexObserver
     }
 
     /// Read-only availability from host, volume, and File Provider facts; never the writer lane.
@@ -111,19 +114,35 @@ struct LibGit2WorktreeForkWriter: Sendable {
         try cancellation.throwIfCancelled()
 
         let indexBuilder = WorktreeForkIndexBuilder()
+        let plannedStats = Self.plannedRegularFileStats(plan.filesystem)
+        func adoption(_ sourceIndex: WorktreeForkSourceIndexSnapshot?, prefix: String) -> WorktreeForkAdoptionContext? {
+            sourceIndex.map {
+                WorktreeForkAdoptionContext(
+                    sourceIndex: $0,
+                    nodePrefix: prefix,
+                    plannedStats: plannedStats,
+                    verifiedClonePaths: observations.statMatchedClonePaths
+                )
+            }
+        }
         let indexEvidence = try indexBuilder.buildIndex(
             worktreePath: plan.destinationRoot,
             capturedHead: plan.capturedHead,
-            skipWorktreePaths: plan.gitTopology.rootSparse?.skipWorktreePaths ?? []
+            skipWorktreePaths: plan.gitTopology.rootSparse?.skipWorktreePaths ?? [],
+            adoption: adoption(plan.gitTopology.rootSourceIndex, prefix: "")
         )
+        indexObserver.observe("", indexEvidence)
         var nodeIndexEvidence: [String: WorktreeForkIndexRefreshEvidence] = [:]
         for rehomed in rehomedNodes {
             try cancellation.throwIfCancelled()
-            nodeIndexEvidence[rehomed.node.relativePath] = try indexBuilder.buildIndex(
+            let evidence = try indexBuilder.buildIndex(
                 worktreePath: rehomed.destinationWorktree,
                 capturedHead: rehomed.node.capturedHead,
-                skipWorktreePaths: rehomed.node.sparse?.skipWorktreePaths ?? []
+                skipWorktreePaths: rehomed.node.sparse?.skipWorktreePaths ?? [],
+                adoption: adoption(rehomed.node.sourceIndex, prefix: rehomed.node.relativePath)
             )
+            nodeIndexEvidence[rehomed.node.relativePath] = evidence
+            indexObserver.observe(rehomed.node.relativePath, evidence)
         }
         try faults.reach(.afterIndexesBuilt)
         try cancellation.throwIfCancelled()
@@ -224,6 +243,16 @@ struct LibGit2WorktreeForkWriter: Sendable {
             throw .entryFailed(relativePath: ".", reason: .entryCreationFailed, errorNumber: nil)
         }
         return descriptor
+    }
+
+    private static func plannedRegularFileStats(
+        _ filesystem: WorktreeForkFilesystemPlan
+    ) -> [String: WorktreeForkObservedStat] {
+        var stats: [String: WorktreeForkObservedStat] = [:]
+        for leaf in filesystem.leafBatches.flatMap(\.leaves) where leaf.kind == .regularFile {
+            stats[leaf.relativePath] = leaf.plannedStat
+        }
+        return stats
     }
 
     private func report(

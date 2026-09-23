@@ -23,7 +23,14 @@ struct GitWorktreeForkBenchmarkTests {
         let packageRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let fixtures: [(String, (GitWorktreeForkFixture) throws -> Void)] = [
             ("ordinary (clone of this package)", { try Self.populateOrdinary($0, packageRoot: packageRoot) }),
-            ("50,000 tracked files", Self.populateManyFiles),
+            ("50,000 tracked files (loose objects, as just committed)", Self.populateManyFiles),
+            (
+                "50,000 tracked files (packed objects)",
+                { fixture in
+                    try Self.populateManyFiles(fixture)
+                    try fixture.git.run("repack", "-adq")
+                }
+            ),
             ("prepared cache (ignored dependencies + 256 MiB blobs)", Self.populatePreparedCache),
         ]
         var sections: [String] = []
@@ -56,7 +63,14 @@ struct GitWorktreeForkBenchmarkTests {
             let now = ContinuousClock.now
             marks.withLock { $0.append((point, now)) }
         }
-        let client = LibGit2AgentStudioGitLocalClient(worktreeForkWriter: LibGit2WorktreeForkWriter(faults: faults))
+        let rootEvidence = OSAllocatedUnfairLock<WorktreeForkIndexRefreshEvidence?>(initialState: nil)
+        let observer = WorktreeForkIndexObserver { node, evidence in
+            if node.isEmpty {
+                rootEvidence.withLock { $0 = evidence }
+            }
+        }
+        let client = LibGit2AgentStudioGitLocalClient(
+            worktreeForkWriter: LibGit2WorktreeForkWriter(faults: faults, indexObserver: observer))
         let destination = fixture.destination(destinationName)
         let freeBefore = Self.availableBytes(fixture.repository.root)
         let start = ContinuousClock.now
@@ -83,6 +97,7 @@ struct GitWorktreeForkBenchmarkTests {
             total: end - start,
             firstStatus: firstStatus,
             regularFiles: result.materialization.clonedRegularFileCount,
+            adoptedEntries: rootEvidence.withLock { $0?.adoptedPaths.count ?? 0 },
             logicalBytes: result.materialization.logicalRegularFileBytes,
             freeSpaceDeltaBytes: freeBefore - freeAfter
         )
@@ -149,14 +164,15 @@ struct GitWorktreeForkBenchmarkTests {
             "## \(label)",
             "",
             "| run | preflight | planning | registration | materialization | re-homing | dir metadata | indexes |"
-                + " validation | total | first status | files | logical MiB | free-space delta MiB |",
-            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+                + " validation | total | first status | files | adopted index entries | logical MiB |"
+                + " free-space delta MiB |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
         ]
         for (index, row) in rows.enumerated() {
             lines.append(
                 "| \(index + 1) | \(ms(row.preflight)) | \(ms(row.planning)) | \(ms(row.registration)) |"
                     + " \(ms(row.materialization)) | \(ms(row.rehoming)) | \(ms(row.directoryMetadata)) | \(ms(row.indexes)) |"
-                    + " \(ms(row.validation)) | \(ms(row.total)) | \(ms(row.firstStatus)) | \(row.regularFiles) |"
+                    + " \(ms(row.validation)) | \(ms(row.total)) | \(ms(row.firstStatus)) | \(row.regularFiles) | \(row.adoptedEntries) |"
                     + " \(mib(row.logicalBytes)) | \(mib(row.freeSpaceDeltaBytes)) |")
         }
         return lines.joined(separator: "\n")
@@ -197,6 +213,7 @@ private struct BenchmarkRow {
     let total: Duration
     let firstStatus: Duration
     let regularFiles: Int
+    let adoptedEntries: Int
     let logicalBytes: Int64
     let freeSpaceDeltaBytes: Int64
 }
