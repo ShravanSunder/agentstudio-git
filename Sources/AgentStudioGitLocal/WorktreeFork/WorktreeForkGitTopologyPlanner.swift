@@ -62,6 +62,9 @@ struct WorktreeForkGitTopologyPlanner: Sendable {
     ) throws(GitWorktreeForkError) -> WorktreeForkCapturedNode {
         let unresolvable = GitWorktreeForkError.entryFailed(
             relativePath: gitEntryPath, reason: .unresolvableGitAdministration, errorNumber: nil)
+        if let submoduleName, !WorktreeForkSubmoduleRegistrations.isSafeName(submoduleName) {
+            throw unresolvable
+        }
         let nodeRoot = sourceRoot.appending(path: nodePath)
         guard case .success(let gitEntryInfo) = WorktreeForkDescriptors.lstatPath(nodeRoot.appending(path: ".git"))
         else {
@@ -227,6 +230,17 @@ struct WorktreeForkSubmoduleRegistrations: Sendable {
                 Self.namesByPath(try Self.blobText(entry.oid, repository: repository))
             } ?? [:]
         nameByPath = Dictionary(uniqueKeysWithValues: gitlinkPaths.map { ($0, declaredNames[$0] ?? $0) })
+    }
+
+    /// Git refuses submodule names that could leave `$GIT_DIR/modules`; the fork applies the same rule so a
+    /// name can never place destination administration outside the fork's own administration.
+    static func isSafeName(_ name: String) -> Bool {
+        guard !name.isEmpty, !name.hasPrefix("/"), !name.hasPrefix("\\") else {
+            return false
+        }
+        let components = name.split(separator: "/", omittingEmptySubsequences: false)
+            .flatMap { $0.split(separator: "\\", omittingEmptySubsequences: false) }
+        return !components.contains { $0.isEmpty || $0 == "." || $0 == ".." }
     }
 
     /// Reads `[submodule "name"]` sections and their `path` keys.

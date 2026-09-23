@@ -9,7 +9,9 @@ enum WorktreeForkJournalEntry: Equatable, Sendable {
     case destinationRoot(path: URL, identity: WorktreeForkEntryIdentity?)
     case linkedWorktreeAdministration(name: String, path: URL)
     case createdBranch(referenceName: String, targetOID: String)
-    case nestedAdministration(path: URL, reportLocation: String)
+    /// `identity` is filled once the transaction's own `mkdir` succeeded; nil means creation was attempted
+    /// but not confirmed, so a present path may belong to someone else and is never deleted.
+    case nestedAdministration(path: URL, reportLocation: String, identity: WorktreeForkEntryIdentity?)
 }
 
 /// Owns transaction-created artifact identity, compensation, and residue proof. It lives on the lane's
@@ -39,6 +41,15 @@ struct WorktreeForkRollbackJournal {
         }
     }
 
+    mutating func confirmNestedAdministration(at path: URL, identity: WorktreeForkEntryIdentity) {
+        entries = entries.map { entry in
+            if case .nestedAdministration(path, let location, nil) = entry {
+                return .nestedAdministration(path: path, reportLocation: location, identity: identity)
+            }
+            return entry
+        }
+    }
+
     /// A branch the transaction deleted itself (the detached-mode carrier branch) needs no compensation.
     mutating func forgetBranch(referenceName: String) {
         entries.removeAll { entry in
@@ -54,7 +65,9 @@ struct WorktreeForkRollbackJournal {
     func rollback(faults: WorktreeForkFaultInjector) -> [GitWorktreeForkResidue] {
         var residue: [GitWorktreeForkResidue] = []
         for entry in entries.reversed() {
-            if case .nestedAdministration(let path, let location) = entry, !removeTree(path) {
+            if case .nestedAdministration(let path, let location, let identity) = entry,
+                !removeOwned(path, identity: identity)
+            {
                 residue.append(GitWorktreeForkResidue(kind: .nestedAdministration, location: location))
             }
         }
@@ -100,6 +113,27 @@ struct WorktreeForkRollbackJournal {
         do throws(GitWorktreeForkError) {
             try faults.reach(.rollbackRemovingDestination)
         } catch {
+            return false
+        }
+        return removeTree(path)
+    }
+
+    /// Removes `path` only when the transaction confirmed creating it and it still has that identity. An
+    /// unconfirmed path is removed only if it is an empty directory (no data can be lost); otherwise it is
+    /// reported as residue and left alone.
+    private func removeOwned(_ path: URL, identity: WorktreeForkEntryIdentity?) -> Bool {
+        let current: Darwin.stat
+        switch WorktreeForkDescriptors.lstatPath(path) {
+        case .success(let info):
+            current = info
+        case .failure(let failure):
+            return failure.code == ENOENT
+        }
+        guard let identity else {
+            return WorktreeForkEntryKind(mode: current.st_mode) == .directory
+                && path.path.withCString { rmdir($0) } == 0
+        }
+        guard WorktreeForkEntryIdentity(current) == identity else {
             return false
         }
         return removeTree(path)

@@ -33,21 +33,40 @@ struct GitRepositoryStateRehomer: Sendable {
             try cancellation.throwIfCancelled()
             let destinationWorktree = plan.destinationRoot.appending(path: node.relativePath)
             let administration = destinationAdministration(for: node, administrationByNode: administrationByNode)
+            try requireBeneath(administration, reportPath: "\(node.relativePath)/.git")
             administrationByNode[node.relativePath] = administration
             if case .submodule = node.kind {
                 journal.record(
                     .nestedAdministration(
                         path: administration,
-                        reportLocation: String(administration.path.dropFirst(plan.commonDirectory.path.count + 1))
+                        reportLocation: String(administration.path.dropFirst(plan.commonDirectory.path.count + 1)),
+                        identity: nil
                     ))
             }
             try rehome(
-                node, worktree: destinationWorktree, administration: administration, mirrorByStore: mirrorByStore)
+                node, worktree: destinationWorktree, administration: administration, mirrorByStore: mirrorByStore
+            ) { identity in
+                journal.confirmNestedAdministration(at: administration, identity: identity)
+            }
             rehomed.append(
                 WorktreeForkRehomedNode(
                     node: node, destinationWorktree: destinationWorktree, destinationAdministration: administration))
         }
         return rehomed
+    }
+
+    /// Defense in depth behind the planner's name rule: destination administration must sit beneath the
+    /// fork's own administration or the destination tree, compared by path components, never by prefix.
+    private func requireBeneath(_ administration: URL, reportPath: String) throws(GitWorktreeForkError) {
+        let components = administration.pathComponents
+        let isBeneath = [rootAdministration, plan.destinationRoot].contains { root in
+            let rootComponents = root.pathComponents
+            return components.count > rootComponents.count
+                && Array(components.prefix(rootComponents.count)) == rootComponents
+        }
+        guard isBeneath, !components.contains(".."), !components.contains(".") else {
+            throw .entryFailed(relativePath: reportPath, reason: .unresolvableGitAdministration, errorNumber: nil)
+        }
     }
 
     private func destinationAdministration(
@@ -68,11 +87,12 @@ struct GitRepositoryStateRehomer: Sendable {
         _ node: WorktreeForkGitNode,
         worktree: URL,
         administration: URL,
-        mirrorByStore: [URL: URL]
+        mirrorByStore: [URL: URL],
+        created: (WorktreeForkEntryIdentity) -> Void
     ) throws(GitWorktreeForkError) {
         let reportPath = "\(node.relativePath)/.git"
         let cloner = WorktreeForkAdministrationCloner(reportPath: reportPath)
-        try cloner.cloneTree(from: node.sourceCommonDirectory, to: administration)
+        try cloner.cloneTree(from: node.sourceCommonDirectory, to: administration, created: created)
         if node.sourceGitDirectory != node.sourceCommonDirectory {
             try overlayPrivateAdministration(node, administration: administration, reportPath: reportPath)
         }
@@ -151,8 +171,10 @@ struct GitRepositoryStateRehomer: Sendable {
         for (index, store) in stores.enumerated() {
             let mirror = rootAdministration.appending(path: "agentstudio-object-mirrors").appending(path: "\(index)")
             let location = "worktrees/\(plan.worktreeName)/agentstudio-object-mirrors/\(index)"
-            journal.record(.nestedAdministration(path: mirror, reportLocation: location))
-            try WorktreeForkAdministrationCloner(reportPath: location).cloneTree(from: store, to: mirror)
+            journal.record(.nestedAdministration(path: mirror, reportLocation: location, identity: nil))
+            try WorktreeForkAdministrationCloner(reportPath: location).cloneTree(from: store, to: mirror) { identity in
+                journal.confirmNestedAdministration(at: mirror, identity: identity)
+            }
             mirrorByStore[store] = mirror
         }
         for store in stores {

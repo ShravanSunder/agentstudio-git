@@ -29,15 +29,24 @@ struct WorktreeForkAdministrationCloner: Sendable {
     }
 
     /// Copies `source` into the not-yet-existing `destination`, creating missing parent directories.
-    func cloneTree(from source: URL, to destination: URL) throws(GitWorktreeForkError) {
+    /// `created` receives the identity of the root the transaction itself created with an exclusive
+    /// `mkdir`, so rollback can prove ownership before deleting anything.
+    func cloneTree(
+        from source: URL,
+        to destination: URL,
+        created: (WorktreeForkEntryIdentity) -> Void = { _ in }
+    ) throws(GitWorktreeForkError) {
         try WorktreeForkDatalessPolicy.withMaterializationDenied(reportPath: reportPath) {
             () throws(GitWorktreeForkError) in
-            try cloneTreeWithMaterializationDenied(from: source, to: destination)
+            try cloneTreeWithMaterializationDenied(from: source, to: destination, created: created)
         }
     }
 
-    private func cloneTreeWithMaterializationDenied(from source: URL, to destination: URL) throws(GitWorktreeForkError)
-    {
+    private func cloneTreeWithMaterializationDenied(
+        from source: URL,
+        to destination: URL,
+        created: (WorktreeForkEntryIdentity) -> Void
+    ) throws(GitWorktreeForkError) {
         do {
             try FileManager.default.createDirectory(
                 at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -48,6 +57,9 @@ struct WorktreeForkAdministrationCloner: Sendable {
         defer { close(sourceRoot) }
         guard destination.path.withCString({ mkdir($0, 0o755) }) == 0 else {
             throw .entryFailed(relativePath: reportPath, reason: .entryCreationFailed, errorNumber: errno)
+        }
+        if case .success(let info) = WorktreeForkDescriptors.lstatPath(destination) {
+            created(WorktreeForkEntryIdentity(info))
         }
         let destinationRoot = try descriptor(WorktreeForkDescriptors.openRoot(atCanonicalPath: destination))
         defer { close(destinationRoot) }

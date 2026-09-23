@@ -203,6 +203,43 @@ struct GitWorktreeForkTopologyIntegrationTests {
         #expect(try fixture.statusLines(at: fixture.source.appending(path: "deps/library")).isEmpty)
     }
 
+    @Test("a traversing submodule name is rejected before mutation and never deletes what it points at")
+    func traversingSubmoduleNameIsRejectedBeforeMutation() async throws {
+        // Arrange
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-submodule-name")
+        defer { fixture.remove() }
+        let library = try makeRepository(
+            at: fixture.repository.root.appending(path: "library"), file: "library.txt", fixture: fixture)
+        try fixture.git.run("submodule", "add", "-q", library.path, "deps/library")
+        try fixture.git.run(
+            "config", "-f", ".gitmodules", "--rename-section",
+            "submodule.deps/library", "submodule.../../../review-victim")
+        try fixture.git.run("add", ".gitmodules")
+        try fixture.git.run("commit", "-qm", "traversing submodule name")
+        let victim = fixture.source.appending(path: ".git/review-victim/owner.txt")
+        try fixture.write("owner.txt", "not the fork's\n", in: victim.deletingLastPathComponent())
+        let branchesBefore = try fixture.branchNames()
+
+        // Act
+        let failure: GitWorktreeForkError?
+        do {
+            _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+            failure = nil
+        } catch {
+            failure = error
+        }
+
+        // Assert
+        #expect(
+            failure
+                == .entryFailed(
+                    relativePath: "deps/library/.git", reason: .unresolvableGitAdministration, errorNumber: nil))
+        #expect(try String(contentsOf: victim, encoding: .utf8) == "not the fork's\n")
+        #expect(!GitWorktreeForkFileProbe.exists(fixture.destination()))
+        #expect(!GitWorktreeForkFileProbe.exists(fixture.linkedWorktreeAdministration()))
+        #expect(try fixture.branchNames() == branchesBefore)
+    }
+
     private func makeRepository(at path: URL, file: String, fixture: GitWorktreeForkFixture) throws -> URL {
         try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true)
         try fixture.git.run(["init", "-q"], currentDirectory: path)

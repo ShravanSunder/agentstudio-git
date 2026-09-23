@@ -197,6 +197,57 @@ struct WorktreeForkPolicyTests {
         #expect(GitWorktreeForkFileProbe.exists(destination))
     }
 
+    @Test("submodule names that could leave the modules directory are unsafe, as Git treats them")
+    func submoduleNamesThatCouldLeaveModulesAreUnsafe() {
+        // Arrange
+        let safe = ["library", "deps/library", "spaced name", "a.b/c-d"]
+        let unsafe = ["", ".", "..", "../x", "a/../../x", "a/./b", "a//b", "/abs", "a/", "..\\x", "a\\..\\b"]
+
+        // Act / Assert
+        for name in safe {
+            #expect(WorktreeForkSubmoduleRegistrations.isSafeName(name), "\(name)")
+        }
+        for name in unsafe {
+            #expect(!WorktreeForkSubmoduleRegistrations.isSafeName(name), "\(name)")
+        }
+    }
+
+    @Test("rollback never deletes nested administration the transaction did not confirm creating")
+    func rollbackNeverDeletesUnconfirmedNestedAdministration() throws {
+        // Arrange
+        let root = FileManager.default.temporaryDirectory.appending(
+            path: "agentstudio-git-journal-nested-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let foreign = root.appending(path: "modules/foreign")
+        try FileManager.default.createDirectory(at: foreign, withIntermediateDirectories: true)
+        try Data("keep\n".utf8).write(to: foreign.appending(path: "owner.txt"))
+        let replaced = root.appending(path: "modules/replaced")
+        try FileManager.default.createDirectory(at: replaced, withIntermediateDirectories: true)
+        let originalIdentity = WorktreeForkEntryIdentity(try #require(GitWorktreeForkFileProbe.info(replaced)))
+        try FileManager.default.removeItem(at: replaced)
+        try FileManager.default.createDirectory(at: root.appending(path: "occupant"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: replaced, withIntermediateDirectories: true)
+        try Data("keep\n".utf8).write(to: replaced.appending(path: "owner.txt"))
+        var journal = WorktreeForkRollbackJournal(
+            commonDirectory: root.appending(path: "missing.git"), destinationRoot: root.appending(path: "fork"),
+            runtime: .shared)
+        journal.record(.nestedAdministration(path: foreign, reportLocation: "modules/foreign", identity: nil))
+        journal.record(
+            .nestedAdministration(path: replaced, reportLocation: "modules/replaced", identity: originalIdentity))
+
+        // Act
+        let residue = journal.rollback(faults: .production)
+
+        // Assert
+        #expect(
+            residue == [
+                GitWorktreeForkResidue(kind: .nestedAdministration, location: "modules/replaced"),
+                GitWorktreeForkResidue(kind: .nestedAdministration, location: "modules/foreign"),
+            ])
+        #expect(GitWorktreeForkFileProbe.exists(foreign.appending(path: "owner.txt")))
+        #expect(GitWorktreeForkFileProbe.exists(replaced.appending(path: "owner.txt")))
+    }
+
     @Test("ineligible hosts and volumes are rejected through the client before any mutation")
     func ineligibleHostsAndVolumesAreRejectedBeforeMutation() async throws {
         // Arrange
