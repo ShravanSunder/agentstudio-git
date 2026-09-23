@@ -187,6 +187,21 @@ cross-filesystem administrative stores, and any Git node whose independent
 destination topology cannot be constructed. A socket is a planned skip, not an
 unsupported entry.
 
+File Provider locations pass every APFS, device, and clone-capability check
+(measured 2026-09-23: iCloud Drive and CloudStorage domains are ordinary
+directories on the data volume). Eligibility therefore adds one fact per
+checked path — `URLResourceKey.isUbiquitousItemKey`, nil treated as false — for
+the source root and the destination parent, and rejects before mutation. The
+source walker runs under the same worker-scoped deny-materialization policy as
+leaf workers, checks `SF_DATALESS` on directories before descending as well as
+on regular files, and turns either into a pre-mutation rejection. Without the
+policy, descending into a dataless directory would download its listing.
+
+`WorktreeForkEligibility` also backs the public read-only
+`forkWorktreeEligibility` query: the same host and volume facts plus ubiquity,
+gathered on the blocking read executor, never a tree walk and never the writer
+lane.
+
 ## Normal call path and proposed fork call path
 
 Current normal creation before this design is:

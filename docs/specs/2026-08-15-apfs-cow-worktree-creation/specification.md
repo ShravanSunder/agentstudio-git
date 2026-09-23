@@ -140,7 +140,32 @@ The operation MUST reject without mutation unless all of these are true:
 - source and destination roots do not overlap or contain one another;
 - every initialized nested or submodule Git common directory and object
   alternate that must be mirrored resolves to that same filesystem/device;
-- the selected branch mode satisfies the captured-`HEAD` rules.
+- the selected branch mode satisfies the captured-`HEAD` rules;
+- neither the source root nor the destination parent is a File
+  Provider-managed location (iCloud Drive, iCloud Desktop & Documents,
+  `~/Library/CloudStorage/*` domains), as reported by the item's ubiquity
+  resource value;
+- the source tree contains no dataless (not-downloaded) regular file or
+  directory. Planning detects this from entry flags without materializing
+  anything and rejects before mutation.
+
+Callers that must decide availability up front use a separate, read-only
+eligibility query:
+
+```swift
+func forkWorktreeEligibility(
+    sourceWorktreePath: URL,
+    destinationPath: URL
+) async -> GitWorktreeForkEligibility
+```
+
+It returns `.available` or `.unavailable(GitWorktreeForkRejectionReason)` from
+host, volume, and File Provider facts only; it never walks the source tree, so
+dataless content and Git topology are still decided by `forkWorktree` itself.
+It MUST NOT mutate anything, MUST run off the caller's cooperative executor,
+and its protocol default MUST return `.unavailable(.clientCapabilityUnavailable)`.
+A rejection from `forkWorktree` remains authoritative even when the query
+returned `.available`.
 
 The package's deployment target and all non-fork APIs MUST remain usable on
 macOS 14 and later. Calling the fork on an ineligible host MUST return a stable
@@ -173,7 +198,7 @@ type:
 | FIFO | Recreate an empty FIFO node and report it as recreated; no in-flight stream state exists to copy. |
 | Unix socket pathname | Do not reproduce it; return success only with a skipped-entry report identifying the socket. |
 | Character or block device, or an unknown filesystem kind | Fail and roll back rather than silently omit or transform it. |
-| Dataless regular file that cannot be cloned without materialization | Fail and roll back; strict CoW does not authorize a download or byte copy. |
+| Dataless regular file or directory | Reject before mutation when planning sees it; if one appears later (live source), fail and roll back. Strict CoW never authorizes a download or byte copy. |
 
 Metadata that the calling process or APFS cannot reproduce MUST be reported.
 Loss of payload, execute bits, ACL access semantics, extended attributes, or
