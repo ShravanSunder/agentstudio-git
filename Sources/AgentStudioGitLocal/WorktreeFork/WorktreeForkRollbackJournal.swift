@@ -75,23 +75,36 @@ struct WorktreeForkRollbackJournal {
     /// an empty result means every journaled artifact is verified absent. No cleanup error is discarded.
     func rollback(faults: WorktreeForkFaultInjector) -> [GitWorktreeForkResidue] {
         var residue: [GitWorktreeForkResidue] = []
+        // Paths whose removal was refused in this rollback. A confirmed ancestor of any of them is kept and
+        // reported too: removing it recursively would delete the refused path anyway.
+        var refused: [URL] = []
+        func removeUnlessProtecting(_ path: URL, _ remove: () -> Bool) -> Bool {
+            let protectsRefusedPath = refused.contains {
+                WorktreeForkAdministrativeSymlinks.relativeComponents(of: $0, beneath: path) != nil
+            }
+            guard !protectsRefusedPath, remove() else {
+                refused.append(path)
+                return false
+            }
+            return true
+        }
         for entry in entries.reversed() {
             if case .nestedAdministration(let path, let location, let identity) = entry,
-                !removeOwned(path, identity: identity)
+                !removeUnlessProtecting(path, { removeOwned(path, identity: identity) })
             {
                 residue.append(GitWorktreeForkResidue(kind: .nestedAdministration, location: location))
             }
         }
         for entry in entries {
             if case .destinationRoot(let path, let identity) = entry,
-                !removeDestination(path, identity: identity, faults: faults)
+                !removeUnlessProtecting(path, { removeDestination(path, identity: identity, faults: faults) })
             {
                 residue.append(GitWorktreeForkResidue(kind: .destinationContent, location: "."))
             }
         }
         for entry in entries {
             if case .linkedWorktreeAdministration(let name, let path, let identity) = entry,
-                !removeOwned(path, identity: identity)
+                !removeUnlessProtecting(path, { removeOwned(path, identity: identity) })
             {
                 residue.append(
                     GitWorktreeForkResidue(kind: .linkedWorktreeAdministration, location: "worktrees/\(name)"))

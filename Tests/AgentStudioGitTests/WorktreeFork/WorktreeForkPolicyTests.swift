@@ -197,6 +197,40 @@ struct WorktreeForkPolicyTests {
         #expect(GitWorktreeForkFileProbe.exists(destination))
     }
 
+    @Test("a refused nested path keeps its owned ancestor from being removed, and every residue stays present")
+    func refusedNestedPathKeepsOwnedAncestor() throws {
+        // Arrange
+        let root = FileManager.default.temporaryDirectory.appending(
+            path: "agentstudio-git-journal-ancestor-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let administration = root.appending(path: "common/worktrees/fork")
+        try FileManager.default.createDirectory(at: administration, withIntermediateDirectories: true)
+        let administrationIdentity = WorktreeForkEntryIdentity(
+            try #require(GitWorktreeForkFileProbe.info(administration)))
+        let foreign = administration.appending(path: "modules/library")
+        try FileManager.default.createDirectory(at: foreign, withIntermediateDirectories: true)
+        try Data("keep\n".utf8).write(to: foreign.appending(path: "owner.txt"))
+        var journal = WorktreeForkRollbackJournal(
+            commonDirectory: root.appending(path: "common"), destinationRoot: root.appending(path: "fork"),
+            runtime: .shared)
+        journal.record(
+            .linkedWorktreeAdministration(name: "fork", path: administration, identity: administrationIdentity))
+        journal.record(
+            .nestedAdministration(path: foreign, reportLocation: "worktrees/fork/modules/library", identity: nil))
+
+        // Act
+        let residue = journal.rollback(faults: .production)
+
+        // Assert
+        #expect(
+            residue == [
+                GitWorktreeForkResidue(kind: .nestedAdministration, location: "worktrees/fork/modules/library"),
+                GitWorktreeForkResidue(kind: .linkedWorktreeAdministration, location: "worktrees/fork"),
+            ])
+        #expect(GitWorktreeForkFileProbe.exists(foreign.appending(path: "owner.txt")))
+        #expect(GitWorktreeForkFileProbe.exists(administration))
+    }
+
     @Test("submodule names that could leave the modules directory are unsafe, as Git treats them")
     func submoduleNamesThatCouldLeaveModulesAreUnsafe() {
         // Arrange
