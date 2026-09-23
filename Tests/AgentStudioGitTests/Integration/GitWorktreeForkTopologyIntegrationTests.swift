@@ -242,6 +242,43 @@ struct GitWorktreeForkTopologyIntegrationTests {
         #expect(try fixture.statusLines(at: destinationTool).isEmpty)
     }
 
+    @Test("a mirrored alternate store keeps its internal relative symlinks inside the destination mirror")
+    func mirroredAlternateStoreKeepsInternalSymlinks() async throws {
+        // Arrange
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-store-symlink")
+        defer { fixture.remove() }
+        try fixture.write(".gitignore", "vendor/\n")
+        try fixture.git.run("add", ".gitignore")
+        try fixture.git.run("commit", "-qm", "ignore vendor")
+        let outside = try makeRepository(
+            at: fixture.repository.root.appending(path: "outside"), file: "outside.txt", fixture: fixture)
+        try fixture.git.run([
+            "clone", "-q", "--shared", outside.path, fixture.source.appending(path: "vendor/alt").path,
+        ])
+        try FileManager.default.createSymbolicLink(
+            atPath: outside.appending(path: ".git/objects/info/packs-link").path, withDestinationPath: "../pack")
+        let destination = fixture.destination()
+
+        // Act
+        _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+
+        // Assert
+        let destinationAlt = destination.appending(path: "vendor/alt")
+        #expect(try fixture.git.succeeds("cat-file", "-e", "HEAD:outside.txt", currentDirectory: destinationAlt))
+        let mirrorRoot = try canonical(fixture.linkedWorktreeAdministration()).appending(
+            path: "agentstudio-object-mirrors")
+        let mirroredLink = try #require(
+            try FileManager.default.contentsOfDirectory(atPath: mirrorRoot.path).lazy
+                .map { mirrorRoot.appending(path: "\($0)/info/packs-link") }
+                .first { GitWorktreeForkFileProbe.exists($0) })
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: mirroredLink.path) == "../pack")
+        #expect(
+            try canonical(mirroredLink).path
+                == canonical(
+                    mirroredLink.deletingLastPathComponent().deletingLastPathComponent().appending(path: "pack")
+                ).path)
+    }
+
     @Test("a worktree-scoped core.worktree is never carried into destination configuration")
     func worktreeScopedCoreWorktreeIsNotCarriedIntoDestination() async throws {
         // Arrange

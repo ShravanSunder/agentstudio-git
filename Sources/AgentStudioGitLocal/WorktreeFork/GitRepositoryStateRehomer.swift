@@ -218,7 +218,9 @@ struct GitRepositoryStateRehomer: Sendable {
             let mirror = rootAdministration.appending(path: "agentstudio-object-mirrors").appending(path: "\(index)")
             let location = "worktrees/\(plan.worktreeName)/agentstudio-object-mirrors/\(index)"
             journal.record(.nestedAdministration(path: mirror, reportLocation: location, identity: nil))
-            try WorktreeForkAdministrationCloner(reportPath: location).cloneTree(from: store, to: mirror) { identity in
+            var cloner = WorktreeForkAdministrationCloner(reportPath: location)
+            cloner.symlinkTargets = plan.gitTopology.mirroredStoreSymlinks[store] ?? [:]
+            try cloner.cloneTree(from: store, to: mirror) { identity in
                 journal.confirmNestedAdministration(at: mirror, identity: identity)
             }
             mirrorByStore[store] = mirror

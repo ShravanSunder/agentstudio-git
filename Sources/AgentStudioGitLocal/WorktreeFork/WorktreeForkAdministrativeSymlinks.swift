@@ -38,11 +38,21 @@ enum WorktreeForkAdministrativeSymlinks {
         return classified
     }
 
-    /// A mirrored store is cloned without link classification, so it must contain no symlinks at all.
-    static func requireNoSymlinks(in store: URL, reportPath: String) throws(GitWorktreeForkError) {
-        if !symlinks(beneath: store, skipping: { _ in false }).isEmpty {
-            throw unresolvable(reportPath)
+    /// Link text for the mirror of `store`: a link resolving inside the same store is reproduced relative
+    /// to its own directory, so it resolves inside the destination-owned mirror. An escaping or dangling
+    /// link is rejected before mutation.
+    static func storeSymlinkTargets(in store: URL, reportPath: String) throws(GitWorktreeForkError) -> [String: String]
+    {
+        var targets: [String: String] = [:]
+        for (relativePath, link) in symlinks(beneath: store, skipping: { _ in false }) {
+            guard case .success(let target) = WorktreeForkDescriptors.realpathURL(link),
+                relativeComponents(of: target, beneath: store) != nil
+            else {
+                throw unresolvable(reportPath)
+            }
+            targets[relativePath] = WorktreeForkRelativePath.from(link.deletingLastPathComponent(), to: target)
         }
+        return targets
     }
 
     /// Every symlink beneath `root`, keyed by root-relative path, without following any link.

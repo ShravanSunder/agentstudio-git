@@ -59,15 +59,18 @@ struct WorktreeForkGitTopologyPlanner: Sendable {
                         }
                     })
         ).sorted { $0.path < $1.path }
+        var mirroredStoreSymlinks: [URL: [String: String]] = [:]
         for store in mirroredObjectStores {
-            try WorktreeForkAdministrativeSymlinks.requireNoSymlinks(in: store, reportPath: store.lastPathComponent)
+            mirroredStoreSymlinks[store] = try WorktreeForkAdministrativeSymlinks.storeSymlinkTargets(
+                in: store, reportPath: store.lastPathComponent)
         }
         return WorktreeForkGitTopology(
             rootSparse: rootSparse,
             rootSourceIndex: WorktreeForkCleanEntryAdoption.captureSourceIndex(gitDirectory: rootGitDirectory),
             nodes: nodes,
             uninitializedSubmodulePaths: uninitializedSubmodules(registrations, nodes: nodes),
-            mirroredObjectStores: mirroredObjectStores
+            mirroredObjectStores: mirroredObjectStores,
+            mirroredStoreSymlinks: mirroredStoreSymlinks
         )
     }
 

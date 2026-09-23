@@ -26,6 +26,25 @@ struct WorktreeForkTopologyValidator: Sendable {
         for node in rehomed {
             try validateNode(node, evidence: evidenceByNode[node.node.relativePath])
         }
+        try validateMirrorSymlinks()
+    }
+
+    /// Every symlink inside a destination-owned object mirror must resolve inside that same mirror.
+    private func validateMirrorSymlinks() throws(GitWorktreeForkError) {
+        let mirrorsRoot = plan.commonDirectory.appending(path: "worktrees").appending(path: plan.worktreeName)
+            .appending(path: "agentstudio-object-mirrors")
+        let mirrors = (try? FileManager.default.contentsOfDirectory(atPath: mirrorsRoot.path)) ?? []
+        for mirrorName in mirrors {
+            let mirror = mirrorsRoot.appending(path: mirrorName)
+            for (_, link) in WorktreeForkAdministrativeSymlinks.symlinks(beneath: mirror, skipping: { _ in false }) {
+                guard case .success(let target) = WorktreeForkDescriptors.realpathURL(link),
+                    case .success(let canonicalMirror) = WorktreeForkDescriptors.realpathURL(mirror),
+                    WorktreeForkAdministrativeSymlinks.relativeComponents(of: target, beneath: canonicalMirror) != nil
+                else {
+                    throw .validationFailed(reason: .sourceAdministrationReference, relativePath: nil)
+                }
+            }
+        }
     }
 
     private func validateNode(

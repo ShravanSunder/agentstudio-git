@@ -290,11 +290,22 @@ struct WorktreeForkPolicyTests {
         }
         #expect(mirroredStore.path == store.path)
         #expect(classified.count == 2)
+        try FileManager.default.createDirectory(at: store.appending(path: "pack"), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            atPath: store.appending(path: "info-link").path, withDestinationPath: "pack")
+        let rejected = GitWorktreeForkError.entryFailed(
+            relativePath: "node/.git", reason: .unresolvableGitAdministration, errorNumber: nil)
+        #expect(throws: rejected) {
+            try WorktreeForkAdministrativeSymlinks.storeSymlinkTargets(in: store, reportPath: "node/.git")
+        }
+        try FileManager.default.removeItem(at: store.appending(path: "escape"))
         #expect(
-            throws: GitWorktreeForkError.entryFailed(
-                relativePath: "node/.git", reason: .unresolvableGitAdministration, errorNumber: nil)
-        ) {
-            try WorktreeForkAdministrativeSymlinks.requireNoSymlinks(in: store, reportPath: "node/.git")
+            try WorktreeForkAdministrativeSymlinks.storeSymlinkTargets(in: store, reportPath: "node/.git")
+                == ["info-link": "pack"])
+        try FileManager.default.createSymbolicLink(
+            atPath: store.appending(path: "dangling").path, withDestinationPath: "missing")
+        #expect(throws: rejected) {
+            try WorktreeForkAdministrativeSymlinks.storeSymlinkTargets(in: store, reportPath: "node/.git")
         }
     }
 

@@ -11,6 +11,8 @@ struct WorktreeForkGitTopology: Sendable {
     let uninitializedSubmodulePaths: [String]
     /// Canonical source object directories reachable through nested alternates, deduplicated.
     let mirroredObjectStores: [URL]
+    /// Mirror link text for store-internal symlinks, keyed by store then store-relative path.
+    let mirroredStoreSymlinks: [URL: [String: String]]
 }
 
 enum WorktreeForkGitNodeKind: Equatable, Sendable {
