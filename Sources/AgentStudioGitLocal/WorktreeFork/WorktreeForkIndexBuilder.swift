@@ -13,7 +13,7 @@ struct WorktreeForkIndexRefreshEvidence: Equatable, Sendable {
 struct WorktreeForkIndexBuilder: Sendable {
     func buildIndex(
         worktreePath: URL,
-        capturedHead: WorktreeForkCapturedHead,
+        capturedHead: WorktreeForkCapturedHead?,
         skipWorktreePaths: Set<String>
     ) throws(GitWorktreeForkError) -> WorktreeForkIndexRefreshEvidence {
         let repository = try openRepository(worktreePath)
@@ -25,7 +25,12 @@ struct WorktreeForkIndexBuilder: Sendable {
         }
         defer { git_index_free(index) }
 
-        try readCapturedTree(capturedHead.treeOID, into: index, repository: repository)
+        if let capturedHead {
+            try readCapturedTree(capturedHead.treeOID, into: index, repository: repository)
+        } else {
+            // An unborn nested repository has no captured tree; its index starts empty.
+            try check(git_index_clear(index))
+        }
         try applySkipWorktree(skipWorktreePaths, to: index)
         try check(git_index_write(index))
         return try refreshStatData(repository: repository, index: index)

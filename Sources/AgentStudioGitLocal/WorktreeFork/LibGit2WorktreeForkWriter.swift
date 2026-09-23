@@ -91,6 +91,8 @@ struct LibGit2WorktreeForkWriter: Sendable {
         try faults.reach(.afterMaterialization)
         try cancellation.throwIfCancelled()
 
+        let rehomedNodes = try GitRepositoryStateRehomer(plan: plan, cancellation: cancellation)
+            .rehome(journal: &journal)
         try faults.reach(.afterGitStateRehomed)
         observations.normalizedEntries += try materializer.finalizeDirectories(
             plan.filesystem,
@@ -99,11 +101,21 @@ struct LibGit2WorktreeForkWriter: Sendable {
         )
         try cancellation.throwIfCancelled()
 
-        let indexEvidence = try WorktreeForkIndexBuilder().buildIndex(
+        let indexBuilder = WorktreeForkIndexBuilder()
+        let indexEvidence = try indexBuilder.buildIndex(
             worktreePath: plan.destinationRoot,
             capturedHead: plan.capturedHead,
-            skipWorktreePaths: []
+            skipWorktreePaths: plan.gitTopology.rootSparse?.skipWorktreePaths ?? []
         )
+        var nodeIndexEvidence: [String: WorktreeForkIndexRefreshEvidence] = [:]
+        for rehomed in rehomedNodes {
+            try cancellation.throwIfCancelled()
+            nodeIndexEvidence[rehomed.node.relativePath] = try indexBuilder.buildIndex(
+                worktreePath: rehomed.destinationWorktree,
+                capturedHead: rehomed.node.capturedHead,
+                skipWorktreePaths: rehomed.node.sparse?.skipWorktreePaths ?? []
+            )
+        }
         try faults.reach(.afterIndexesBuilt)
         try cancellation.throwIfCancelled()
 
@@ -113,6 +125,7 @@ struct LibGit2WorktreeForkWriter: Sendable {
             destinationRootDescriptor: destinationRootDescriptor,
             indexEvidence: indexEvidence
         )
+        try WorktreeForkTopologyValidator(plan: plan).validate(rehomedNodes, evidenceByNode: nodeIndexEvidence)
         try faults.reach(.afterValidation)
         return GitForkWorktreeResult(worktree: snapshot, materialization: report(plan, observations))
     }
@@ -213,7 +226,7 @@ struct LibGit2WorktreeForkWriter: Sendable {
             createdDirectoryCount: observations.createdDirectoryCount,
             recreatedSymbolicLinkCount: observations.recreatedSymbolicLinkCount,
             preservedHardLinkCount: observations.preservedHardLinkCount,
-            preservedGitRepositoryCount: 0,
+            preservedGitRepositoryCount: plan.gitTopology.nodes.count,
             recreatedFIFOCount: observations.recreatedFIFOCount,
             logicalRegularFileBytes: observations.logicalRegularFileBytes,
             skippedEntries: plan.filesystem.skippedEntries,

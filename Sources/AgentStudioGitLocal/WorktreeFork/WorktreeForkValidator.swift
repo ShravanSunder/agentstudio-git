@@ -18,10 +18,12 @@ struct WorktreeForkValidator: Sendable {
         try validateHead(plan)
         try validateCounts(plan.filesystem, observations)
         try validateDestinationTree(plan.filesystem, destinationRootDescriptor: destinationRootDescriptor)
-        try validateIndex(
+        try WorktreeForkIndexValidation.validate(
             worktreePath: plan.destinationRoot,
             treeOID: plan.capturedHead.treeOID,
-            evidence: indexEvidence
+            expectedSkipWorktree: plan.gitTopology.rootSparse?.skipWorktreePaths ?? [],
+            evidence: indexEvidence,
+            reportPrefix: ""
         )
         try validateNoTransactionArtifacts(plan)
         return snapshot
@@ -110,41 +112,6 @@ struct WorktreeForkValidator: Sendable {
         }
     }
 
-    private func validateIndex(
-        worktreePath: URL,
-        treeOID: String,
-        evidence: WorktreeForkIndexRefreshEvidence
-    ) throws(GitWorktreeForkError) {
-        let repository = try WorktreeForkGitHandles.openWorktree(worktreePath)
-        defer { git_repository_free(repository) }
-        var index: OpaquePointer?
-        guard git_repository_index(&index, repository) >= 0, let index, git_index_read(index, 1) >= 0 else {
-            throw .validationFailed(reason: .indexTreeMismatch, relativePath: nil)
-        }
-        defer { git_index_free(index) }
-
-        let expectedEntries = try WorktreeForkGitHandles.treeEntries(treeOID, repository: repository)
-        var indexedEntries: [String: WorktreeForkTreeEntry] = [:]
-        for position in 0..<git_index_entrycount(index) {
-            guard let entry = git_index_get_byindex(index, position)?.pointee, let pathPointer = entry.path else {
-                continue
-            }
-            var oid = entry.id
-            let path = String(cString: pathPointer)
-            indexedEntries[path] = WorktreeForkTreeEntry(oid: oidString(&oid), mode: entry.mode)
-            let isSkipWorktree = entry.flags_extended & UInt16(GIT_INDEX_ENTRY_SKIP_WORKTREE.rawValue) != 0
-            let isGitlink = entry.mode == UInt32(GIT_FILEMODE_COMMIT.rawValue)
-            let hasStatData = entry.ino != 0 || entry.file_size != 0 || entry.mtime.seconds != 0
-            if !hasStatData, !isSkipWorktree, !isGitlink, !evidence.unrefreshedPaths.contains(path) {
-                throw .validationFailed(reason: .indexStatNotRefreshed, relativePath: path)
-            }
-        }
-        guard indexedEntries == expectedEntries else {
-            let mismatch = Set(indexedEntries.keys).symmetricDifference(expectedEntries.keys).min()
-            throw .validationFailed(reason: .indexTreeMismatch, relativePath: mismatch)
-        }
-    }
-
     private func validateNoTransactionArtifacts(_ plan: WorktreeForkPlan) throws(GitWorktreeForkError) {
         let administration = plan.commonDirectory.appending(path: "worktrees").appending(path: plan.worktreeName)
         var lockPaths = [administration.appending(path: "index.lock"), administration.appending(path: "HEAD.lock")]
@@ -176,4 +143,63 @@ struct WorktreeForkValidator: Sendable {
 private struct WorktreeForkPathKind: Hashable {
     let path: String
     let kind: String
+}
+
+/// Checks one rebuilt index: exactly the captured tree's entries, the planned skip-worktree flags, and
+/// refreshed stat data on every entry the refresh proved unchanged.
+enum WorktreeForkIndexValidation {
+    static func validate(
+        worktreePath: URL,
+        treeOID: String?,
+        expectedSkipWorktree: Set<String>,
+        evidence: WorktreeForkIndexRefreshEvidence,
+        reportPrefix: String
+    ) throws(GitWorktreeForkError) {
+        let repository = try WorktreeForkGitHandles.openWorktree(worktreePath)
+        defer { git_repository_free(repository) }
+        var index: OpaquePointer?
+        guard git_repository_index(&index, repository) >= 0, let index, git_index_read(index, 1) >= 0 else {
+            throw .validationFailed(reason: .indexTreeMismatch, relativePath: reportPrefix.isEmpty ? nil : reportPrefix)
+        }
+        defer { git_index_free(index) }
+
+        let expectedEntries =
+            try treeOID.map { oid throws(GitWorktreeForkError) in
+                try WorktreeForkGitHandles.treeEntries(oid, repository: repository)
+            } ?? [:]
+        var indexedEntries: [String: WorktreeForkTreeEntry] = [:]
+        var skipWorktree = Set<String>()
+        for position in 0..<git_index_entrycount(index) {
+            guard let entry = git_index_get_byindex(index, position)?.pointee, let pathPointer = entry.path else {
+                continue
+            }
+            var oid = entry.id
+            let path = String(cString: pathPointer)
+            indexedEntries[path] = WorktreeForkTreeEntry(oid: oidString(&oid), mode: entry.mode)
+            let isSkipWorktree = entry.flags_extended & UInt16(GIT_INDEX_ENTRY_SKIP_WORKTREE.rawValue) != 0
+            if isSkipWorktree {
+                skipWorktree.insert(path)
+            }
+            let isGitlink = entry.mode == UInt32(GIT_FILEMODE_COMMIT.rawValue)
+            let hasStatData = entry.ino != 0 || entry.file_size != 0 || entry.mtime.seconds != 0
+            if !hasStatData, !isSkipWorktree, !isGitlink, !evidence.unrefreshedPaths.contains(path) {
+                throw .validationFailed(
+                    reason: .indexStatNotRefreshed, relativePath: WorktreeForkDescriptors.joined(reportPrefix, path))
+            }
+        }
+        guard indexedEntries == expectedEntries else {
+            let mismatch = Set(indexedEntries.keys).symmetricDifference(expectedEntries.keys).min()
+            throw .validationFailed(
+                reason: .indexTreeMismatch,
+                relativePath: mismatch.map { WorktreeForkDescriptors.joined(reportPrefix, $0) }
+            )
+        }
+        guard skipWorktree == expectedSkipWorktree else {
+            let mismatch = skipWorktree.symmetricDifference(expectedSkipWorktree).min()
+            throw .validationFailed(
+                reason: .sparseStateMismatch,
+                relativePath: mismatch.map { WorktreeForkDescriptors.joined(reportPrefix, $0) }
+            )
+        }
+    }
 }

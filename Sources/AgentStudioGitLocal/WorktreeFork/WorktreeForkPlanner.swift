@@ -50,10 +50,12 @@ struct WorktreeForkPlanner: Sendable {
         do throws(GitWorktreeForkError) {
             let filesystem = try WorktreeForkSourceWalker(cancellation: cancellation)
                 .walk(sourceRootDescriptor: sourceRootDescriptor)
-            if let nestedGitEntry = filesystem.nestedGitEntryPaths.first {
-                throw .entryFailed(
-                    relativePath: nestedGitEntry, reason: .unresolvableGitAdministration, errorNumber: nil)
-            }
+            let gitTopology = try planGitTopology(
+                sourceRoot: sourceRoot,
+                capturedHead: gitCapture.capturedHead,
+                nestedGitEntryPaths: filesystem.nestedGitEntryPaths
+            )
+            try requireMirroredStoresEligible(gitTopology, eligibilityFacts: eligibilityFacts)
             let plan = WorktreeForkPlan(
                 sourceRoot: sourceRoot,
                 destinationRoot: destination.root,
@@ -62,12 +64,55 @@ struct WorktreeForkPlanner: Sendable {
                 commonDirectory: gitCapture.commonDirectory,
                 capturedHead: gitCapture.capturedHead,
                 branchIdentity: gitCapture.branchIdentity,
-                filesystem: filesystem
+                filesystem: filesystem,
+                gitTopology: gitTopology
             )
             return WorktreeForkPreparedSource(plan: plan, sourceRootDescriptor: sourceRootDescriptor)
         } catch {
             close(sourceRootDescriptor)
             throw error
+        }
+    }
+
+    private func planGitTopology(
+        sourceRoot: URL,
+        capturedHead: WorktreeForkCapturedHead,
+        nestedGitEntryPaths: [String]
+    ) throws(GitWorktreeForkError) -> WorktreeForkGitTopology {
+        let repository = try WorktreeForkGitHandles.openWorktree(sourceRoot)
+        defer { git_repository_free(repository) }
+        guard let gitDirectoryPointer = git_repository_path(repository),
+            case .success(let gitDirectory) = WorktreeForkDescriptors.realpathURL(
+                URL(fileURLWithPath: String(cString: gitDirectoryPointer)))
+        else {
+            throw .rejected(reason: .sourceNotWorktreeRoot)
+        }
+        return try WorktreeForkGitTopologyPlanner(sourceRoot: sourceRoot, cancellation: cancellation).plan(
+            rootRepository: repository,
+            rootGitDirectory: gitDirectory,
+            rootCapturedHead: capturedHead,
+            nestedGitEntryPaths: nestedGitEntryPaths
+        )
+    }
+
+    /// Nested common directories and borrowed object stores are mirrored with strict CoW, so they must
+    /// share the source volume just as the working files do.
+    private func requireMirroredStoresEligible(
+        _ topology: WorktreeForkGitTopology,
+        eligibilityFacts: WorktreeForkEligibilityFacts
+    ) throws(GitWorktreeForkError) {
+        var stores: [WorktreeForkVolumeFacts] = []
+        for store in topology.nodes.map(\.sourceCommonDirectory) + topology.mirroredObjectStores {
+            stores.append(try hostFacts.volumeFacts(store))
+        }
+        let facts = WorktreeForkEligibilityFacts(
+            operatingSystemMajorVersion: eligibilityFacts.operatingSystemMajorVersion,
+            source: eligibilityFacts.source,
+            destinationParent: eligibilityFacts.destinationParent,
+            mirroredAdministrativeStores: stores
+        )
+        if let rejection = WorktreeForkEligibility.rejection(for: facts) {
+            throw .rejected(reason: rejection)
         }
     }
 

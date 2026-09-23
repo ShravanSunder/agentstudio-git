@@ -1,0 +1,243 @@
+import AgentStudioGit
+import Foundation
+import Testing
+
+@testable import AgentStudioGitLocal
+
+@Suite("Git worktree fork topology integration", .serialized)
+struct GitWorktreeForkTopologyIntegrationTests {
+    @Test("initialized, recursive, and uninitialized submodules keep their state under destination administration")
+    func submodulesKeepStateUnderDestinationAdministration() async throws {
+        // Arrange
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-submodules")
+        defer { fixture.remove() }
+        let root = fixture.repository.root
+        let inner = try makeRepository(at: root.appending(path: "inner"), file: "inner.txt", fixture: fixture)
+        let library = try makeRepository(at: root.appending(path: "library"), file: "library.txt", fixture: fixture)
+        try fixture.git.run(["submodule", "add", "-q", inner.path, "nested/inner"], currentDirectory: library)
+        try fixture.git.run(["commit", "-qm", "inner"], currentDirectory: library)
+        let other = try makeRepository(at: root.appending(path: "other"), file: "other.txt", fixture: fixture)
+        try fixture.git.run("submodule", "add", "-q", library.path, "deps/library")
+        try fixture.git.run("submodule", "add", "-q", other.path, "deps/other")
+        try fixture.git.run("commit", "-qm", "submodules")
+        try fixture.git.run("submodule", "deinit", "-q", "deps/other")
+        try fixture.git.run("submodule", "update", "-q", "--init", "--recursive", "deps/library")
+        let sourceLibrary = fixture.source.appending(path: "deps/library")
+        try fixture.write("library.txt", "edited in source submodule\n", in: sourceLibrary)
+        try fixture.write("staged.txt", "staged in source submodule\n", in: sourceLibrary)
+        try fixture.git.run(["add", "staged.txt"], currentDirectory: sourceLibrary)
+        try fixture.write("ignored-by-nothing.txt", "untracked\n", in: sourceLibrary)
+        let sourceSuperStatus = try fixture.statusLines(at: fixture.source)
+        let sourceLibraryStatus = try fixture.statusLines(at: sourceLibrary)
+        let destination = fixture.destination()
+
+        // Act
+        let result = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+
+        // Assert
+        let destinationAdministration = try canonical(fixture.linkedWorktreeAdministration())
+        let destinationLibrary = destination.appending(path: "deps/library")
+        #expect(
+            try fixture.statusLines(at: destinationLibrary) == [
+                " M library.txt", "?? ignored-by-nothing.txt", "?? staged.txt",
+            ])
+        #expect(try fixture.statusLines(at: destination) == sourceSuperStatus)
+        #expect(try fixture.statusLines(at: sourceLibrary) == sourceLibraryStatus)
+        #expect(
+            try absoluteGitDirectory(destinationLibrary, fixture)
+                == destinationAdministration.appending(path: "modules/deps/library").path)
+        #expect(
+            try absoluteGitDirectory(destinationLibrary.appending(path: "nested/inner"), fixture)
+                == destinationAdministration.appending(path: "modules/deps/library/modules/nested/inner").path)
+        #expect(try fixture.statusLines(at: destinationLibrary.appending(path: "nested/inner")).isEmpty)
+        #expect(!GitWorktreeForkFileProbe.exists(destination.appending(path: "deps/other/.git")))
+        #expect(
+            try FileManager.default.contentsOfDirectory(atPath: destination.appending(path: "deps/other").path).isEmpty)
+        #expect(
+            try fixture.git.run(["config", "--get", "core.worktree"], currentDirectory: destinationLibrary)
+                .contains("fork/deps/library"))
+        #expect(result.materialization.preservedGitRepositoryCount == 2)
+    }
+
+    @Test("nested repositories, linked worktrees, and alternates are re-homed without source administration")
+    func nestedRepositoriesAreRehomedWithoutSourceAdministration() async throws {
+        // Arrange
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-nested")
+        defer { fixture.remove() }
+        let root = fixture.repository.root
+        try fixture.write(".gitignore", "vendor/\n")
+        try fixture.git.run("add", ".gitignore")
+        try fixture.git.run("commit", "-qm", "ignore vendor")
+        let tool = fixture.source.appending(path: "vendor/tool")
+        _ = try makeRepository(at: tool, file: "a.txt", fixture: fixture)
+        try fixture.write("a.txt", "dirty nested edit\n", in: tool)
+        #expect(link(tool.appending(path: "a.txt").path, tool.appending(path: "b.txt").path) == 0)
+        try fixture.write("MERGE_HEAD", "0000000000000000000000000000000000000000\n", in: tool.appending(path: ".git"))
+        try fixture.write("index.lock", "", in: tool.appending(path: ".git"))
+        try fixture.write("rebase-merge/head-name", "refs/heads/main\n", in: tool.appending(path: ".git"))
+        let outside = try makeRepository(at: root.appending(path: "outside"), file: "outside.txt", fixture: fixture)
+        try fixture.git.run(
+            ["worktree", "add", "-q", "-b", "nested-linked", fixture.source.appending(path: "vendor/linked").path],
+            currentDirectory: outside)
+        try fixture.git.run([
+            "clone", "-q", "--shared", outside.path, fixture.source.appending(path: "vendor/alt").path,
+        ])
+        let toolStatus = try fixture.statusLines(at: tool)
+        let destination = fixture.destination()
+
+        // Act
+        let result = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+
+        // Assert
+        let destinationOwnedPrefixes = [
+            try canonical(destination).path + "/", try canonical(fixture.linkedWorktreeAdministration()).path + "/",
+        ]
+        let destinationTool = destination.appending(path: "vendor/tool")
+        #expect(try fixture.statusLines(at: destinationTool) == toolStatus)
+        for residue in ["MERGE_HEAD", "index.lock", "rebase-merge"] {
+            #expect(!GitWorktreeForkFileProbe.exists(destinationTool.appending(path: ".git/\(residue)")), "\(residue)")
+        }
+        let linkedA = try #require(GitWorktreeForkFileProbe.info(destinationTool.appending(path: "a.txt")))
+        let linkedB = try #require(GitWorktreeForkFileProbe.info(destinationTool.appending(path: "b.txt")))
+        #expect(linkedA.st_ino == linkedB.st_ino)
+        for nested in ["vendor/tool", "vendor/linked", "vendor/alt"] {
+            let nestedDestination = destination.appending(path: nested)
+            #expect(
+                try fixture.blobID("HEAD", at: nestedDestination)
+                    == fixture.blobID("HEAD", at: fixture.source.appending(path: nested)))
+            let administrativePaths =
+                [
+                    try absoluteGitDirectory(nestedDestination, fixture),
+                    try fixture.git.run(
+                        ["rev-parse", "--path-format=absolute", "--git-common-dir"], currentDirectory: nestedDestination
+                    )
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                ] + alternates(of: nestedDestination)
+            for path in administrativePaths {
+                let resolved = try canonical(URL(fileURLWithPath: path)).path + "/"
+                #expect(destinationOwnedPrefixes.contains { resolved.hasPrefix($0) }, "\(nested) → \(path)")
+            }
+        }
+        #expect(
+            try fixture.git.succeeds(
+                "cat-file", "-e", "HEAD:outside.txt", currentDirectory: destination.appending(path: "vendor/alt")))
+        #expect(!alternates(of: destination.appending(path: "vendor/alt")).isEmpty)
+        #expect(result.materialization.preservedGitRepositoryCount == 3)
+    }
+
+    @Test(
+        "cone, non-cone, and sparse-index sources keep sparse behavior without mass deletions",
+        arguments: [SparseScenario.cone, .nonCone, .sparseIndex]
+    )
+    func sparseSourcesKeepSparseBehavior(scenario: SparseScenario) async throws {
+        // Arrange
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-sparse")
+        defer { fixture.remove() }
+        for path in ["kept/one.txt", "kept/deep/two.txt", "dropped/three.txt", "other/four.txt"] {
+            try fixture.write(path, "\(path)\n")
+        }
+        try fixture.git.run("add", ".")
+        try fixture.git.run("commit", "-qm", "tree")
+        switch scenario {
+        case .cone:
+            try fixture.git.run("sparse-checkout", "set", "--cone", "kept")
+        case .nonCone:
+            try fixture.git.run("sparse-checkout", "set", "--no-cone", "/*", "!/dropped/", "!/other/")
+        case .sparseIndex:
+            try fixture.git.run("sparse-checkout", "init", "--cone", "--sparse-index")
+            try fixture.git.run("sparse-checkout", "set", "kept")
+            // The source index really is sparse: libgit2 1.9 cannot open it, so patterns must be the authority.
+            #expect(try fixture.git.run("ls-files", "--sparse").contains("dropped/\n"))
+        }
+        try fixture.write("kept/one.txt", "dirty inside the cone\n")
+        let sourceList = try fixture.git.run("sparse-checkout", "list")
+        let destination = fixture.destination()
+
+        // Act
+        _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+
+        // Assert
+        #expect(try fixture.statusLines(at: destination) == [" M kept/one.txt"])
+        #expect(try fixture.git.run(["sparse-checkout", "list"], currentDirectory: destination) == sourceList)
+        let skipWorktree = try fixture.git.run(
+            ["ls-files", "-t", "--", "dropped", "other"], currentDirectory: destination)
+        #expect(skipWorktree.split(separator: "\n").allSatisfy { $0.hasPrefix("S ") })
+        #expect(!GitWorktreeForkFileProbe.exists(destination.appending(path: "dropped/three.txt")))
+        #expect(
+            try fixture.git.run(["ls-files", "-t", "--", "kept/one.txt"], currentDirectory: destination).hasPrefix("H ")
+        )
+    }
+
+    @Test("a failure after re-homing removes submodule administration with the rest of the fork")
+    func failureAfterRehomingRemovesSubmoduleAdministration() async throws {
+        // Arrange
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-topology-rollback")
+        defer { fixture.remove() }
+        let library = try makeRepository(
+            at: fixture.repository.root.appending(path: "library"), file: "library.txt", fixture: fixture)
+        try fixture.git.run("submodule", "add", "-q", library.path, "deps/library")
+        try fixture.git.run("commit", "-qm", "submodule")
+        let injected = GitWorktreeForkError.entryFailed(
+            relativePath: "injected", reason: .entryCreationFailed, errorNumber: nil)
+        let faults = WorktreeForkFaultInjector { reached throws(GitWorktreeForkError) in
+            if reached == .afterIndexesBuilt {
+                throw injected
+            }
+        }
+        let client = LibGit2AgentStudioGitLocalClient(worktreeForkWriter: LibGit2WorktreeForkWriter(faults: faults))
+
+        // Act
+        let failure: GitWorktreeForkError?
+        do {
+            _ = try await client.forkWorktree(fixture.request())
+            failure = nil
+        } catch {
+            failure = error
+        }
+
+        // Assert
+        #expect(failure == injected)
+        #expect(!GitWorktreeForkFileProbe.exists(fixture.destination()))
+        #expect(!GitWorktreeForkFileProbe.exists(fixture.linkedWorktreeAdministration()))
+        #expect(try fixture.branchNames() == ["refs/heads/main"])
+        #expect(try fixture.statusLines(at: fixture.source.appending(path: "deps/library")).isEmpty)
+    }
+
+    private func makeRepository(at path: URL, file: String, fixture: GitWorktreeForkFixture) throws -> URL {
+        try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true)
+        try fixture.git.run(["init", "-q"], currentDirectory: path)
+        try fixture.write(file, "\(file)\n", in: path)
+        try fixture.git.run(["add", "."], currentDirectory: path)
+        try fixture.git.run(["commit", "-qm", "initial"], currentDirectory: path)
+        return path
+    }
+
+    private func absoluteGitDirectory(_ worktree: URL, _ fixture: GitWorktreeForkFixture) throws -> String {
+        let path = try fixture.git.run(["rev-parse", "--absolute-git-dir"], currentDirectory: worktree)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return try canonical(URL(fileURLWithPath: path)).path
+    }
+
+    private func alternates(of worktree: URL) -> [String] {
+        let commonDirectory = worktree.appending(path: ".git")
+        guard
+            let text = try? String(
+                contentsOf: commonDirectory.appending(path: "objects/info/alternates"), encoding: .utf8)
+        else {
+            return []
+        }
+        return text.split(separator: "\n").map(String.init)
+    }
+
+    private func canonical(_ url: URL) throws -> URL {
+        let resolved = try #require(realpath(url.path, nil))
+        defer { free(resolved) }
+        return URL(fileURLWithPath: String(cString: resolved))
+    }
+}
+
+enum SparseScenario: String, CaseIterable, Sendable {
+    case cone
+    case nonCone
+    case sparseIndex
+}

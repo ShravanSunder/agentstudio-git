@@ -13,6 +13,7 @@ struct WorktreeForkPlan: Sendable {
     let capturedHead: WorktreeForkCapturedHead
     let branchIdentity: WorktreeForkBranchIdentity
     let filesystem: WorktreeForkFilesystemPlan
+    let gitTopology: WorktreeForkGitTopology
 }
 
 struct WorktreeForkCapturedHead: Equatable, Sendable {
