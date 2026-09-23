@@ -82,11 +82,12 @@ enum WorktreeForkAdministrativeSymlinks {
         return found
     }
 
-    /// Component-wise containment (never string prefix) for canonical paths.
+    /// Component-wise containment (never string prefix) for canonical paths. The root itself is contained
+    /// and yields "" — a link to a store's own root is as safe as a link beneath it.
     static func relativeComponents(of path: URL, beneath root: URL) -> String? {
         let components = path.pathComponents
         let rootComponents = root.pathComponents
-        guard components.count > rootComponents.count, Array(components.prefix(rootComponents.count)) == rootComponents
+        guard components.count >= rootComponents.count, Array(components.prefix(rootComponents.count)) == rootComponents
         else {
             return nil
         }

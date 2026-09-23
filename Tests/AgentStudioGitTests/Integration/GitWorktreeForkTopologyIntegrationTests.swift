@@ -257,6 +257,8 @@ struct GitWorktreeForkTopologyIntegrationTests {
         ])
         try FileManager.default.createSymbolicLink(
             atPath: outside.appending(path: ".git/objects/info/packs-link").path, withDestinationPath: "../pack")
+        try FileManager.default.createSymbolicLink(
+            atPath: outside.appending(path: ".git/objects/info/store-root").path, withDestinationPath: "..")
         let destination = fixture.destination()
 
         // Act
@@ -272,11 +274,11 @@ struct GitWorktreeForkTopologyIntegrationTests {
                 .map { mirrorRoot.appending(path: "\($0)/info/packs-link") }
                 .first { GitWorktreeForkFileProbe.exists($0) })
         #expect(try FileManager.default.destinationOfSymbolicLink(atPath: mirroredLink.path) == "../pack")
-        #expect(
-            try canonical(mirroredLink).path
-                == canonical(
-                    mirroredLink.deletingLastPathComponent().deletingLastPathComponent().appending(path: "pack")
-                ).path)
+        let mirror = mirroredLink.deletingLastPathComponent().deletingLastPathComponent()
+        #expect(try canonical(mirroredLink).path == canonical(mirror.appending(path: "pack")).path)
+        let storeRootLink = mirror.appending(path: "info/store-root")
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: storeRootLink.path) == "..")
+        #expect(try canonical(storeRootLink).path == canonical(mirror).path)
     }
 
     @Test("a worktree-scoped core.worktree is never carried into destination configuration")
