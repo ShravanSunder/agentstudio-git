@@ -31,8 +31,10 @@ struct LibGit2WorktreeForkWriter: Sendable {
     ) throws(GitWorktreeForkError) -> GitForkWorktreeResult {
         // Cancelled while queued behind another mutation: nothing has executed, nothing to compensate.
         try cancellation.throwIfCancelled()
-        let prepared = try WorktreeForkPlanner(runtime: runtime, hostFacts: hostFacts, cancellation: cancellation)
-            .prepare(request)
+        let planner = WorktreeForkPlanner(runtime: runtime, hostFacts: hostFacts, cancellation: cancellation)
+        let preflight = try planner.preflight(request)
+        try faults.reach(.afterPreflight)
+        let prepared = try planner.plan(preflight)
         defer { close(prepared.sourceRootDescriptor) }
         let plan = prepared.plan
 
@@ -99,6 +101,7 @@ struct LibGit2WorktreeForkWriter: Sendable {
             sourceRootDescriptor: sourceRootDescriptor,
             destinationRootDescriptor: destinationRootDescriptor
         )
+        try faults.reach(.afterDirectoryMetadataApplied)
         try cancellation.throwIfCancelled()
 
         let indexBuilder = WorktreeForkIndexBuilder()

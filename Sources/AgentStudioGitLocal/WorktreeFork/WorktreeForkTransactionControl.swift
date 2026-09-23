@@ -25,6 +25,7 @@ final class WorktreeForkCancellation: Sendable {
 
 /// Named transaction boundaries where failure injection can prove rollback. Production passes `.production`.
 enum WorktreeForkFaultPoint: Equatable, Sendable {
+    case afterPreflight
     case afterPlanning
     case afterIdentityCreated
     case afterWorktreeAdded
@@ -32,6 +33,7 @@ enum WorktreeForkFaultPoint: Equatable, Sendable {
     case leafBatchStarted
     case afterMaterialization
     case afterGitStateRehomed
+    case afterDirectoryMetadataApplied
     case afterIndexesBuilt
     case afterValidation
     case rollbackRemovingDestination

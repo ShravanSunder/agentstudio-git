@@ -17,7 +17,8 @@ struct WorktreeForkPlanner: Sendable {
     let hostFacts: WorktreeForkHostFactsProvider
     let cancellation: WorktreeForkCancellation
 
-    func prepare(_ request: GitForkWorktreeRequest) throws(GitWorktreeForkError) -> WorktreeForkPreparedSource {
+    /// Every pre-mutation rejection that does not require walking the source tree.
+    func preflight(_ request: GitForkWorktreeRequest) throws(GitWorktreeForkError) -> WorktreeForkPreflight {
         if let hostRejection = WorktreeForkEligibility.hostRejection(
             operatingSystemMajorVersion: hostFacts.operatingSystemMajorVersion())
         {
@@ -38,8 +39,22 @@ struct WorktreeForkPlanner: Sendable {
         if let rejection = WorktreeForkEligibility.rejection(for: eligibilityFacts) {
             throw .rejected(reason: rejection)
         }
-        try cancellation.throwIfCancelled()
+        return WorktreeForkPreflight(
+            request: request,
+            sourceRoot: sourceRoot,
+            destination: destination,
+            gitCapture: gitCapture,
+            eligibilityFacts: eligibilityFacts
+        )
+    }
 
+    /// Classifies the source filesystem and Git topology into the immutable plan.
+    func plan(_ preflight: WorktreeForkPreflight) throws(GitWorktreeForkError) -> WorktreeForkPreparedSource {
+        try cancellation.throwIfCancelled()
+        let request = preflight.request
+        let sourceRoot = preflight.sourceRoot
+        let destination = preflight.destination
+        let gitCapture = preflight.gitCapture
         let sourceRootDescriptor: Int32
         switch WorktreeForkDescriptors.openRoot(atCanonicalPath: sourceRoot) {
         case .success(let descriptor):
@@ -55,7 +70,7 @@ struct WorktreeForkPlanner: Sendable {
                 capturedHead: gitCapture.capturedHead,
                 nestedGitEntryPaths: filesystem.nestedGitEntryPaths
             )
-            try requireMirroredStoresEligible(gitTopology, eligibilityFacts: eligibilityFacts)
+            try requireMirroredStoresEligible(gitTopology, eligibilityFacts: preflight.eligibilityFacts)
             let plan = WorktreeForkPlan(
                 sourceRoot: sourceRoot,
                 destinationRoot: destination.root,
@@ -266,13 +281,21 @@ struct WorktreeForkPlanner: Sendable {
     }
 }
 
-private struct WorktreeForkDestination {
+struct WorktreeForkPreflight: Sendable {
+    let request: GitForkWorktreeRequest
+    let sourceRoot: URL
+    let destination: WorktreeForkDestination
+    let gitCapture: WorktreeForkGitCapture
+    let eligibilityFacts: WorktreeForkEligibilityFacts
+}
+
+struct WorktreeForkDestination: Sendable {
     let parent: URL
     let root: URL
     let worktreeName: String
 }
 
-private struct WorktreeForkGitCapture {
+struct WorktreeForkGitCapture: Sendable {
     let commonDirectory: URL
     let capturedHead: WorktreeForkCapturedHead
     let branchIdentity: WorktreeForkBranchIdentity

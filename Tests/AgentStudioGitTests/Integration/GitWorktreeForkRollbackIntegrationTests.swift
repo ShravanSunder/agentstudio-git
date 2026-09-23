@@ -14,13 +14,15 @@ struct GitWorktreeForkRollbackIntegrationTests {
     @Test(
         "a failure after each transaction phase removes the destination, administration, and created branch",
         arguments: [
-            WorktreeForkFaultPoint.afterPlanning,
+            WorktreeForkFaultPoint.afterPreflight,
+            .afterPlanning,
             .afterIdentityCreated,
             .afterWorktreeAdded,
             .afterDirectoriesCreated,
             .leafBatchStarted,
             .afterMaterialization,
             .afterGitStateRehomed,
+            .afterDirectoryMetadataApplied,
             .afterIndexesBuilt,
             .afterValidation,
         ],
