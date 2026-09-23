@@ -131,7 +131,42 @@ struct WorktreeForkPlanner: Sendable {
         }
     }
 
+    /// The read-only availability query: host, volume, and File Provider facts for the source root and
+    /// destination parent. No repository is opened and no tree is walked.
+    func eligibility(sourceWorktreePath: URL, destinationPath: URL) -> GitWorktreeForkEligibility {
+        do throws(GitWorktreeForkError) {
+            if let hostRejection = WorktreeForkEligibility.hostRejection(
+                operatingSystemMajorVersion: hostFacts.operatingSystemMajorVersion())
+            {
+                return .unavailable(hostRejection)
+            }
+            let sourceRoot = try resolved(sourceWorktreePath, rejection: .sourceNotWorktreeRoot)
+            let destination = try resolveDestinationParent(destinationPath)
+            let facts = WorktreeForkEligibilityFacts(
+                operatingSystemMajorVersion: hostFacts.operatingSystemMajorVersion(),
+                source: try hostFacts.volumeFacts(sourceRoot),
+                destinationParent: try hostFacts.volumeFacts(destination.parent),
+                mirroredAdministrativeStores: []
+            )
+            return WorktreeForkEligibility.rejection(for: facts).map(GitWorktreeForkEligibility.unavailable)
+                ?? .available
+        } catch {
+            if case .rejected(let reason) = error {
+                return .unavailable(reason)
+            }
+            return .unavailable(.sourceNotWorktreeRoot)
+        }
+    }
+
     private func resolveDestination(_ path: URL) throws(GitWorktreeForkError) -> WorktreeForkDestination {
+        let destination = try resolveDestinationParent(path)
+        if case .success = WorktreeForkDescriptors.lstatPath(destination.root) {
+            throw .rejected(reason: .destinationExists)
+        }
+        return destination
+    }
+
+    private func resolveDestinationParent(_ path: URL) throws(GitWorktreeForkError) -> WorktreeForkDestination {
         let name = path.standardizedFileURL.lastPathComponent
         guard !name.isEmpty, name != ".", name != "..", name != "/" else {
             throw .rejected(reason: .invalidDestinationPath)
@@ -139,9 +174,6 @@ struct WorktreeForkPlanner: Sendable {
         let parent = try resolved(
             path.standardizedFileURL.deletingLastPathComponent(), rejection: .destinationParentMissing)
         let root = parent.appending(path: name, directoryHint: .isDirectory)
-        if case .success = WorktreeForkDescriptors.lstatPath(root) {
-            throw .rejected(reason: .destinationExists)
-        }
         return WorktreeForkDestination(parent: parent, root: root, worktreeName: name)
     }
 

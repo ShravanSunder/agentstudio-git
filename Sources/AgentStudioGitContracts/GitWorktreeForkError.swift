@@ -38,6 +38,10 @@ public enum GitWorktreeForkRejectionReason: String, Codable, CaseIterable, Senda
     case branchAlreadyExists
     case branchNotAtCapturedHead
     case branchCheckedOut
+    /// The source root or destination parent is managed by a File Provider (iCloud Drive, CloudStorage).
+    case fileProviderManagedLocation
+    /// The source contains a dataless (not-downloaded) regular file or directory.
+    case datalessContent
 }
 
 public enum GitWorktreeForkSourceRaceReason: String, Codable, CaseIterable, Sendable {

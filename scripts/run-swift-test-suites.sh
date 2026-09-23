@@ -38,6 +38,7 @@ suites=(
   GitWorktreeForkStorageIntegrationTests
   GitWorktreeForkRollbackIntegrationTests
   GitWorktreeForkTopologyIntegrationTests
+  GitWorktreeForkEligibilityIntegrationTests
   GitCommitRangeCountIntegrationTests
   GitDiffImpactSummaryIntegrationTests
   GitReviewDataIntegrationTests

@@ -30,15 +30,14 @@ struct WorktreeForkAdministrationCloner: Sendable {
 
     /// Copies `source` into the not-yet-existing `destination`, creating missing parent directories.
     func cloneTree(from source: URL, to destination: URL) throws(GitWorktreeForkError) {
-        let prior: WorktreeForkDatalessPolicy.PriorPolicy
-        switch WorktreeForkDatalessPolicy.denyMaterializationOnCurrentThread() {
-        case .success(let established):
-            prior = established
-        case .failure(let failure):
-            throw .entryFailed(relativePath: reportPath, reason: .datalessPolicyUnavailable, errorNumber: failure.code)
+        try WorktreeForkDatalessPolicy.withMaterializationDenied(reportPath: reportPath) {
+            () throws(GitWorktreeForkError) in
+            try cloneTreeWithMaterializationDenied(from: source, to: destination)
         }
-        defer { WorktreeForkDatalessPolicy.restore(prior) }
+    }
 
+    private func cloneTreeWithMaterializationDenied(from source: URL, to destination: URL) throws(GitWorktreeForkError)
+    {
         do {
             try FileManager.default.createDirectory(
                 at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)

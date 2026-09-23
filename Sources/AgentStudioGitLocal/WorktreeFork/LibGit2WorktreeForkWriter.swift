@@ -25,6 +25,12 @@ struct LibGit2WorktreeForkWriter: Sendable {
         self.faults = faults
     }
 
+    /// Read-only availability from host, volume, and File Provider facts; never the writer lane.
+    func eligibility(sourceWorktreePath: URL, destinationPath: URL) -> GitWorktreeForkEligibility {
+        WorktreeForkPlanner(runtime: runtime, hostFacts: hostFacts, cancellation: WorktreeForkCancellation())
+            .eligibility(sourceWorktreePath: sourceWorktreePath, destinationPath: destinationPath)
+    }
+
     func forkWorktree(
         _ request: GitForkWorktreeRequest,
         cancellation: WorktreeForkCancellation

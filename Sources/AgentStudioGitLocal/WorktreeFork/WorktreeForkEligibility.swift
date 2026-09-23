@@ -6,6 +6,9 @@ struct WorktreeForkVolumeFacts: Equatable, Sendable {
     let fileSystemTypeName: String
     let deviceID: Int32
     let supportsFileCloning: Bool
+    /// iCloud Drive and CloudStorage domains pass every APFS, device, and clone check, so File Provider
+    /// management is its own fact (`isUbiquitousItemKey`, nil treated as false).
+    let isFileProviderManaged: Bool
 }
 
 /// Everything eligibility depends on, gathered before any mutation so the rule itself is a pure function.
@@ -36,6 +39,9 @@ enum WorktreeForkEligibility {
         }
         if !facts.source.supportsFileCloning {
             return .cloneCapabilityUnavailable
+        }
+        if facts.source.isFileProviderManaged || facts.destinationParent.isFileProviderManaged {
+            return .fileProviderManagedLocation
         }
         if facts.mirroredAdministrativeStores.contains(where: { $0.deviceID != facts.source.deviceID }) {
             return .administrativeStoreOnDifferentDevice
@@ -75,12 +81,12 @@ struct WorktreeForkHostFactsProvider: Sendable {
         case .failure(let failure):
             throw .entryFailed(relativePath: ".", reason: .unreadableEntry, errorNumber: failure.code)
         }
-        let supportsFileCloning =
-            (try? path.resourceValues(forKeys: [.volumeSupportsFileCloningKey]))?.volumeSupportsFileCloning ?? false
+        let resourceValues = try? path.resourceValues(forKeys: [.volumeSupportsFileCloningKey, .isUbiquitousItemKey])
         return WorktreeForkVolumeFacts(
             fileSystemTypeName: typeName,
             deviceID: deviceID,
-            supportsFileCloning: supportsFileCloning
+            supportsFileCloning: resourceValues?.volumeSupportsFileCloning ?? false,
+            isFileProviderManaged: resourceValues?.isUbiquitousItem ?? false
         )
     }
 }

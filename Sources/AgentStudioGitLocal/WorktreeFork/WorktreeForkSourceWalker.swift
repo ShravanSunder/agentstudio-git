@@ -9,7 +9,17 @@ struct WorktreeForkSourceWalker: Sendable {
 
     let cancellation: WorktreeForkCancellation
 
+    /// Walks under the thread-scoped deny-materialization policy: listing a dataless directory without it
+    /// would download that listing.
     func walk(sourceRootDescriptor: Int32) throws(GitWorktreeForkError) -> WorktreeForkFilesystemPlan {
+        try WorktreeForkDatalessPolicy.withMaterializationDenied(reportPath: ".") { () throws(GitWorktreeForkError) in
+            try walkWithMaterializationDenied(sourceRootDescriptor: sourceRootDescriptor)
+        }
+    }
+
+    private func walkWithMaterializationDenied(
+        sourceRootDescriptor: Int32
+    ) throws(GitWorktreeForkError) -> WorktreeForkFilesystemPlan {
         var directories: [WorktreeForkPlannedDirectory] = []
         var leafBatches: [WorktreeForkLeafBatch] = []
         var skippedEntries: [GitWorktreeMaterializationSkippedEntry] = []
@@ -34,13 +44,13 @@ struct WorktreeForkSourceWalker: Sendable {
                     continue
                 }
                 let identity = WorktreeForkEntryIdentity(entry.info)
-                switch WorktreeForkEntryPolicy.disposition(for: WorktreeForkEntryKind(mode: entry.info.st_mode)) {
+                let kind = WorktreeForkEntryKind(mode: entry.info.st_mode)
+                switch WorktreeForkEntryPolicy.disposition(for: kind, flags: entry.info.st_flags) {
                 case .descend:
                     childDirectories.append(relativePath)
+                case .rejectDataless:
+                    throw .rejected(reason: .datalessContent)
                 case .realize(.regularFile):
-                    if entry.info.st_flags & UInt32(SF_DATALESS) != 0 {
-                        throw .entryFailed(relativePath: relativePath, reason: .datalessFile, errorNumber: nil)
-                    }
                     if entry.info.st_nlink > 1 {
                         regularFilePathsByIdentity[identity, default: []].append(relativePath)
                     }
@@ -190,17 +200,22 @@ struct WorktreeForkSourceWalker: Sendable {
 }
 
 /// The explicit per-kind safety rule. Sockets name live endpoints and are skipped with a report; devices
-/// and unknown kinds fail rather than being silently omitted or transformed.
+/// and unknown kinds fail rather than being silently omitted or transformed; a dataless (not-downloaded)
+/// file or directory is rejected before mutation, because strict CoW never authorizes a download.
 enum WorktreeForkEntryPolicy {
     enum Disposition: Equatable {
         case descend
         case realize(WorktreeForkLeafKind)
         case skip(GitWorktreeFilesystemEntryKind, GitWorktreeMaterializationSkipReason)
+        case rejectDataless
         case unsupported
     }
 
-    static func disposition(for kind: WorktreeForkEntryKind) -> Disposition {
-        switch kind {
+    static func disposition(for kind: WorktreeForkEntryKind, flags: UInt32) -> Disposition {
+        if kind == .directory || kind == .regularFile, flags & UInt32(SF_DATALESS) != 0 {
+            return .rejectDataless
+        }
+        return switch kind {
         case .directory: .descend
         case .regularFile: .realize(.regularFile)
         case .symbolicLink: .realize(.symbolicLink)

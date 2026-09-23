@@ -100,6 +100,16 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
         return try outcome.get()
     }
 
+    /// Runs on the blocking read executor, not the writer lane, so availability never waits behind mutations.
+    public func forkWorktreeEligibility(sourceWorktreePath: URL, destinationPath: URL) async
+        -> GitWorktreeForkEligibility
+    {
+        let forkWriter = worktreeForkWriter
+        return await blockingReadExecutor.execute {
+            forkWriter.eligibility(sourceWorktreePath: sourceWorktreePath, destinationPath: destinationPath)
+        }
+    }
+
     public func pruneStaleWorktree(_ request: GitPruneStaleWorktreeRequest) async throws(GitDataPlaneError)
         -> GitWorktreePruneResult
     {

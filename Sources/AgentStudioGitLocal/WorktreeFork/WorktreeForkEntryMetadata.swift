@@ -163,6 +163,23 @@ enum WorktreeForkDatalessPolicy {
         _ = setiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_THREAD, prior.value)
     }
 
+    /// Runs `body` with materialization denied on the current thread and restores the prior policy on every
+    /// exit path. Failing to establish the denial fails the operation instead of running unprotected.
+    static func withMaterializationDenied<ReturnValue>(
+        reportPath: String,
+        _ body: () throws(GitWorktreeForkError) -> ReturnValue
+    ) throws(GitWorktreeForkError) -> ReturnValue {
+        let prior: PriorPolicy
+        switch denyMaterializationOnCurrentThread() {
+        case .success(let established):
+            prior = established
+        case .failure(let failure):
+            throw .entryFailed(relativePath: reportPath, reason: .datalessPolicyUnavailable, errorNumber: failure.code)
+        }
+        defer { restore(prior) }
+        return try body()
+    }
+
     static func currentThreadPolicy() -> Int32 {
         getiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_THREAD)
     }

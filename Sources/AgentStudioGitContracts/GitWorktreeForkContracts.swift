@@ -184,3 +184,51 @@ public enum GitWorktreeMetadataNormalizationReason: String, Codable, CaseIterabl
     /// APFS clears setuid/setgid on a cloned regular file.
     case clearedByCopyOnWriteClone
 }
+
+/// Up-front availability of Worktree Fork from host, volume, and File Provider facts only. It never walks
+/// the source, so dataless content and Git topology are still decided by `forkWorktree`, whose rejection
+/// stays authoritative even after `.available`.
+public enum GitWorktreeForkEligibility: Equatable, Hashable, Sendable {
+    case available
+    case unavailable(GitWorktreeForkRejectionReason)
+}
+
+extension GitWorktreeForkEligibility: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case state
+        case reason
+    }
+
+    private enum State: String, Codable {
+        case available
+        case unavailable
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(State.self, forKey: .state) {
+        case .available:
+            guard !container.contains(.reason) else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(
+                        codingPath: decoder.codingPath,
+                        debugDescription: "available fork eligibility must not carry a reason"
+                    ))
+            }
+            self = .available
+        case .unavailable:
+            self = .unavailable(try container.decode(GitWorktreeForkRejectionReason.self, forKey: .reason))
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .available:
+            try container.encode(State.available, forKey: .state)
+        case .unavailable(let reason):
+            try container.encode(State.unavailable, forKey: .state)
+            try container.encode(reason, forKey: .reason)
+        }
+    }
+}

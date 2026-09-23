@@ -156,6 +156,49 @@ struct GitWorktreeForkContractTests {
         }
     }
 
+    @Test("fork eligibility uses an explicit state discriminator and rejects contradictory payloads")
+    func forkEligibilityUsesExplicitStateDiscriminator() throws {
+        // Arrange
+        let values: [GitWorktreeForkEligibility] = [.available, .unavailable(.fileProviderManagedLocation)]
+        let contradictory = [
+            #"{"state":"available","reason":"crossDevice"}"#,
+            #"{"state":"unavailable"}"#,
+            #"{"state":"teleported"}"#,
+        ]
+
+        // Act
+        let encoded = try values.map { try sortedEncoder().encode($0) }
+        let decoded = try encoded.map { try JSONDecoder().decode(GitWorktreeForkEligibility.self, from: $0) }
+
+        // Assert
+        #expect(decoded == values)
+        #expect(
+            encoded.map(jsonText) == [
+                #"{"state":"available"}"#,
+                #"{"reason":"fileProviderManagedLocation","state":"unavailable"}"#,
+            ])
+        for payload in contradictory {
+            #expect(throws: DecodingError.self) {
+                _ = try JSONDecoder().decode(GitWorktreeForkEligibility.self, from: Data(payload.utf8))
+            }
+        }
+    }
+
+    @Test("existing conformers report fork eligibility as unavailable")
+    func existingConformersReportForkEligibilityUnavailable() async {
+        // Arrange
+        let client: any AgentStudioGitLocalClient = LegacyLocalClientDouble()
+
+        // Act
+        let eligibility = await client.forkWorktreeEligibility(
+            sourceWorktreePath: URL(fileURLWithPath: "/tmp/source"),
+            destinationPath: URL(fileURLWithPath: "/tmp/destination")
+        )
+
+        // Assert
+        #expect(eligibility == .unavailable(.clientCapabilityUnavailable))
+    }
+
     @Test("normal create requests keep their pre-fork wire shape and legacy payloads decode")
     func normalCreateRequestsKeepPreForkWireShape() throws {
         // Arrange

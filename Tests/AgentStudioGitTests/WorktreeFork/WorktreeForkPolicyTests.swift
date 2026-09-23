@@ -8,7 +8,7 @@ import Testing
 @Suite("Worktree fork policy")
 struct WorktreeForkPolicyTests {
     private static let apfs = WorktreeForkVolumeFacts(
-        fileSystemTypeName: "apfs", deviceID: 7, supportsFileCloning: true)
+        fileSystemTypeName: "apfs", deviceID: 7, supportsFileCloning: true, isFileProviderManaged: false)
 
     @Test("eligibility rejects each unsupported host or volume with its stable reason")
     func eligibilityRejectsEachUnsupportedHostOrVolume() {
@@ -21,6 +21,8 @@ struct WorktreeForkPolicyTests {
             (facts(destination: volume(device: 9)), .crossDevice),
             (facts(source: volume(cloning: false), destination: volume(cloning: false)), .cloneCapabilityUnavailable),
             (facts(stores: [volume(device: 9)]), .administrativeStoreOnDifferentDevice),
+            (facts(source: volume(fileProvider: true)), .fileProviderManagedLocation),
+            (facts(destination: volume(fileProvider: true)), .fileProviderManagedLocation),
         ]
 
         for (input, expected) in cases {
@@ -48,11 +50,62 @@ struct WorktreeForkPolicyTests {
 
         for (mode, expected) in expectations {
             // Act
-            let disposition = WorktreeForkEntryPolicy.disposition(for: WorktreeForkEntryKind(mode: mode | 0o644))
+            let disposition = WorktreeForkEntryPolicy.disposition(
+                for: WorktreeForkEntryKind(mode: mode | 0o644), flags: 0)
 
             // Assert
             #expect(disposition == expected)
         }
+    }
+
+    @Test("dataless regular files and directories are rejected before the walker reads or descends")
+    func datalessFilesAndDirectoriesAreRejected() {
+        // Arrange
+        let dataless = UInt32(SF_DATALESS)
+
+        // Act / Assert
+        #expect(WorktreeForkEntryPolicy.disposition(for: .directory, flags: dataless) == .rejectDataless)
+        #expect(WorktreeForkEntryPolicy.disposition(for: .regularFile, flags: dataless) == .rejectDataless)
+        #expect(WorktreeForkEntryPolicy.disposition(for: .symbolicLink, flags: dataless) == .realize(.symbolicLink))
+        #expect(WorktreeForkEntryPolicy.disposition(for: .directory, flags: UInt32(UF_HIDDEN)) == .descend)
+    }
+
+    @Test("a denied-materialization scope holds the policy for its body and restores it after a failure")
+    func deniedMaterializationScopeRestoresAfterFailure() async throws {
+        // Arrange
+        let (observations, continuation) = AsyncStream.makeStream(of: DatalessPolicyObservation.self)
+
+        // Act
+        let worker = Thread {
+            let before = WorktreeForkDatalessPolicy.currentThreadPolicy()
+            var during: Int32 = -1
+            var failed = false
+            do throws(GitWorktreeForkError) {
+                try WorktreeForkDatalessPolicy.withMaterializationDenied(reportPath: ".") {
+                    () throws(GitWorktreeForkError) in
+                    during = WorktreeForkDatalessPolicy.currentThreadPolicy()
+                    throw GitWorktreeForkError.cancelled
+                }
+            } catch {
+                failed = error == .cancelled
+            }
+            continuation.yield(
+                DatalessPolicyObservation(
+                    established: failed,
+                    before: before,
+                    during: during,
+                    after: WorktreeForkDatalessPolicy.currentThreadPolicy()
+                ))
+            continuation.finish()
+        }
+        worker.start()
+        var iterator = observations.makeAsyncIterator()
+        let observation = try #require(await iterator.next())
+
+        // Assert
+        #expect(observation.established)
+        #expect(observation.during == IOPOL_MATERIALIZE_DATALESS_FILES_OFF)
+        #expect(observation.after == observation.before)
     }
 
     @Test("ownership and setuid loss are reported normalization while permission loss fails")
@@ -161,7 +214,8 @@ struct WorktreeForkPolicyTests {
                     volumeFacts: { path in
                         let device = path.path.hasSuffix("/repo") ? sourcePath : sourcePath + 1
                         return WorktreeForkVolumeFacts(
-                            fileSystemTypeName: "apfs", deviceID: device, supportsFileCloning: true)
+                            fileSystemTypeName: "apfs", deviceID: device, supportsFileCloning: true,
+                            isFileProviderManaged: false)
                     }
                 ),
                 .crossDevice
@@ -202,8 +256,15 @@ struct WorktreeForkPolicyTests {
         )
     }
 
-    private func volume(type: String = "apfs", device: Int32 = 7, cloning: Bool = true) -> WorktreeForkVolumeFacts {
-        WorktreeForkVolumeFacts(fileSystemTypeName: type, deviceID: device, supportsFileCloning: cloning)
+    private func volume(
+        type: String = "apfs",
+        device: Int32 = 7,
+        cloning: Bool = true,
+        fileProvider: Bool = false
+    ) -> WorktreeForkVolumeFacts {
+        WorktreeForkVolumeFacts(
+            fileSystemTypeName: type, deviceID: device, supportsFileCloning: cloning,
+            isFileProviderManaged: fileProvider)
     }
 }
 

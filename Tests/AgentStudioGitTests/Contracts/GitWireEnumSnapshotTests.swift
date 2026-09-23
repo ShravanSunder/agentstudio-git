@@ -67,7 +67,7 @@ struct GitWireEnumSnapshotTests {
                 "administrativeStoreOnDifferentDevice", "sourceNotWorktreeRoot", "sourceHeadUnavailable",
                 "invalidDestinationPath", "destinationParentMissing", "destinationExists", "overlappingRoots",
                 "linkedWorktreeNameInUse", "invalidBranchName", "branchNotFound", "branchAlreadyExists",
-                "branchNotAtCapturedHead", "branchCheckedOut",
+                "branchNotAtCapturedHead", "branchCheckedOut", "fileProviderManagedLocation", "datalessContent",
             ])
         #expect(
             GitWorktreeForkSourceRaceReason.allCases.map(\.rawValue) == [
