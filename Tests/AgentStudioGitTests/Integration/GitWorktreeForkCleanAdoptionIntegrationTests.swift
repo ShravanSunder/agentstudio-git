@@ -62,6 +62,43 @@ struct GitWorktreeForkCleanAdoptionIntegrationTests {
         }
     }
 
+    @Test("a source write between verification and clone is refreshed, never adopted as clean")
+    func sourceWriteBetweenVerificationAndCloneIsRefreshed() async throws {
+        // Arrange
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-adoption-race")
+        defer { fixture.remove() }
+        try fixture.write("racing.txt", "base\n")
+        try Self.ageModificationTime(fixture.source.appending(path: "racing.txt"))
+        try fixture.git.run("add", ".")
+        try fixture.git.run("commit", "-qm", "base")
+        let racing = fixture.source.appending(path: "racing.txt")
+        let faults = WorktreeForkFaultInjector { reached throws(GitWorktreeForkError) in
+            guard reached == .beforeRegularFileClone(relativePath: "racing.txt"),
+                let handle = try? FileHandle(forWritingTo: racing)
+            else {
+                return
+            }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: Data("written during the fork\n".utf8))
+            try? handle.close()
+        }
+        let evidence = OSAllocatedUnfairLock(initialState: [String: WorktreeForkIndexRefreshEvidence]())
+        let observer = WorktreeForkIndexObserver { node, nodeEvidence in
+            evidence.withLock { $0[node] = nodeEvidence }
+        }
+        let client = LibGit2AgentStudioGitLocalClient(
+            worktreeForkWriter: LibGit2WorktreeForkWriter(faults: faults, indexObserver: observer))
+
+        // Act
+        _ = try await client.forkWorktree(fixture.request())
+
+        // Assert
+        let rootEvidence = try #require(evidence.withLock { $0[""] })
+        #expect(!rootEvidence.adoptedPaths.contains("racing.txt"))
+        #expect(rootEvidence.adoptedPaths.contains("README.md"))
+        #expect(try fixture.statusLines(at: fixture.destination()) == [" M racing.txt"])
+    }
+
     @Test("a sparse-index source adopts nothing and still reports its true status")
     func sparseIndexSourceAdoptsNothing() async throws {
         // Arrange

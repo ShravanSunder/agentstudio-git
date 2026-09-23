@@ -11,6 +11,7 @@ struct WorktreeForkLeafWorker: Sendable {
 
     let sourceRootDescriptor: Int32
     let destinationRootDescriptor: Int32
+    let faults: WorktreeForkFaultInjector
 
     func realize(
         _ batch: WorktreeForkLeafBatch,
@@ -49,6 +50,7 @@ struct WorktreeForkLeafWorker: Sendable {
         if sourceInfo.st_flags & UInt32(SF_DATALESS) != 0 {
             throw .entryFailed(relativePath: leaf.relativePath, reason: .datalessFile, errorNumber: nil)
         }
+        try faults.reach(.beforeRegularFileClone(relativePath: leaf.relativePath))
         let cloneResult = leaf.name.withCString {
             fclonefileat(sourceDescriptor, destinationDirectory, $0, Self.cloneFlags)
         }
@@ -63,8 +65,13 @@ struct WorktreeForkLeafWorker: Sendable {
         )
         observations.clonedRegularFileCount += 1
         observations.logicalRegularFileBytes += destinationInfo.st_size
-        if WorktreeForkObservedStat(sourceInfo) == leaf.plannedStat {
-            observations.statMatchedClonePaths.insert(leaf.relativePath)
+        // A write can land between verification and fclonefileat. Only a source whose stat is unchanged
+        // across the whole clone, and equal to the plan, vouches for byte-identical clone content.
+        if case .success(let postCloneInfo) = WorktreeForkDescriptors.statDescriptor(sourceDescriptor) {
+            let verified = WorktreeForkObservedStat(sourceInfo)
+            if verified == leaf.plannedStat, WorktreeForkObservedStat(postCloneInfo) == verified {
+                observations.statMatchedClonePaths.insert(leaf.relativePath)
+            }
         }
     }
 

@@ -65,7 +65,8 @@ struct APFSStrictCloneMaterializer: Sendable {
         let outcome = OSAllocatedUnfairLock(initialState: WorktreeForkWorkerOutcome())
         let worker = WorktreeForkLeafWorker(
             sourceRootDescriptor: sourceRootDescriptor,
-            destinationRootDescriptor: destinationRootDescriptor
+            destinationRootDescriptor: destinationRootDescriptor,
+            faults: faults
         )
 
         DispatchQueue.concurrentPerform(iterations: Self.leafWorkerCount) { _ in

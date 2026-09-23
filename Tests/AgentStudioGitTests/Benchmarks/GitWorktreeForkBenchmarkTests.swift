@@ -60,6 +60,9 @@ struct GitWorktreeForkBenchmarkTests {
     private func measureFork(_ fixture: GitWorktreeForkFixture, destinationName: String) async throws -> BenchmarkRow {
         let marks = OSAllocatedUnfairLock(initialState: [(WorktreeForkFaultPoint, ContinuousClock.Instant)]())
         let faults = WorktreeForkFaultInjector { point throws(GitWorktreeForkError) in
+            if case .beforeRegularFileClone = point {
+                return
+            }
             let now = ContinuousClock.now
             marks.withLock { $0.append((point, now)) }
         }
