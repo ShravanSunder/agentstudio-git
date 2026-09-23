@@ -19,6 +19,7 @@ suites=(
   LibGit2ErrorCaptureTests
   GitRepositoryIdentityTests
   GitRepositoryWriterRegistryTests
+  GitRepositoryWriterLaneTests
   GitProcessRunnerTests
   SystemGitRemoteClientTests
   GitRemoteOutputParserTests
