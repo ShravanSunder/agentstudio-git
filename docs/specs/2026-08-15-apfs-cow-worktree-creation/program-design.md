@@ -415,6 +415,35 @@ call, until some other process writes the index. The refresh is the one
 hashing pass over tracked content — about 3.3 s for 50,040 entries in the
 measured `git reset --mixed` equivalent — paid once inside the transaction.
 
+V-08 evidence (2026-09-23) broke that estimate: libgit2's
+`GIT_DIFF_UPDATE_INDEX` refresh took 22–41 s for 50,000 tracked files, split
+between re-hashing every clone and per-entry attribute/filter loading. The
+refresh therefore runs only for entries whose cleanliness is unknown. Before
+step 4, the re-homer adopts stat data for every entry that is provably clean:
+
+- the source index is readable by libgit2 (not a sparse index);
+- the source entry is stage 0 and its object ID equals the captured `HEAD`
+  tree entry for the same path and mode;
+- the source entry's cached stat matches the source file's stat observed by
+  the planner (device, inode, size, mtime, ctime, mode), which is Git's own
+  clean test;
+- the entry is not racily clean: its cached mtime is strictly older than the
+  source index file's mtime;
+- the destination file was cloned by `fclonefileat` from a descriptor whose
+  `fstat` matched that same planned stat.
+
+Then the clone is byte-identical to the captured blob, so the destination
+entry takes the clone's own `lstat` data with no hashing. This reuses no source
+stat data; the source index is evidence of cleanliness only. Every other
+entry — dirty, staged, racy, unreadable source index — goes through the step 4
+refresh. The validator's refreshed-stat check cannot detect a wrong adoption
+(the adopted stat matches the destination file by construction), so the
+adoption conditions are the correctness boundary. They are proven by
+discriminating fixtures: a dirty entry, a staged entry, a racily clean entry,
+and a sparse-index source must all reach the refresh path and report their
+true status through real `git status`, while clean entries are adopted without
+hashing.
+
 ## Validation and publication
 
 `WorktreeForkValidator` is separate from `LibGit2WorktreeReader` because the
