@@ -84,8 +84,11 @@ struct GitWorktreeForkRollbackIntegrationTests {
         _ = chmod(fixture.destination().appending(path: "sealed").path, 0o755)
     }
 
-    @Test("a destination another process creates after planning is never deleted by rollback")
-    func foreignDestinationCreatedAfterPlanningSurvivesRollback() async throws {
+    @Test(
+        "a destination another process creates after planning is never deleted by rollback, empty or not",
+        arguments: [true, false]
+    )
+    func foreignDestinationCreatedAfterPlanningSurvivesRollback(foreignDirectoryHasFile: Bool) async throws {
         // Arrange
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-foreign-destination")
         defer { fixture.removeRestoringPermissions() }
@@ -95,7 +98,9 @@ struct GitWorktreeForkRollbackIntegrationTests {
         let faults = WorktreeForkFaultInjector { reached throws(GitWorktreeForkError) in
             if reached == .afterPlanning {
                 try? FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
-                try? Data("another process\n".utf8).write(to: foreignFile)
+                if foreignDirectoryHasFile {
+                    try? Data("another process\n".utf8).write(to: foreignFile)
+                }
             }
         }
         let client = LibGit2AgentStudioGitLocalClient(worktreeForkWriter: LibGit2WorktreeForkWriter(faults: faults))
@@ -108,9 +113,19 @@ struct GitWorktreeForkRollbackIntegrationTests {
             Issue.record("expected a Git failure with residue, got \(String(describing: failure))")
             return
         }
-        #expect(residue == [GitWorktreeForkResidue(kind: .destinationContent, location: ".")])
-        #expect(try String(contentsOf: foreignFile, encoding: .utf8) == "another process\n")
-        #expect(!GitWorktreeForkFileProbe.exists(fixture.linkedWorktreeAdministration()))
+        // The destination is foreign, and libgit2's empty administration skeleton from the failed add is
+        // unconfirmed too: both are truthful residue, and neither is deleted.
+        #expect(
+            residue == [
+                GitWorktreeForkResidue(kind: .destinationContent, location: "."),
+                GitWorktreeForkResidue(kind: .linkedWorktreeAdministration, location: "worktrees/fork"),
+            ])
+        #expect(GitWorktreeForkFileProbe.exists(destination))
+        if foreignDirectoryHasFile {
+            #expect(try String(contentsOf: foreignFile, encoding: .utf8) == "another process\n")
+        } else {
+            #expect(try FileManager.default.contentsOfDirectory(atPath: destination.path).isEmpty)
+        }
         #expect(try fixture.branchNames() == branchesBefore)
     }
 

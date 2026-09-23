@@ -221,6 +221,8 @@ struct WorktreeForkPolicyTests {
         let foreign = root.appending(path: "modules/foreign")
         try FileManager.default.createDirectory(at: foreign, withIntermediateDirectories: true)
         try Data("keep\n".utf8).write(to: foreign.appending(path: "owner.txt"))
+        let emptyForeign = root.appending(path: "modules/empty-foreign")
+        try FileManager.default.createDirectory(at: emptyForeign, withIntermediateDirectories: true)
         let replaced = root.appending(path: "modules/replaced")
         try FileManager.default.createDirectory(at: replaced, withIntermediateDirectories: true)
         let originalIdentity = WorktreeForkEntryIdentity(try #require(GitWorktreeForkFileProbe.info(replaced)))
@@ -233,6 +235,8 @@ struct WorktreeForkPolicyTests {
             runtime: .shared)
         journal.record(.nestedAdministration(path: foreign, reportLocation: "modules/foreign", identity: nil))
         journal.record(
+            .nestedAdministration(path: emptyForeign, reportLocation: "modules/empty-foreign", identity: nil))
+        journal.record(
             .nestedAdministration(path: replaced, reportLocation: "modules/replaced", identity: originalIdentity))
 
         // Act
@@ -242,8 +246,10 @@ struct WorktreeForkPolicyTests {
         #expect(
             residue == [
                 GitWorktreeForkResidue(kind: .nestedAdministration, location: "modules/replaced"),
+                GitWorktreeForkResidue(kind: .nestedAdministration, location: "modules/empty-foreign"),
                 GitWorktreeForkResidue(kind: .nestedAdministration, location: "modules/foreign"),
             ])
+        #expect(GitWorktreeForkFileProbe.exists(emptyForeign))
         #expect(GitWorktreeForkFileProbe.exists(foreign.appending(path: "owner.txt")))
         #expect(GitWorktreeForkFileProbe.exists(replaced.appending(path: "owner.txt")))
     }

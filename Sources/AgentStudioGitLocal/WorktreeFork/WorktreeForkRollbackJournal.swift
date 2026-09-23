@@ -123,9 +123,9 @@ struct WorktreeForkRollbackJournal {
         return removeOwned(path, identity: identity)
     }
 
-    /// Removes `path` only when the transaction confirmed creating it and it still has that identity. An
-    /// unconfirmed path is removed only if it is an empty directory (no data can be lost); otherwise it is
-    /// reported as residue and left alone.
+    /// Removes `path` only when the transaction confirmed creating it and it still has that identity. A
+    /// present, unconfirmed path is never touched — emptiness does not establish ownership — and is reported
+    /// as residue.
     private func removeOwned(_ path: URL, identity: WorktreeForkEntryIdentity?) -> Bool {
         let current: Darwin.stat
         switch WorktreeForkDescriptors.lstatPath(path) {
@@ -134,11 +134,7 @@ struct WorktreeForkRollbackJournal {
         case .failure(let failure):
             return failure.code == ENOENT
         }
-        guard let identity else {
-            return WorktreeForkEntryKind(mode: current.st_mode) == .directory
-                && path.path.withCString { rmdir($0) } == 0
-        }
-        guard WorktreeForkEntryIdentity(current) == identity else {
+        guard let identity, WorktreeForkEntryIdentity(current) == identity else {
             return false
         }
         return removeTree(path)
