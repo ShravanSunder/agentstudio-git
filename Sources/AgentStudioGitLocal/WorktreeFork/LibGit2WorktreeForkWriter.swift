@@ -199,7 +199,8 @@ struct LibGit2WorktreeForkWriter: Sendable {
         journal.record(
             .linkedWorktreeAdministration(
                 name: plan.worktreeName,
-                path: plan.commonDirectory.appending(path: "worktrees").appending(path: plan.worktreeName)
+                path: plan.commonDirectory.appending(path: "worktrees").appending(path: plan.worktreeName),
+                identity: nil
             ))
         journal.record(.destinationRoot(path: plan.destinationRoot, identity: nil))
         try WorktreeForkGitHandles.addWorktree(
@@ -208,8 +209,13 @@ struct LibGit2WorktreeForkWriter: Sendable {
             branchReferenceName: addReferenceName,
             repository: repository
         )
+        // Only a successful add proves both exclusive mkdirs were the transaction's own.
         if case .success(let info) = WorktreeForkDescriptors.lstatPath(plan.destinationRoot) {
             journal.confirmDestinationIdentity(WorktreeForkEntryIdentity(info))
+        }
+        let administration = plan.commonDirectory.appending(path: "worktrees").appending(path: plan.worktreeName)
+        if case .success(let info) = WorktreeForkDescriptors.lstatPath(administration) {
+            journal.confirmLinkedWorktreeAdministration(WorktreeForkEntryIdentity(info))
         }
         if let carrierReferenceName {
             try WorktreeForkGitHandles.detachHead(

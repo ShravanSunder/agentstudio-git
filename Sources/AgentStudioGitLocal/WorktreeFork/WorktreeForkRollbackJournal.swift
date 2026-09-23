@@ -5,9 +5,11 @@ import Foundation
 
 /// A side effect the fork transaction created (or attempted), recorded before the call that creates it.
 enum WorktreeForkJournalEntry: Equatable, Sendable {
-    /// `identity` is filled once the destination exists; nil means the attempt may have created it.
+    /// `identity` is filled once `git_worktree_add` succeeded, which proves the transaction created the
+    /// destination; nil means creation was attempted, and a present path may belong to someone else.
     case destinationRoot(path: URL, identity: WorktreeForkEntryIdentity?)
-    case linkedWorktreeAdministration(name: String, path: URL)
+    /// Same ownership rule as the destination: confirmed only after `git_worktree_add` succeeded.
+    case linkedWorktreeAdministration(name: String, path: URL, identity: WorktreeForkEntryIdentity?)
     case createdBranch(referenceName: String, targetOID: String)
     /// `identity` is filled once the transaction's own `mkdir` succeeded; nil means creation was attempted
     /// but not confirmed, so a present path may belong to someone else and is never deleted.
@@ -36,6 +38,15 @@ struct WorktreeForkRollbackJournal {
         entries = entries.map { entry in
             if case .destinationRoot(let path, nil) = entry {
                 return .destinationRoot(path: path, identity: identity)
+            }
+            return entry
+        }
+    }
+
+    mutating func confirmLinkedWorktreeAdministration(_ identity: WorktreeForkEntryIdentity) {
+        entries = entries.map { entry in
+            if case .linkedWorktreeAdministration(let name, let path, nil) = entry {
+                return .linkedWorktreeAdministration(name: name, path: path, identity: identity)
             }
             return entry
         }
@@ -79,7 +90,9 @@ struct WorktreeForkRollbackJournal {
             }
         }
         for entry in entries {
-            if case .linkedWorktreeAdministration(let name, let path) = entry, !removeTree(path) {
+            if case .linkedWorktreeAdministration(let name, let path, let identity) = entry,
+                !removeOwned(path, identity: identity)
+            {
                 residue.append(
                     GitWorktreeForkResidue(kind: .linkedWorktreeAdministration, location: "worktrees/\(name)"))
             }
@@ -99,23 +112,15 @@ struct WorktreeForkRollbackJournal {
         identity: WorktreeForkEntryIdentity?,
         faults: WorktreeForkFaultInjector
     ) -> Bool {
-        let current: Darwin.stat
-        switch WorktreeForkDescriptors.lstatPath(path) {
-        case .success(let info):
-            current = info
-        case .failure(let failure):
+        if case .failure(let failure) = WorktreeForkDescriptors.lstatPath(path) {
             return failure.code == ENOENT
-        }
-        // A destination whose identity no longer matches the journal is not ours to delete.
-        if let identity, WorktreeForkEntryIdentity(current) != identity {
-            return false
         }
         do throws(GitWorktreeForkError) {
             try faults.reach(.rollbackRemovingDestination)
         } catch {
             return false
         }
-        return removeTree(path)
+        return removeOwned(path, identity: identity)
     }
 
     /// Removes `path` only when the transaction confirmed creating it and it still has that identity. An

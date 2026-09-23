@@ -84,6 +84,36 @@ struct GitWorktreeForkRollbackIntegrationTests {
         _ = chmod(fixture.destination().appending(path: "sealed").path, 0o755)
     }
 
+    @Test("a destination another process creates after planning is never deleted by rollback")
+    func foreignDestinationCreatedAfterPlanningSurvivesRollback() async throws {
+        // Arrange
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-foreign-destination")
+        defer { fixture.removeRestoringPermissions() }
+        let destination = fixture.destination()
+        let foreignFile = destination.appending(path: "owner.txt")
+        let branchesBefore = try fixture.branchNames()
+        let faults = WorktreeForkFaultInjector { reached throws(GitWorktreeForkError) in
+            if reached == .afterPlanning {
+                try? FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
+                try? Data("another process\n".utf8).write(to: foreignFile)
+            }
+        }
+        let client = LibGit2AgentStudioGitLocalClient(worktreeForkWriter: LibGit2WorktreeForkWriter(faults: faults))
+
+        // Act
+        let failure = await forkFailure(client, fixture.request())
+
+        // Assert
+        guard case .cleanupIncomplete(let primary, let residue) = failure, case .gitFailure = primary else {
+            Issue.record("expected a Git failure with residue, got \(String(describing: failure))")
+            return
+        }
+        #expect(residue == [GitWorktreeForkResidue(kind: .destinationContent, location: ".")])
+        #expect(try String(contentsOf: foreignFile, encoding: .utf8) == "another process\n")
+        #expect(!GitWorktreeForkFileProbe.exists(fixture.linkedWorktreeAdministration()))
+        #expect(try fixture.branchNames() == branchesBefore)
+    }
+
     @Test("cancellation while leaves are in flight rolls back before the lane admits the next mutation")
     func cancellationWithLeavesInFlightRollsBackBeforeReleasingLane() async throws {
         // Arrange
