@@ -13,6 +13,24 @@ struct GitInvalidDecodeTests {
         }
     }
 
+    @Test("unknown worktree fork wire enum values throw")
+    func unknownWorktreeForkWireEnumValuesThrow() {
+        let data = Data(#""teleported""#.utf8)
+
+        #expect(throws: DecodingError.self) {
+            _ = try JSONDecoder().decode(GitWorktreeFilesystemEntryKind.self, from: data)
+        }
+        #expect(throws: DecodingError.self) {
+            _ = try JSONDecoder().decode(GitWorktreeMaterializationSkipReason.self, from: data)
+        }
+        #expect(throws: DecodingError.self) {
+            _ = try JSONDecoder().decode(GitWorktreeForkRejectionReason.self, from: data)
+        }
+        #expect(throws: DecodingError.self) {
+            _ = try JSONDecoder().decode(GitForkWorktreeMode.self, from: Data(#"{"kind":"teleported"}"#.utf8))
+        }
+    }
+
     @Test("diff files require stable file ids")
     func diffFilesRequireStableFileIds() {
         let data = Data(

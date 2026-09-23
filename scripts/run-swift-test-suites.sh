@@ -12,6 +12,7 @@ suites=(
   GitPublicContractTests
   GitInvalidDecodeTests
   GitRedactionTests
+  GitWorktreeForkContractTests
   LibGit2BlockingReadExecutorTests
   LibGit2RuntimeTests
   LibGit2RepositorySessionTests
