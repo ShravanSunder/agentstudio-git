@@ -93,6 +93,21 @@ enum WorktreeForkDescriptors {
         return .success(URL(fileURLWithPath: String(cString: resolved), isDirectory: true))
     }
 
+    /// Reads a `readdir` record's name through the record pointer, bounded by `d_namlen`. Records are
+    /// variable length, so copying the fixed-size `dirent` (with its 1024-byte `d_name`) reads past the
+    /// allocation. Names are UTF-8 on APFS; anything else returns nil.
+    static func entryName(_ entry: UnsafeMutablePointer<dirent>) -> String? {
+        guard let nameOffset = MemoryLayout<dirent>.offset(of: \dirent.d_name),
+            let lengthOffset = MemoryLayout<dirent>.offset(of: \dirent.d_namlen)
+        else {
+            return nil
+        }
+        let record = UnsafeRawPointer(entry)
+        let length = Int(record.loadUnaligned(fromByteOffset: lengthOffset, as: UInt16.self))
+        let bytes = UnsafeRawBufferPointer(start: record.advanced(by: nameOffset), count: length)
+        return String(bytes: bytes, encoding: .utf8)
+    }
+
     static func joined(_ directoryRelativePath: String, _ name: String) -> String {
         directoryRelativePath.isEmpty ? name : "\(directoryRelativePath)/\(name)"
     }

@@ -86,12 +86,7 @@ struct WorktreeForkAdministrationCloner: Sendable {
         defer { closedir(stream) }
         var names: [String] = []
         while let rawEntry = readdir(stream) {
-            if let name = withUnsafeBytes(
-                of: rawEntry.pointee.d_name,
-                { bytes in
-                    String(bytes: bytes.prefix { $0 != 0 }, encoding: .utf8)
-                }), name != ".", name != ".."
-            {
+            if let name = WorktreeForkDescriptors.entryName(rawEntry), name != ".", name != ".." {
                 names.append(name)
             }
         }

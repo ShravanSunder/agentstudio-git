@@ -117,11 +117,7 @@ struct WorktreeForkSourceWalker: Sendable {
         while let rawEntry = readdir(directoryStream) {
             // APFS stores names as UTF-8, so a name that does not decode is not a name this walker can plan.
             guard
-                let name = withUnsafeBytes(
-                    of: rawEntry.pointee.d_name,
-                    { bytes in
-                        String(bytes: bytes.prefix { $0 != 0 }, encoding: .utf8)
-                    })
+                let name = WorktreeForkDescriptors.entryName(rawEntry)
             else {
                 throw .entryFailed(relativePath: relativePath, reason: .unreadableEntry, errorNumber: EILSEQ)
             }
