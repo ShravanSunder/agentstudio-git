@@ -231,6 +231,43 @@ struct WorktreeForkPolicyTests {
         #expect(GitWorktreeForkFileProbe.exists(administration))
     }
 
+    @Test("rollback never follows a symlink out of the destination and clears restrictive flags on owned files")
+    func rollbackDoesNotFollowSymlinksAndClearsOwnedFileFlags() throws {
+        // Arrange
+        let root = FileManager.default.temporaryDirectory.appending(
+            path: "agentstudio-git-journal-links-\(UUID().uuidString)")
+        let external = root.appending(path: "external")
+        defer {
+            _ = chmod(external.path, 0o755)
+            try? FileManager.default.removeItem(at: root)
+        }
+        try FileManager.default.createDirectory(at: external, withIntermediateDirectories: true)
+        #expect(chmod(external.path, 0o555) == 0)
+        let destination = root.appending(path: "fork")
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: destination.appending(path: "external-link"), withDestinationURL: external)
+        let locked = destination.appending(path: "locked.txt")
+        try Data("immutable\n".utf8).write(to: locked)
+        #expect(chflags(locked.path, UInt32(UF_IMMUTABLE)) == 0)
+        let sealed = destination.appending(path: "sealed")
+        try FileManager.default.createDirectory(at: sealed, withIntermediateDirectories: true)
+        try Data("inside\n".utf8).write(to: sealed.appending(path: "inner.txt"))
+        #expect(chmod(sealed.path, 0o000) == 0)
+        let identity = WorktreeForkEntryIdentity(try #require(GitWorktreeForkFileProbe.info(destination)))
+        var journal = WorktreeForkRollbackJournal(
+            commonDirectory: root.appending(path: "missing.git"), destinationRoot: destination, runtime: .shared)
+        journal.record(.destinationRoot(path: destination, identity: identity))
+
+        // Act
+        let residue = journal.rollback(faults: .production)
+
+        // Assert
+        #expect(residue.isEmpty)
+        #expect(!GitWorktreeForkFileProbe.exists(destination))
+        #expect((try #require(GitWorktreeForkFileProbe.info(external))).st_mode & 0o777 == 0o555)
+    }
+
     @Test("submodule names that could leave the modules directory are unsafe, as Git treats them")
     func submoduleNamesThatCouldLeaveModulesAreUnsafe() {
         // Arrange

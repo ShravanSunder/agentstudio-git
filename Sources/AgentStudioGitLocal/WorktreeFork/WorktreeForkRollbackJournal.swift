@@ -160,15 +160,23 @@ struct WorktreeForkRollbackJournal {
             return failure.code == ENOENT
         }
         let fileManager = FileManager.default
-        if let enumerator = fileManager.enumerator(at: path, includingPropertiesForKeys: [.isDirectoryKey]) {
-            for case let child as URL in enumerator
-            where (try? child.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
-                _ = child.path.withCString { lchflags($0, 0) }
-                _ = child.path.withCString { chmod($0, 0o700) }
+        // Classify by lstat so no link is ever followed: clear user flags on every owned node (no-follow),
+        // and restore traversal permissions only on real directories — inline, so the lazy enumerator can
+        // then descend into a directory that was unreadable.
+        func releaseForRemoval(_ node: URL) {
+            _ = node.path.withCString { lchflags($0, 0) }
+            if case .success(let info) = WorktreeForkDescriptors.lstatPath(node),
+                WorktreeForkEntryKind(mode: info.st_mode) == .directory
+            {
+                _ = node.path.withCString { chmod($0, 0o700) }
             }
         }
-        _ = path.path.withCString { lchflags($0, 0) }
-        _ = path.path.withCString { chmod($0, 0o700) }
+        releaseForRemoval(path)
+        if let enumerator = fileManager.enumerator(at: path, includingPropertiesForKeys: nil) {
+            for case let child as URL in enumerator {
+                releaseForRemoval(child)
+            }
+        }
         do {
             try fileManager.removeItem(at: path)
         } catch {
