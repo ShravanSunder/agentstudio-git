@@ -281,6 +281,38 @@ struct GitWorktreeForkTopologyIntegrationTests {
         #expect(try canonical(storeRootLink).path == canonical(mirror).path)
     }
 
+    @Test("an untranslatable sparse pattern the matcher must decide with rejects the fork before mutation")
+    func untranslatableSparsePatternRejectsBeforeMutation() async throws {
+        // Arrange
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-sparse-untranslatable")
+        defer { fixture.remove() }
+        for path in ["kept/one.txt", "gone.txt"] {
+            try fixture.write(path, "\(path)\n")
+        }
+        try fixture.git.run("add", ".")
+        try fixture.git.run("commit", "-qm", "tree")
+        try fixture.git.run("sparse-checkout", "set", "--no-cone", "/*", "/[[:bogus:]]x")
+        try fixture.git.run("rm", "-q", "--cached", "gone.txt")
+        let branchesBefore = try fixture.branchNames()
+
+        // Act
+        let failure: GitWorktreeForkError?
+        do {
+            _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+            failure = nil
+        } catch {
+            failure = error
+        }
+
+        // Assert
+        #expect(
+            failure
+                == .entryFailed(
+                    relativePath: "info/sparse-checkout", reason: .unresolvableGitAdministration, errorNumber: nil))
+        #expect(!GitWorktreeForkFileProbe.exists(fixture.destination()))
+        #expect(try fixture.branchNames() == branchesBefore)
+    }
+
     @Test("a worktree-scoped core.worktree is never carried into destination configuration")
     func worktreeScopedCoreWorktreeIsNotCarriedIntoDestination() async throws {
         // Arrange

@@ -10,6 +10,9 @@ struct SparseCheckoutMatcher: Sendable {
     }
 
     private let mode: Mode
+    /// True when a pattern could not be translated. Such a matcher must not decide skip-worktree state:
+    /// dropping a pattern silently would expose or hide paths the source did not.
+    let hasUntranslatablePatterns: Bool
 
     /// `coneMode` follows `core.sparseCheckoutCone`; a pattern file that is not in cone form is evaluated
     /// with ordinary pattern rules, as Git does.
@@ -19,8 +22,11 @@ struct SparseCheckoutMatcher: Sendable {
             .filter { !$0.isEmpty && !$0.hasPrefix("#") }
         if coneMode, let cone = Self.coneDirectories(lines) {
             mode = .cone(recursiveDirectories: cone.recursive, parentDirectories: cone.parents)
+            hasUntranslatablePatterns = false
         } else {
-            mode = .patterns(lines.compactMap(SparsePattern.init))
+            let patterns = lines.compactMap(SparsePattern.init)
+            mode = .patterns(patterns)
+            hasUntranslatablePatterns = patterns.count != lines.count
         }
     }
 
@@ -121,8 +127,8 @@ private struct SparsePattern: Sendable {
         if body.hasPrefix("/") {
             body = body.dropFirst()
         }
-        guard !body.isEmpty,
-            let expression = try? NSRegularExpression(pattern: "^\(Self.regex(fromGlob: String(body)))$")
+        guard !body.isEmpty, let translated = Self.regex(fromGlob: String(body)),
+            let expression = try? NSRegularExpression(pattern: "^\(translated)$")
         else {
             return nil
         }
@@ -138,8 +144,9 @@ private struct SparsePattern: Sendable {
         return expression.firstMatch(in: subject, range: range) != nil
     }
 
-    /// Translates wildmatch globs: `**/` spans directories, `*` and `?` stay within one component.
-    private static func regex(fromGlob glob: String) -> String {
+    /// Translates wildmatch globs: `**/` spans directories, `*` and `?` stay within one component. Returns
+    /// nil for a pattern Git itself rejects (an unknown POSIX class), which the matcher then reports.
+    private static func regex(fromGlob glob: String) -> String? {
         var result = ""
         let characters = Array(glob)
         var index = 0
@@ -156,16 +163,16 @@ private struct SparsePattern: Sendable {
             case "?":
                 result += "[^/]"
             case "[":
-                if let close = characters[(index + 1)...].firstIndex(of: "]") {
-                    var set = String(characters[(index + 1)..<close])
-                    if set.hasPrefix("!") {
-                        set = "^" + set.dropFirst()
-                    }
-                    result += "[\(set)]"
-                    index = close + 1
+                switch bracketExpression(characters, from: index) {
+                case .translated(let expression, let next):
+                    result += expression
+                    index = next
                     continue
+                case .unterminated:
+                    result += "\\["
+                case .unsupported:
+                    return nil
                 }
-                result += "\\["
             case "\\" where index + 1 < characters.count:
                 result += NSRegularExpression.escapedPattern(for: String(characters[index + 1]))
                 index += 2
@@ -176,5 +183,87 @@ private struct SparsePattern: Sendable {
             index += 1
         }
         return result
+    }
+
+    private enum BracketTranslation {
+        case translated(String, next: Int)
+        case unterminated
+        case unsupported
+    }
+
+    private static let posixClasses: Set<String> = [
+        "alnum", "alpha", "blank", "cntrl", "digit", "graph", "lower", "print", "punct", "space", "upper", "xdigit",
+    ]
+
+    /// Translates one Git bracket expression into an ICU class built only from code-point escapes, ranges, and
+    /// known POSIX classes, so ICU set syntax (`&&`, nested `[`, `\p`) can never leak in. A leading `]` is a
+    /// member, `!`/`^` negates (never matching `/`, as under Git's pathname rule), and a reversed range
+    /// matches nothing.
+    private static func bracketExpression(_ characters: [Character], from start: Int) -> BracketTranslation {
+        var index = start + 1
+        var negated = false
+        if index < characters.count, characters[index] == "!" || characters[index] == "^" {
+            negated = true
+            index += 1
+        }
+        var members = ""
+        var isFirst = true
+        while index < characters.count {
+            let character = characters[index]
+            if character == "]", !isFirst {
+                let expression =
+                    negated ? "[^/\(members)]" : (members.isEmpty ? "(?!)" : "[\(members)]")
+                return .translated(expression, next: index + 1)
+            }
+            isFirst = false
+            if character == "[", index + 1 < characters.count, characters[index + 1] == ":" {
+                guard let end = posixClassEnd(characters, from: index + 2) else {
+                    return .unsupported
+                }
+                let name = String(characters[(index + 2)..<end])
+                guard posixClasses.contains(name) else {
+                    return .unsupported
+                }
+                members += "[:\(name):]"
+                index = end + 2
+                continue
+            }
+            var lower = character
+            if character == "\\", index + 1 < characters.count {
+                index += 1
+                lower = characters[index]
+            }
+            if index + 2 < characters.count, characters[index + 1] == "-", characters[index + 2] != "]" {
+                var upper = characters[index + 2]
+                var consumed = 3
+                if upper == "\\", index + 3 < characters.count {
+                    upper = characters[index + 3]
+                    consumed = 4
+                }
+                if let low = lower.unicodeScalars.first?.value, let high = upper.unicodeScalars.first?.value,
+                    low <= high
+                {
+                    members += "\\x{\(String(low, radix: 16))}-\\x{\(String(high, radix: 16))}"
+                }
+                index += consumed
+                continue
+            }
+            for scalar in lower.unicodeScalars {
+                members += "\\x{\(String(scalar.value, radix: 16))}"
+            }
+            index += 1
+        }
+        return .unterminated
+    }
+
+    private static func posixClassEnd(_ characters: [Character], from start: Int) -> Int? {
+        var index = start
+        while index + 1 < characters.count {
+            if characters[index] == ":", characters[index + 1] == "]" {
+                return index
+            }
+            index += 1
+        }
+        return nil
     }
 }

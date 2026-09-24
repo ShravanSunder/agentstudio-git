@@ -47,6 +47,40 @@ struct SparseCheckoutMatcherTests {
         #expect(!matcher.includes("README.md"))
     }
 
+    @Test("Git bracket classes translate exactly, including a leading ], negation, ranges, and POSIX classes")
+    func gitBracketClassesTranslateExactly() {
+        // Arrange
+        let leadingBracket = SparseCheckoutMatcher(patternFile: "/[]]*\n", coneMode: false)
+        let negated = SparseCheckoutMatcher(patternFile: "/[!a-c]*\n", coneMode: false)
+        let posix = SparseCheckoutMatcher(patternFile: "/v[[:digit:]].txt\n", coneMode: false)
+
+        // Act / Assert
+        #expect(!leadingBracket.hasUntranslatablePatterns)
+        #expect(leadingBracket.includes("]notes.txt"))
+        #expect(!leadingBracket.includes("notes.txt"))
+        #expect(negated.includes("docs.txt"))
+        #expect(!negated.includes("build.txt"))
+        #expect(posix.includes("v7.txt"))
+        #expect(!posix.includes("vx.txt"))
+        #expect(!posix.includes("v].txt"))
+    }
+
+    @Test("bracket members that are special to ICU stay literal, and a reversed range matches nothing")
+    func icuSpecialBracketMembersStayLiteral() {
+        // Arrange
+        let icuOperators = SparseCheckoutMatcher(patternFile: "/[&&]x\n/[a[]y\n", coneMode: false)
+        let reversedRange = SparseCheckoutMatcher(patternFile: "/[z-a]x\n", coneMode: false)
+
+        // Act / Assert
+        #expect(!icuOperators.hasUntranslatablePatterns)
+        #expect(icuOperators.includes("&x"))
+        #expect(icuOperators.includes("[y"))
+        #expect(!icuOperators.includes("bx"))
+        #expect(!reversedRange.hasUntranslatablePatterns)
+        #expect(!reversedRange.includes("zx"))
+        #expect(!reversedRange.includes("mx"))
+    }
+
     @Test(".gitmodules names map registered paths, and quoted paths are unquoted")
     func gitmodulesNamesMapRegisteredPaths() {
         // Arrange
