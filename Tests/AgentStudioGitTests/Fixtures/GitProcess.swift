@@ -30,6 +30,8 @@ struct GitProcess {
                 "init.defaultBranch=main",
                 "-c",
                 "maintenance.auto=false",
+                "-c",
+                "protocol.file.allow=always",
             ] + arguments
         process.currentDirectoryURL = currentDirectory ?? repositoryPath
         process.environment = ProcessInfo.processInfo.environment.merging(
@@ -94,6 +96,8 @@ struct GitProcess {
                 "init.defaultBranch=main",
                 "-c",
                 "maintenance.auto=false",
+                "-c",
+                "protocol.file.allow=always",
             ] + arguments
         process.currentDirectoryURL = currentDirectory ?? repositoryPath
         process.environment = ProcessInfo.processInfo.environment.merging(

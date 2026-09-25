@@ -43,4 +43,52 @@ struct GitWireEnumSnapshotTests {
                 "pathMismatch",
             ])
     }
+
+    @Test("worktree fork wire enum raw values stay stable")
+    func worktreeForkWireEnumRawValuesStayStable() {
+        #expect(
+            GitWorktreeFilesystemEntryKind.allCases.map(\.rawValue) == [
+                "directory", "regularFile", "symbolicLink", "fifo", "unixSocket", "characterDevice",
+                "blockDevice", "unknown",
+            ])
+        #expect(GitWorktreeMaterializationSkipReason.allCases.map(\.rawValue) == ["unixSocketNotReproducible"])
+        #expect(
+            GitWorktreeMetadataAttribute.allCases.map(\.rawValue) == [
+                "ownerUser", "ownerGroup", "setUserIDBit", "setGroupIDBit",
+            ])
+        #expect(
+            GitWorktreeMetadataNormalizationReason.allCases.map(\.rawValue) == [
+                "ownershipNotAssignable", "clearedByCopyOnWriteClone",
+            ])
+        #expect(
+            GitWorktreeForkRejectionReason.allCases.map(\.rawValue) == [
+                "clientCapabilityUnavailable", "unsupportedOperatingSystem", "sourceFilesystemNotAPFS",
+                "destinationFilesystemNotAPFS", "crossDevice", "cloneCapabilityUnavailable",
+                "administrativeStoreOnDifferentDevice", "sourceNotWorktreeRoot", "sourceHeadUnavailable",
+                "invalidDestinationPath", "destinationParentMissing", "destinationExists", "overlappingRoots",
+                "linkedWorktreeNameInUse", "invalidBranchName", "branchNotFound", "branchAlreadyExists",
+                "branchNotAtCapturedHead", "branchCheckedOut", "fileProviderManagedLocation", "datalessContent",
+            ])
+        #expect(
+            GitWorktreeForkSourceRaceReason.allCases.map(\.rawValue) == [
+                "entryMissing", "entryKindChanged", "entryIdentityChanged", "containmentEscape",
+            ])
+        #expect(
+            GitWorktreeForkEntryFailureReason.allCases.map(\.rawValue) == [
+                "unsupportedEntryKind", "datalessFile", "datalessPolicyUnavailable", "strictCloneFailed",
+                "entryCreationFailed", "metadataNotReproducible", "unreadableEntry", "unresolvableGitAdministration",
+            ])
+        #expect(
+            GitWorktreeForkValidationFailureReason.allCases.map(\.rawValue) == [
+                "worktreeRegistrationInvalid", "headMismatch", "branchMismatch", "entryCountMismatch",
+                "entryKindMismatch", "hardLinkGroupBroken", "indexTreeMismatch", "indexStatNotRefreshed",
+                "sparseStateMismatch", "submoduleStateMismatch", "nestedRepositoryUnusable",
+                "sourceAdministrationReference", "transactionArtifactRemains",
+            ])
+        #expect(
+            GitWorktreeForkResidueKind.allCases.map(\.rawValue) == [
+                "destinationContent", "linkedWorktreeAdministration", "nestedAdministration", "createdBranch",
+                "temporaryArtifact",
+            ])
+    }
 }

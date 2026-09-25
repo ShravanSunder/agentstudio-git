@@ -35,6 +35,10 @@ run = "bash scripts/run-swift-test-suites.sh --sanitize address --disable-xctest
 description = "Run Swift wrapper tests with ThreadSanitizer"
 run = "bash scripts/run-swift-test-suites.sh --sanitize thread --disable-xctest"
 
+[tasks.benchmark-worktree-fork]
+description = "Record Worktree Fork phase costs into tmp/benchmarks (V-08 evidence, not a gate)"
+run = "AGENTSTUDIO_GIT_FORK_BENCHMARK=1 bash scripts/run-swift-test-filter.sh -c release -Xswiftc -enable-testing GitWorktreeForkBenchmarkTests"
+
 [tasks.build-libgit2]
 description = "Build the pinned local-only libgit2 XCFramework"
 run = "bash scripts/build-libgit2-xcframework.sh"

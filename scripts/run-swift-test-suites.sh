@@ -12,12 +12,17 @@ suites=(
   GitPublicContractTests
   GitInvalidDecodeTests
   GitRedactionTests
+  GitWorktreeForkContractTests
   LibGit2BlockingReadExecutorTests
   LibGit2RuntimeTests
   LibGit2RepositorySessionTests
   LibGit2ErrorCaptureTests
   GitRepositoryIdentityTests
   GitRepositoryWriterRegistryTests
+  GitRepositoryWriterLaneTests
+  WorktreeForkPolicyTests
+  SparseCheckoutMatcherTests
+  WorktreeForkCleanEntryAdoptionTests
   GitProcessRunnerTests
   SystemGitRemoteClientTests
   GitRemoteOutputParserTests
@@ -30,6 +35,12 @@ suites=(
   GitIgnoreIntegrationTests
   GitTrackedPathIntegrationTests
   GitWorktreeIntegrationTests
+  GitWorktreeForkIntegrationTests
+  GitWorktreeForkStorageIntegrationTests
+  GitWorktreeForkRollbackIntegrationTests
+  GitWorktreeForkTopologyIntegrationTests
+  GitWorktreeForkEligibilityIntegrationTests
+  GitWorktreeForkCleanAdoptionIntegrationTests
   GitCommitRangeCountIntegrationTests
   GitDiffImpactSummaryIntegrationTests
   GitReviewDataIntegrationTests

@@ -6,6 +6,11 @@ public protocol AgentStudioGitLocalClient: Sendable {
     func validateWorktree(_ request: GitValidateWorktreeRequest) async throws(GitDataPlaneError)
         -> GitWorktreeValidation
     func createWorktree(_ request: GitCreateWorktreeRequest) async throws(GitDataPlaneError) -> GitWorktreeSnapshot
+    /// Forks an existing worktree's current filesystem into a new linked worktree with APFS copy-on-write
+    /// storage. Normal `createWorktree` is unaffected by whether this capability is available.
+    func forkWorktree(_ request: GitForkWorktreeRequest) async throws(GitWorktreeForkError) -> GitForkWorktreeResult
+    /// Read-only availability check for disabling fork up front; it never mutates or walks the source.
+    func forkWorktreeEligibility(sourceWorktreePath: URL, destinationPath: URL) async -> GitWorktreeForkEligibility
     func pruneStaleWorktree(_ request: GitPruneStaleWorktreeRequest) async throws(GitDataPlaneError)
         -> GitWorktreePruneResult
     func removeWorktree(_ request: GitRemoveWorktreeRequest) async throws(GitDataPlaneError)
@@ -52,6 +57,19 @@ extension AgentStudioGitLocalClient {
         -> GitStatusFactsRead
     {
         try await statusFacts(for: worktreePath, options: options, observationPlan: nil)
+    }
+
+    /// Conformers written before Worktree Fork keep compiling and report the capability as unavailable.
+    public func forkWorktree(_ request: GitForkWorktreeRequest) async throws(GitWorktreeForkError)
+        -> GitForkWorktreeResult
+    {
+        throw .rejected(reason: .clientCapabilityUnavailable)
+    }
+
+    public func forkWorktreeEligibility(sourceWorktreePath: URL, destinationPath: URL) async
+        -> GitWorktreeForkEligibility
+    {
+        .unavailable(.clientCapabilityUnavailable)
     }
 }
 
