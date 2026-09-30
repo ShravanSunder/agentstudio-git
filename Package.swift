@@ -112,7 +112,12 @@ let package = Package(
                 "AgentStudioGit",
                 "AgentStudioGitLocal",
             ],
-            path: "Tests/AgentStudioGitTests"
+            path: "Tests/AgentStudioGitTests",
+            resources: [
+                .copy("Fixtures/GitBranchIntegrationRealSquash.pack"),
+                .copy("Fixtures/GitBranchIntegrationRealSquash.manifest.json"),
+                .copy("Fixtures/GitBranchIntegrationRealSquash.objects"),
+            ]
         ),
     ]
 )

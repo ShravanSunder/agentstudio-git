@@ -9,6 +9,7 @@ fi
 
 suites=(
   GitWireEnumSnapshotTests
+  GitBranchIntegrationContractTests
   GitPublicContractTests
   GitInvalidDecodeTests
   GitRedactionTests
@@ -42,6 +43,15 @@ suites=(
   GitWorktreeForkEligibilityIntegrationTests
   GitWorktreeForkCleanAdoptionIntegrationTests
   GitCommitRangeCountIntegrationTests
+  GitBranchIntegrationIntegrationTests
+  GitBranchIntegrationHistoryIntegrationTests
+  GitBranchIntegrationBatchIntegrationTests
+  GitBranchIntegrationDeltaTests
+  GitBranchIntegrationSquashEdgeIntegrationTests
+  GitBranchIntegrationRealSquashIntegrationTests
+  GitBranchIntegrationEntryDeltaIntegrationTests
+  GitBranchIntegrationPathDeltaIntegrationTests
+  GitBranchIntegrationReadOnlyIntegrationTests
   GitDiffImpactSummaryIntegrationTests
   GitReviewDataIntegrationTests
   GitLargeFilePointerReviewIntegrationTests

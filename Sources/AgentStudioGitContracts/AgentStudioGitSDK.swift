@@ -33,6 +33,8 @@ public protocol AgentStudioGitLocalClient: Sendable {
     func ignoredPaths(repositoryAt worktreePath: URL, relativePaths: [String]) async throws(GitDataPlaneError)
         -> [GitIgnoreCheck]
     func branches(for repositoryPath: URL) async throws(GitDataPlaneError) -> [GitBranchSnapshot]
+    func assessBranchIntegration(_ request: GitBranchIntegrationRequest) async throws(GitDataPlaneError)
+        -> GitBranchIntegrationReport
     func resolveReviewDefaultTarget(for repositoryPath: URL) async throws(GitDataPlaneError)
         -> GitReviewComparisonBranchTarget?
     func captureReviewComparisonTargets(_ request: GitReviewComparisonTargetCaptureRequest)

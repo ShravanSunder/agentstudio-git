@@ -220,6 +220,14 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
         }
     }
 
+    public func assessBranchIntegration(_ request: GitBranchIntegrationRequest) async throws(GitDataPlaneError)
+        -> GitBranchIntegrationReport
+    {
+        try await executeBlockingRead {
+            try LibGit2BranchIntegrationReader().assess(request)
+        }
+    }
+
     public func resolveReviewDefaultTarget(for repositoryPath: URL) async throws(GitDataPlaneError)
         -> GitReviewComparisonBranchTarget?
     {

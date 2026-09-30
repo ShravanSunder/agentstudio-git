@@ -1,0 +1,29 @@
+{
+  "formatVersion": 1,
+  "sourceRepository": "ShravanSunder/agentstudio",
+  "sourceHead": "07006b402f1d48525c4a25ef5fffea163bdd4ec6",
+  "provenance": "Read-only Git object export from Agent Studio at sourceHead. Pull request source commits, squash commits, merge bases, and target positions were verified against system Git. The fixture is offline and object-only; it contains commit and tree objects, not blob payloads.",
+  "objectScope": "Complete 2,627-commit ancestry closure of the target and both source branch tips, plus complete subtree records for both source tips, both merge bases, and target first-parent positions 1 through 15.",
+  "packFile": "GitBranchIntegrationRealSquash.pack",
+  "objectsFile": "GitBranchIntegrationRealSquash.objects",
+  "cases": [
+    {
+      "pullRequest": 388,
+      "branchCommit": "89f96271e1fc54daf8ef96675d3121e6913938c9",
+      "squashCommit": "899bd9c761d987fbb8f7befcc7c76357803aa747",
+      "mergeBaseCommit": "2b792160fe41e102f7ebebc203008ed16b9ff56d",
+      "targetCommit": "07006b402f1d48525c4a25ef5fffea163bdd4ec6",
+      "candidatePosition": 14,
+      "matchingDeltaPathCount": 42
+    },
+    {
+      "pullRequest": 395,
+      "branchCommit": "900cb5ca4bb39203095bd1418d212ea9bcdf4359",
+      "squashCommit": "2c9fe2f3b03e77d078c0b463d43d82ffd1baa13e",
+      "mergeBaseCommit": "ec7c034aedbbe8aea3219385b0766a654d492078",
+      "targetCommit": "07006b402f1d48525c4a25ef5fffea163bdd4ec6",
+      "candidatePosition": 4,
+      "matchingDeltaPathCount": 40
+    }
+  ]
+}

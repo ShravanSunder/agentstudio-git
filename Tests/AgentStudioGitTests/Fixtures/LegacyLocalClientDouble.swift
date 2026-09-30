@@ -84,6 +84,12 @@ struct LegacyLocalClientDouble: AgentStudioGitLocalClient {
         throw unavailable
     }
 
+    func assessBranchIntegration(_ request: GitBranchIntegrationRequest) async throws(GitDataPlaneError)
+        -> GitBranchIntegrationReport
+    {
+        throw unavailable
+    }
+
     func resolveReviewDefaultTarget(for repositoryPath: URL) async throws(GitDataPlaneError)
         -> GitReviewComparisonBranchTarget?
     {

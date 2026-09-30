@@ -31,6 +31,11 @@ struct GitWireEnumSnapshotTests {
         #expect(GitRemoteProtocol.allCases.map(\.rawValue) == ["file", "git", "http", "https", "ssh"])
         #expect(GitProcessOutputStream.allCases.map(\.rawValue) == ["stdout", "stderr"])
         #expect(GitTrackedPathKind.allCases.map(\.rawValue) == ["file", "symlink", "submodule"])
+        #expect(
+            GitIntegrationUnknownReason.allCases.map(\.rawValue) == [
+                "branchNotFound", "noMergeBase", "multipleMergeBases", "historyLimitReached",
+                "incompleteHistory", "missingObjects", "readFailed",
+            ])
         #expect(GitWorktreePruneRefusalReason.allCases.map(\.rawValue) == ["liveWorktree"])
         #expect(
             GitWorktreeRemovalRefusalReason.allCases.map(\.rawValue) == [
