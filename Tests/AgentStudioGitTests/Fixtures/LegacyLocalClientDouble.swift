@@ -1,8 +1,7 @@
 import AgentStudioGit
 import Foundation
 
-/// A source conformer written before `forkWorktree` existed. It must keep compiling through the
-/// protocol-extension default, which is the Specification's source-compatibility promise.
+/// A source conformer written before `forkWorktree` existed. It keeps the fork protocol-extension default covered.
 struct LegacyLocalClientDouble: AgentStudioGitLocalClient {
     func repositoryIdentity(for worktreePath: URL) async throws(GitDataPlaneError) -> GitRepositoryIdentity {
         throw unavailable
@@ -88,6 +87,13 @@ struct LegacyLocalClientDouble: AgentStudioGitLocalClient {
         -> GitBranchIntegrationReport
     {
         throw unavailable
+    }
+
+    func deleteLocalBranch(_ request: GitDeleteLocalBranchRequest)
+        async throws(GitLockedOperationFailure<GitDeleteLocalBranchErrorReason>)
+        -> GitDeleteLocalBranchResult
+    {
+        throw GitLockedOperationFailure(reason: .gitFailure(unavailable), lockResidue: [])
     }
 
     func resolveReviewDefaultTarget(for repositoryPath: URL) async throws(GitDataPlaneError)

@@ -35,6 +35,9 @@ public protocol AgentStudioGitLocalClient: Sendable {
     func branches(for repositoryPath: URL) async throws(GitDataPlaneError) -> [GitBranchSnapshot]
     func assessBranchIntegration(_ request: GitBranchIntegrationRequest) async throws(GitDataPlaneError)
         -> GitBranchIntegrationReport
+    func deleteLocalBranch(_ request: GitDeleteLocalBranchRequest)
+        async throws(GitLockedOperationFailure<GitDeleteLocalBranchErrorReason>)
+        -> GitDeleteLocalBranchResult
     func resolveReviewDefaultTarget(for repositoryPath: URL) async throws(GitDataPlaneError)
         -> GitReviewComparisonBranchTarget?
     func captureReviewComparisonTargets(_ request: GitReviewComparisonTargetCaptureRequest)

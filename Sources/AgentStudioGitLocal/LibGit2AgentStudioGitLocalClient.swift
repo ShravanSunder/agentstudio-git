@@ -8,6 +8,7 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
     private let worktreeReader: LibGit2WorktreeReader
     private let worktreeWriter: LibGit2WorktreeWriter
     private let worktreeForkWriter: LibGit2WorktreeForkWriter
+    private let branchDeletionWriter: LibGit2LocalBranchDeletionWriter
     private let blockingReadExecutor: LibGit2BlockingReadExecutor
 
     public init() {
@@ -17,6 +18,7 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
             worktreeReader: LibGit2WorktreeReader(),
             worktreeWriter: LibGit2WorktreeWriter(),
             worktreeForkWriter: LibGit2WorktreeForkWriter(),
+            branchDeletionWriter: LibGit2LocalBranchDeletionWriter(),
             blockingReadExecutor: .shared
         )
     }
@@ -27,6 +29,7 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
         worktreeReader: LibGit2WorktreeReader = LibGit2WorktreeReader(),
         worktreeWriter: LibGit2WorktreeWriter = LibGit2WorktreeWriter(),
         worktreeForkWriter: LibGit2WorktreeForkWriter = LibGit2WorktreeForkWriter(),
+        branchDeletionWriter: LibGit2LocalBranchDeletionWriter = LibGit2LocalBranchDeletionWriter(),
         blockingReadExecutor: LibGit2BlockingReadExecutor = .shared
     ) {
         self.identityResolver = identityResolver
@@ -34,6 +37,7 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
         self.worktreeReader = worktreeReader
         self.worktreeWriter = worktreeWriter
         self.worktreeForkWriter = worktreeForkWriter
+        self.branchDeletionWriter = branchDeletionWriter
         self.blockingReadExecutor = blockingReadExecutor
     }
 
@@ -225,6 +229,24 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
     {
         try await executeBlockingRead {
             try LibGit2BranchIntegrationReader().assess(request)
+        }
+    }
+
+    public func deleteLocalBranch(_ request: GitDeleteLocalBranchRequest)
+        async throws(GitLockedOperationFailure<GitDeleteLocalBranchErrorReason>)
+        -> GitDeleteLocalBranchResult
+    {
+        let lane: GitRepositoryWriterLane
+        do throws(GitDataPlaneError) {
+            lane = try await writer(for: request.repositoryPath)
+        } catch {
+            throw GitLockedOperationFailure(reason: .gitFailure(error), lockResidue: [])
+        }
+        let branchDeletionWriter = self.branchDeletionWriter
+        return try await lane.run {
+            () throws(GitLockedOperationFailure<GitDeleteLocalBranchErrorReason>)
+                -> GitDeleteLocalBranchResult in
+            try branchDeletionWriter.deleteLocalBranch(request)
         }
     }
 

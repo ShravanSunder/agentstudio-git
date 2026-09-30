@@ -39,6 +39,50 @@ struct GitWireEnumSnapshotTests {
         try expectWireSnapshot(GitDataPlaneError.permissionDenied(path: nil), expected: #"{"permissionDenied":{}}"#)
     }
 
+    @Test("branch deletion payloads keep explicit stable wire tags")
+    func branchDeletionPayloadsKeepExplicitStableWireTags() throws {
+        let repositoryPath = URL(fileURLWithPath: "/tmp/repository")
+        let packedReferencesLock = URL(fileURLWithPath: "/tmp/repo/.git/packed-refs.lock")
+        let request = GitDeleteLocalBranchRequest(
+            repositoryPath: repositoryPath,
+            branchName: "topic",
+            expectedCommit: "0123456789abcdef0123456789abcdef01234567"
+        )
+        let cleanup = GitBranchMetadataCleanup(
+            configuration: .removed,
+            reflog: .leftInPlace(.recreatedMeanwhile)
+        )
+
+        try expectWireSnapshot(
+            request,
+            expected:
+                #"{"branchName":"topic","expectedCommit":"0123456789abcdef0123456789abcdef01234567","repositoryPath":"file:\/\/\/tmp\/repository"}"#
+        )
+        try expectWireSnapshot(
+            cleanup,
+            expected:
+                #"{"configuration":{"kind":"removed"},"reflog":{"kind":"leftInPlace","reason":"recreatedMeanwhile"}}"#
+        )
+        try expectWireSnapshot(
+            GitBranchRetentionReason.checkedOut(worktreePaths: [repositoryPath]),
+            expected:
+                #"{"kind":"checkedOut","worktreePaths":["file:\/\/\/tmp\/repository"]}"#
+        )
+        try expectWireSnapshot(
+            GitDeleteLocalBranchErrorReason.checkoutUnreadable(worktreePath: repositoryPath),
+            expected:
+                #"{"kind":"checkoutUnreadable","worktreePath":"file:\/\/\/tmp\/repository"}"#
+        )
+        try expectWireSnapshot(
+            GitDeleteLocalBranchResult.uncertain(
+                error: .lockHeld(GitLockFact(path: packedReferencesLock, resource: .packedRefs)),
+                lockResidue: [packedReferencesLock]
+            ),
+            expected:
+                #"{"error":{"lockHeld":{"fact":{"path":"file:\/\/\/tmp\/repo\/.git\/packed-refs.lock","resource":{"packedRefs":{}}}}},"kind":"uncertain","lockResidue":["file:\/\/\/tmp\/repo\/.git\/packed-refs.lock"]}"#
+        )
+    }
+
     @Test("wire enum raw values stay stable")
     func wireEnumRawValuesStayStable() {
         #expect(GitHeadKind.allCases.map(\.rawValue) == ["branch", "detached", "unborn"])
