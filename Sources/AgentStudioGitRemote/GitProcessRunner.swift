@@ -1,4 +1,5 @@
 import AgentStudioGitContracts
+import AgentStudioGitLockSupport
 import Foundation
 
 public struct GitProcessResult: Equatable, Sendable {
@@ -22,6 +23,22 @@ public struct GitProcessRunner: Sendable {
         arguments: [String],
         currentDirectory: URL? = nil,
         standardInput: Data? = nil
+    ) async throws(GitDataPlaneError)
+        -> GitProcessResult
+    {
+        try await run(
+            arguments: arguments,
+            currentDirectory: currentDirectory,
+            standardInput: standardInput,
+            lockClassificationRepositoryPath: nil
+        )
+    }
+
+    func run(
+        arguments: [String],
+        currentDirectory: URL? = nil,
+        standardInput: Data? = nil,
+        lockClassificationRepositoryPath: URL?
     ) async throws(GitDataPlaneError)
         -> GitProcessResult
     {
@@ -107,13 +124,13 @@ public struct GitProcessRunner: Sendable {
                     ))
             }
             guard waitResult.exitCode == 0 else {
-                throw GitDataPlaneError.processFailed(
-                    GitRemoteProcessFailure.redacting(
-                        executable: invocation.displayName,
-                        arguments: processArguments,
-                        exitCode: waitResult.exitCode,
-                        stderr: stderr
-                    ))
+                throw await processFailure(
+                    exitCode: waitResult.exitCode,
+                    stderr: stderr,
+                    executableName: invocation.displayName,
+                    arguments: processArguments,
+                    lockClassificationRepositoryPath: lockClassificationRepositoryPath
+                )
             }
 
             return GitProcessResult(stdout: stdout, stderr: stderr)
@@ -128,6 +145,62 @@ public struct GitProcessRunner: Sendable {
                     stderr: String(describing: error)
                 ))
         }
+    }
+
+    private func processFailure(
+        exitCode: Int32,
+        stderr: String,
+        executableName: String,
+        arguments: [String],
+        lockClassificationRepositoryPath: URL?
+    ) async -> GitDataPlaneError {
+        if let lockClassificationRepositoryPath,
+            let lockFailure = await classifyGitLockFailure(
+                stderr: stderr,
+                repositoryPath: lockClassificationRepositoryPath
+            )
+        {
+            return lockFailure
+        }
+
+        return .processFailed(
+            GitRemoteProcessFailure.redacting(
+                executable: executableName,
+                arguments: arguments,
+                exitCode: exitCode,
+                stderr: stderr
+            )
+        )
+    }
+
+    private func classifyGitLockFailure(stderr: String, repositoryPath: URL) async -> GitDataPlaneError? {
+        guard stderr.contains("Unable to create '") && stderr.contains("File exists") else {
+            return nil
+        }
+
+        let pathsResult = try? await run(arguments: [
+            "-C",
+            repositoryPath.path,
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-dir",
+            "--git-common-dir",
+        ])
+        guard let pathsResult else {
+            return nil
+        }
+
+        let paths = pathsResult.stdout.split(whereSeparator: \.isNewline)
+        guard paths.count == 2 else {
+            return nil
+        }
+
+        return GitLockDiagnosticClassifier.failure(
+            stderr: stderr,
+            repositoryPath: repositoryPath,
+            gitDirectory: URL(fileURLWithPath: String(paths[0]), isDirectory: true),
+            commonDirectory: URL(fileURLWithPath: String(paths[1]), isDirectory: true)
+        )
     }
 
     private func timeoutStderr(_ stderr: String) -> String {

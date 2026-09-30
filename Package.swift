@@ -67,9 +67,15 @@ let package = Package(
             path: "Sources/AgentStudioGitContracts"
         ),
         .target(
+            name: "AgentStudioGitLockSupport",
+            dependencies: ["AgentStudioGitContracts"],
+            path: "Sources/AgentStudioGitLockSupport"
+        ),
+        .target(
             name: "AgentStudioGitLocal",
             dependencies: [
                 "AgentStudioGitContracts",
+                "AgentStudioGitLockSupport",
                 "CLibGit2Local",
                 "AgentStudioGitCInterop",
             ],
@@ -83,6 +89,7 @@ let package = Package(
             name: "AgentStudioGitRemote",
             dependencies: [
                 "AgentStudioGitContracts",
+                "AgentStudioGitLockSupport",
                 "CLibGit2Local",
             ],
             path: "Sources/AgentStudioGitRemote",
@@ -111,6 +118,7 @@ let package = Package(
             dependencies: [
                 "AgentStudioGit",
                 "AgentStudioGitLocal",
+                "AgentStudioGitLockSupport",
             ],
             path: "Tests/AgentStudioGitTests",
             resources: [

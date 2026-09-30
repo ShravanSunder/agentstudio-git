@@ -151,14 +151,17 @@ public struct SystemGitRemoteClient: AgentStudioGitRemoteClient, Sendable {
     }
 
     public func fetch(_ request: GitFetchRequest) async throws(GitDataPlaneError) -> GitFetchResult {
-        _ = try await runner.run(arguments: [
-            "-C",
-            request.repositoryPath.path,
-            "fetch",
-            "--porcelain",
-            "--",
-            request.remoteName,
-        ])
+        _ = try await runner.run(
+            arguments: [
+                "-C",
+                request.repositoryPath.path,
+                "fetch",
+                "--porcelain",
+                "--",
+                request.remoteName,
+            ],
+            lockClassificationRepositoryPath: request.repositoryPath
+        )
         return GitFetchResult(fetchedRemoteName: request.remoteName)
     }
 
