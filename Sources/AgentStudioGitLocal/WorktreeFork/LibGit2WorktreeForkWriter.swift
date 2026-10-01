@@ -140,7 +140,7 @@ struct LibGit2WorktreeForkWriter: Sendable {
         try faults.reach(.afterDirectoryMetadataApplied)
         try cancellation.throwIfCancelled()
 
-        let indexBuilder = WorktreeForkIndexBuilder()
+        let indexBuilder = WorktreeForkIndexBuilder(faults: faults)
         let plannedStats = Self.plannedRegularFileStats(plan.filesystem)
         func adoption(_ sourceIndex: WorktreeForkSourceIndexSnapshot?, prefix: String) -> WorktreeForkAdoptionContext? {
             sourceIndex.map {
@@ -228,7 +228,7 @@ struct LibGit2WorktreeForkWriter: Sendable {
         try faults.reach(.afterGitStateRehomed)
         try cancellation.throwIfCancelled()
 
-        let indexEvidence = try WorktreeForkIndexBuilder().buildIndex(
+        let indexEvidence = try WorktreeForkIndexBuilder(faults: faults).buildIndex(
             worktreePath: plan.destinationRoot,
             capturedHead: plan.capturedHead,
             skipWorktreePaths: [],

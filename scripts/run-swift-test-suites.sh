@@ -47,6 +47,7 @@ suites=(
   GitLockRemoteIntegrationTests
   GitWorktreeForkIntegrationTests
   GitWorktreeForkLockIntegrationTests
+  GitWorktreeForkIndexLockIntegrationTests
   GitWorktreeForkStorageIntegrationTests
   GitWorktreeForkRollbackIntegrationTests
   GitWorktreeForkTopologyIntegrationTests
