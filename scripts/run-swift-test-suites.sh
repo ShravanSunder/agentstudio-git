@@ -44,6 +44,7 @@ suites=(
   GitWorktreeRemovalIntegrationTests
   GitFetchIntegrationTests
   GitLockIntegrationTests
+  GitLockAcquisitionRetirementIntegrationTests
   GitLockRemoteIntegrationTests
   GitWorktreeForkIntegrationTests
   GitWorktreeForkLockIntegrationTests

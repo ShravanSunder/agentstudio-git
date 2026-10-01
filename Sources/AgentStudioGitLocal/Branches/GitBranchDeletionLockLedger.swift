@@ -17,38 +17,45 @@ struct GitBranchDeletionLockLedger {
     private var acquiredLocks: [URL: RecordedAcquisition] = [:]
 
     mutating func recordSuccessfulAcquisition(at path: URL) {
-        acquiredLocks[path] = RecordedAcquisition(identity: Self.identity(at: path))
+        switch Self.observeIdentity(at: path) {
+        case .present(let identity):
+            acquiredLocks[path] = RecordedAcquisition(identity: identity)
+        case .inaccessible:
+            acquiredLocks[path] = RecordedAcquisition(identity: nil)
+        case .absent:
+            acquiredLocks.removeValue(forKey: path)
+        }
     }
 
-    func residue(using observer: GitLockResidueObserver) -> [URL] {
-        acquiredLocks.compactMap { path, acquisition in
+    mutating func residue(using observer: GitLockResidueObserver) -> [URL] {
+        var residue: [URL] = []
+        for path in Array(acquiredLocks.keys) {
+            guard let acquisition = acquiredLocks[path] else {
+                continue
+            }
             switch observer.status(of: path) {
             case .absent:
-                return nil
+                acquiredLocks.removeValue(forKey: path)
             case .inaccessible:
-                return path
+                residue.append(path)
             case .present:
                 switch Self.observeIdentity(at: path) {
                 case .absent:
-                    return nil
+                    acquiredLocks.removeValue(forKey: path)
                 case .inaccessible:
-                    return path
+                    residue.append(path)
                 case .present(let observedIdentity):
                     guard let acquiredIdentity = acquisition.identity else {
-                        return path
+                        residue.append(path)
+                        continue
                     }
-                    return observedIdentity == acquiredIdentity ? path : nil
+                    if observedIdentity == acquiredIdentity {
+                        residue.append(path)
+                    }
                 }
             }
         }
-        .sorted { $0.path < $1.path }
-    }
-
-    private static func identity(at path: URL) -> LockFileIdentity? {
-        guard case .present(let identity) = observeIdentity(at: path) else {
-            return nil
-        }
-        return identity
+        return residue.sorted { $0.path < $1.path }
     }
 
     private static func observeIdentity(at path: URL) -> IdentityObservation {

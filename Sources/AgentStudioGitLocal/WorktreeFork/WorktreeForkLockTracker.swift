@@ -60,6 +60,8 @@ final class WorktreeForkLockTracker: Sendable {
                     tracked.foreign = true
                 } else if case .inaccessible = observed, !tracked.wasAcquired {
                     tracked.foreign = true
+                } else if case .absent = observed {
+                    Self.retireAcquisition(in: &tracked)
                 }
                 state.locks[fact.path] = tracked
             }
@@ -82,7 +84,7 @@ final class WorktreeForkLockTracker: Sendable {
                 tracked.foreign = false
             case .absent:
                 tracked.acquiredIdentity = nil
-                tracked.wasAcquired = true
+                tracked.wasAcquired = false
                 tracked.foreign = false
             }
             state.locks[fact.path] = tracked
@@ -93,6 +95,9 @@ final class WorktreeForkLockTracker: Sendable {
         let observed = pathObserver(fact.path)
         state.withLock { state in
             var tracked = state.locks[fact.path] ?? TrackedLock(fact: fact)
+            if case .absent = observed {
+                Self.retireAcquisition(in: &tracked)
+            }
             if !Self.matchesOwnedLock(observed, tracked: tracked) {
                 tracked.foreign = true
             }
@@ -113,7 +118,7 @@ final class WorktreeForkLockTracker: Sendable {
 
                 switch observed {
                 case .absent:
-                    break
+                    Self.retireAcquisition(in: &tracked)
                 case .present, .inaccessible:
                     tracked.foreign = true
                 }
@@ -125,22 +130,36 @@ final class WorktreeForkLockTracker: Sendable {
     /// Returns active candidates in stable path order, including foreign locks for final validation.
     func activeLocks() -> [GitLockFact] {
         state.withLock { state in
-            state.locks.values
-                .filter { !pathObserver($0.fact.path).isAbsent }
-                .map(\.fact)
-                .sorted { $0.path.path < $1.path.path }
+            var activeFacts: [GitLockFact] = []
+            for var tracked in Array(state.locks.values) {
+                switch pathObserver(tracked.fact.path) {
+                case .absent:
+                    Self.retireAcquisition(in: &tracked)
+                    state.locks[tracked.fact.path] = tracked
+                case .present, .inaccessible:
+                    activeFacts.append(tracked.fact)
+                }
+            }
+            return activeFacts.sorted { $0.path.path < $1.path.path }
         }
     }
 
     /// Returns only survivors whose current inode is the one this operation acquired.
     func ownedResidue() -> [GitLockFact] {
         state.withLock { state in
-            state.locks.values
-                .filter { tracked in
-                    !tracked.foreign && Self.matchesOwnedLock(pathObserver(tracked.fact.path), tracked: tracked)
+            var residues: [GitLockFact] = []
+            for var tracked in Array(state.locks.values) {
+                let observed = pathObserver(tracked.fact.path)
+                if case .absent = observed {
+                    Self.retireAcquisition(in: &tracked)
+                    state.locks[tracked.fact.path] = tracked
+                    continue
                 }
-                .map(\.fact)
-                .sorted { $0.path.path < $1.path.path }
+                if !tracked.foreign, Self.matchesOwnedLock(observed, tracked: tracked) {
+                    residues.append(tracked.fact)
+                }
+            }
+            return residues.sorted { $0.path.path < $1.path.path }
         }
     }
 
@@ -164,6 +183,11 @@ final class WorktreeForkLockTracker: Sendable {
         case .absent:
             return false
         }
+    }
+
+    private static func retireAcquisition(in tracked: inout TrackedLock) {
+        tracked.acquiredIdentity = nil
+        tracked.wasAcquired = false
     }
 
     private static func observe(_ path: URL) -> ObservedPath {
