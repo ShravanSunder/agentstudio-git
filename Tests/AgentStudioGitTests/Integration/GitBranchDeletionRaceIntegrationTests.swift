@@ -83,7 +83,7 @@ struct GitBranchDeletionRaceIntegrationTests {
             Issue.record("branch deletion unexpectedly ignored corrupt linked worktree administration")
         } catch {
             #expect(error.reason == .checkoutUnreadable(worktreePath: nil))
-            #expect(error.lockResidue.isEmpty)
+            #expect(error.lockResidue?.isEmpty == true)
         }
         #expect(try fixture.branchCommit("topic") == topicCommit)
         #expect(try fixture.localConfiguration() == configBefore)

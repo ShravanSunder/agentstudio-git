@@ -118,6 +118,66 @@ struct GitWireEnumSnapshotTests {
         )
     }
 
+    @Test("fetch requests and results keep optional branch and lock fields stable")
+    func fetchRequestsAndResultsKeepStableWireValues() throws {
+        let repositoryPath = URL(fileURLWithPath: "/tmp/repository")
+        let remoteTrackingLock = URL(fileURLWithPath: "/tmp/repository/.git/refs/remotes/origin/main.lock")
+        let wholeRemoteRequest = GitFetchRequest(repositoryPath: repositoryPath, remoteName: "origin")
+        let branchRequest = GitFetchRequest(
+            repositoryPath: repositoryPath,
+            remoteName: "origin",
+            branchName: "main"
+        )
+        let wholeRemoteResult = GitFetchResult(
+            fetchedRemoteName: "origin",
+            fetchedCommit: nil,
+            lockResidue: nil
+        )
+        let observedCleanBranchResult = GitFetchResult(
+            fetchedRemoteName: "origin",
+            fetchedCommit: "0123456789abcdef0123456789abcdef01234567",
+            lockResidue: []
+        )
+        let branchResult = GitFetchResult(
+            fetchedRemoteName: "origin",
+            fetchedCommit: "0123456789abcdef0123456789abcdef01234567",
+            lockResidue: [remoteTrackingLock]
+        )
+
+        try expectWireSnapshot(
+            wholeRemoteRequest,
+            expected: #"{"remoteName":"origin","repositoryPath":"file:\/\/\/tmp\/repository"}"#
+        )
+        try expectWireSnapshot(
+            branchRequest,
+            expected: #"{"branchName":"main","remoteName":"origin","repositoryPath":"file:\/\/\/tmp\/repository"}"#
+        )
+        try expectWireSnapshot(
+            wholeRemoteResult,
+            expected: #"{"fetchedRemoteName":"origin"}"#
+        )
+        try expectWireSnapshot(
+            observedCleanBranchResult,
+            expected:
+                #"{"fetchedCommit":"0123456789abcdef0123456789abcdef01234567","fetchedRemoteName":"origin","lockResidue":[]}"#
+        )
+        try expectWireSnapshot(
+            branchResult,
+            expected:
+                #"{"fetchedCommit":"0123456789abcdef0123456789abcdef01234567","fetchedRemoteName":"origin","lockResidue":["file:\/\/\/tmp\/repository\/.git\/refs\/remotes\/origin\/main.lock"]}"#
+        )
+        #expect(
+            try JSONDecoder().decode(GitFetchRequest.self, from: JSONEncoder().encode(branchRequest)) == branchRequest)
+        #expect(
+            try JSONDecoder().decode(GitFetchResult.self, from: JSONEncoder().encode(wholeRemoteResult))
+                == wholeRemoteResult)
+        #expect(
+            try JSONDecoder().decode(GitFetchResult.self, from: JSONEncoder().encode(observedCleanBranchResult))
+                == observedCleanBranchResult
+        )
+        #expect(try JSONDecoder().decode(GitFetchResult.self, from: JSONEncoder().encode(branchResult)) == branchResult)
+    }
+
     @Test("wire enum raw values stay stable")
     func wireEnumRawValuesStayStable() {
         #expect(GitHeadKind.allCases.map(\.rawValue) == ["branch", "detached", "unborn"])

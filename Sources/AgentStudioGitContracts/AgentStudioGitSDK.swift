@@ -80,7 +80,8 @@ extension AgentStudioGitLocalClient {
 
 public protocol AgentStudioGitRemoteClient: Sendable {
     func clone(_ request: GitCloneRequest) async throws(GitDataPlaneError) -> GitCloneResult
-    func fetch(_ request: GitFetchRequest) async throws(GitDataPlaneError) -> GitFetchResult
+    func fetch(_ request: GitFetchRequest)
+        async throws(GitLockedOperationFailure<GitDataPlaneError>) -> GitFetchResult
     func captureRemoteTrackingSnapshot(_ request: GitRemoteTrackingSnapshotRequest)
         async throws(GitDataPlaneError) -> GitRemoteTrackingSnapshot
     func stageFetch(_ request: GitStagedFetchRequest) async throws(GitDataPlaneError) -> GitStagedFetchResult

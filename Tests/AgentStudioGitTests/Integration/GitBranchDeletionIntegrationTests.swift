@@ -194,7 +194,7 @@ struct GitBranchDeletionIntegrationTests {
             Issue.record("branch deletion unexpectedly ignored an unreadable locked worktree")
         } catch {
             #expect(error.reason == .checkoutUnreadable(worktreePath: nil))
-            #expect(error.lockResidue.isEmpty)
+            #expect(error.lockResidue?.isEmpty == true)
         }
         #expect(try fixture.branchCommit("topic") == topicCommit)
         #expect(try fixture.localConfiguration() == configBefore)
@@ -251,7 +251,7 @@ struct GitBranchDeletionIntegrationTests {
                 Issue.record("a non-commit reference was unexpectedly deleted: \(branchName)")
             } catch {
                 #expect(error.reason == .notADirectCommitReference)
-                #expect(error.lockResidue.isEmpty)
+                #expect(error.lockResidue?.isEmpty == true)
             }
         }
         #expect(try fixture.localReferences() == referencesBefore)
@@ -280,7 +280,7 @@ struct GitBranchDeletionIntegrationTests {
                 Issue.record("invalid branch name unexpectedly succeeded: \(branchName)")
             } catch {
                 #expect(error.reason == .invalidBranchName)
-                #expect(error.lockResidue.isEmpty)
+                #expect(error.lockResidue?.isEmpty == true)
             }
         }
         #expect(try fixture.localConfiguration() == configBefore)

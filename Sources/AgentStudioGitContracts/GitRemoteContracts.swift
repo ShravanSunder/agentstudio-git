@@ -36,18 +36,26 @@ public struct GitCloneResult: Codable, Equatable, Hashable, Sendable {
 public struct GitFetchRequest: Codable, Equatable, Hashable, Sendable {
     public let repositoryPath: URL
     public let remoteName: String
+    public let branchName: String?
 
-    public init(repositoryPath: URL, remoteName: String) {
+    public init(repositoryPath: URL, remoteName: String, branchName: String? = nil) {
         self.repositoryPath = repositoryPath
         self.remoteName = remoteName
+        self.branchName = branchName
     }
 }
 
+/// The outcome of a fetch from one remote.
 public struct GitFetchResult: Codable, Equatable, Hashable, Sendable {
     public let fetchedRemoteName: String
+    public let fetchedCommit: String?
+    /// `nil` means the whole-remote legacy fetch did not observe lock paths; `[]` means observation found no residue.
+    public let lockResidue: [URL]?
 
-    public init(fetchedRemoteName: String) {
+    public init(fetchedRemoteName: String, fetchedCommit: String?, lockResidue: [URL]?) {
         self.fetchedRemoteName = fetchedRemoteName
+        self.fetchedCommit = fetchedCommit
+        self.lockResidue = lockResidue
     }
 }
 

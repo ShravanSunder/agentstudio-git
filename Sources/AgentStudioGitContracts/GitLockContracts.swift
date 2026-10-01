@@ -79,11 +79,13 @@ public enum GitLockResource: Codable, Equatable, Hashable, Sendable {
     }
 }
 
+/// A lock-related failure and any observed lock files that remain after the operation.
 public struct GitLockedOperationFailure<Reason: Sendable>: Error, Sendable {
     public let reason: Reason
-    public let lockResidue: [URL]
+    /// `nil` means the operation did not observe candidate lock paths; an empty array means it observed none left.
+    public let lockResidue: [URL]?
 
-    public init(reason: Reason, lockResidue: [URL]) {
+    public init(reason: Reason, lockResidue: [URL]?) {
         self.reason = reason
         self.lockResidue = lockResidue
     }

@@ -55,11 +55,12 @@ struct GitLockRemoteIntegrationTests {
 
         do {
             _ = try await client.fetch(
-                GitFetchRequest(repositoryPath: fixture.repositoryPath, remoteName: "origin")
+                GitFetchRequest(repositoryPath: fixture.repositoryPath, remoteName: "origin", branchName: "main")
             )
             Issue.record("fetch unexpectedly replaced a ref while its lock existed")
         } catch {
-            #expect(error == .lockHeld(expectedLockFact))
+            #expect(error.reason == .lockHeld(expectedLockFact))
+            #expect(error.lockResidue?.isEmpty == true)
         }
     }
 }

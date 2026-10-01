@@ -71,6 +71,30 @@ struct GitLockContractTests {
         )
 
         #expect(decodedFailure == failure)
+
+        let unobservedFailure = GitLockedOperationFailure(
+            reason: TestLockedOperationReason.refLockContended,
+            lockResidue: nil
+        )
+        let unobservedPayload = try #require(
+            String(data: JSONEncoder().encode(unobservedFailure), encoding: .utf8)
+        )
+        let decodedUnobservedFailure = try JSONDecoder().decode(
+            GitLockedOperationFailure<TestLockedOperationReason>.self,
+            from: Data(unobservedPayload.utf8)
+        )
+        #expect(decodedUnobservedFailure == unobservedFailure)
+        #expect(!unobservedPayload.contains("lockResidue"))
+
+        let observedEmptyFailure = GitLockedOperationFailure(
+            reason: TestLockedOperationReason.refLockContended,
+            lockResidue: []
+        )
+        let decodedObservedEmptyFailure = try JSONDecoder().decode(
+            GitLockedOperationFailure<TestLockedOperationReason>.self,
+            from: JSONEncoder().encode(observedEmptyFailure)
+        )
+        #expect(decodedObservedEmptyFailure == observedEmptyFailure)
     }
 
     @Test("lock resource decoding rejects multiple active cases")
