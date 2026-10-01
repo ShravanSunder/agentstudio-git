@@ -165,6 +165,107 @@ struct GitWorktreeForkChangesOnlyFilterIntegrationTests {
         #expect(try fixture.branchNames() == beforeBranches)
     }
 
+    @Test("an ignored nested attributes override is refused before filter evaluation")
+    func ignoredNestedAttributesOverrideRefusesBeforeFilterEvaluation() async throws {
+        // Arrange
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-ignored-nested-attributes")
+        defer { fixture.remove() }
+        try fixture.write(".gitignore", "nested/.gitattributes\n")
+        try fixture.write(".gitattributes", "*.bin filter=custom\n")
+        try fixture.write("nested/asset.bin", "custom content\n")
+        try fixture.git.run("add", ".")
+        try fixture.git.run("commit", "-m", "nested attribute baseline")
+        try fixture.write("nested/.gitattributes", "asset.bin -filter\n")
+        #expect(try fixture.git.succeeds("check-ignore", "--quiet", "--", "nested/.gitattributes"))
+        let destination = fixture.destination()
+        let beforeBranches = try fixture.branchNames()
+        let request = fixture.request(
+            destination: destination,
+            mode: .newBranch(name: "fork-ignored-nested-attributes"),
+            materialization: .changesOnly
+        )
+
+        // Act
+        let failure = await forkFailure(request)
+
+        // Assert
+        #expect(
+            failure
+                == .workingStateUnsupported(
+                    GitWorktreeWorkingStateRefusal(
+                        reason: .attributesChanged,
+                        relativePath: "nested/.gitattributes"
+                    )
+                )
+        )
+        #expect(!GitWorktreeForkFileProbe.exists(destination))
+        #expect(
+            !GitWorktreeForkFileProbe.exists(fixture.linkedWorktreeAdministration("fork-ignored-nested-attributes")))
+        #expect(try fixture.branchNames() == beforeBranches)
+    }
+
+    @Test("an ignored root attributes override is refused before filter evaluation")
+    func ignoredRootAttributesOverrideRefusesBeforeFilterEvaluation() async throws {
+        // Arrange
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-ignored-root-attributes")
+        defer { fixture.remove() }
+        try fixture.write(".gitignore", ".gitattributes\n")
+        try fixture.write("asset.bin", "tracked content\n")
+        try fixture.git.run("add", ".")
+        try fixture.git.run("commit", "-m", "root attribute baseline")
+        try fixture.write(".gitattributes", "asset.bin filter=custom\n")
+        #expect(try fixture.git.succeeds("check-ignore", "--quiet", "--", ".gitattributes"))
+        let destination = fixture.destination()
+        let beforeBranches = try fixture.branchNames()
+        let request = fixture.request(
+            destination: destination,
+            mode: .newBranch(name: "fork-ignored-root-attributes"),
+            materialization: .changesOnly
+        )
+
+        // Act
+        let failure = await forkFailure(request)
+
+        // Assert
+        #expect(
+            failure
+                == .workingStateUnsupported(
+                    GitWorktreeWorkingStateRefusal(reason: .attributesChanged, relativePath: ".gitattributes"))
+        )
+        #expect(!GitWorktreeForkFileProbe.exists(destination))
+        #expect(!GitWorktreeForkFileProbe.exists(fixture.linkedWorktreeAdministration("fork-ignored-root-attributes")))
+        #expect(try fixture.branchNames() == beforeBranches)
+    }
+
+    @Test("unchanged nested HEAD attributes still restore verified LFS content")
+    func unchangedNestedHeadAttributesAllowVerifiedLargeFileRestoration() async throws {
+        // Arrange
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-nested-lfs-attributes")
+        defer { fixture.remove() }
+        let payload = Data("nested verified large file payload\n".utf8)
+        let hash = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+        let pointer = "version https://git-lfs.github.com/spec/v1\noid sha256:\(hash)\nsize \(payload.count)\n"
+        try fixture.write("nested/.gitattributes", "asset.bin filter=lfs\n")
+        try fixture.write("nested/asset.bin", pointer)
+        try fixture.git.run("add", ".")
+        try fixture.git.run("commit", "-m", "nested LFS pointer")
+        try payload.write(to: fixture.source.appending(path: "nested/asset.bin"))
+        let destination = fixture.destination()
+        let request = fixture.request(
+            destination: destination,
+            mode: .newBranch(name: "fork-nested-lfs-attributes"),
+            materialization: .changesOnly
+        )
+
+        // Act
+        let failure = await forkFailure(request)
+
+        // Assert
+        #expect(failure == nil)
+        #expect(try Data(contentsOf: destination.appending(path: "nested/asset.bin")) == payload)
+        #expect(try Data(contentsOf: fixture.source.appending(path: "nested/asset.bin")) == payload)
+    }
+
     private func forkFailure(_ request: GitForkWorktreeRequest) async -> GitWorktreeForkError? {
         do {
             _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(request)
