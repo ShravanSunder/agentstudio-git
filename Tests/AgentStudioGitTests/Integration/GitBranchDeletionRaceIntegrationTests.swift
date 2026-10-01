@@ -32,7 +32,7 @@ struct GitBranchDeletionRaceIntegrationTests {
                 return
             }
             checkpointContinuation.yield(checkpoint)
-            _ = releaseLockBoundary.wait(timeout: .now() + .seconds(10))
+            releaseLockBoundary.wait()
         }
         let writer = LibGit2LocalBranchDeletionWriter(transactionControl: control)
         let client = LibGit2AgentStudioGitLocalClient(branchDeletionWriter: writer)
@@ -192,7 +192,7 @@ struct GitBranchDeletionRaceIntegrationTests {
                 return
             }
             checkpointContinuation.yield(checkpoint)
-            _ = releaseCleanupBoundary.wait(timeout: .now() + .seconds(10))
+            releaseCleanupBoundary.wait()
         }
         let client = LibGit2AgentStudioGitLocalClient(
             branchDeletionWriter: LibGit2LocalBranchDeletionWriter(transactionControl: control)
@@ -246,7 +246,7 @@ struct GitBranchDeletionRaceIntegrationTests {
                 return
             }
             reachedReservation.continuation.yield(checkpoint)
-            _ = releaseReservation.wait(timeout: .now() + .seconds(10))
+            releaseReservation.wait()
         }
         let client = LibGit2AgentStudioGitLocalClient(
             branchDeletionWriter: LibGit2LocalBranchDeletionWriter(transactionControl: control)
@@ -301,7 +301,7 @@ struct GitBranchDeletionRaceIntegrationTests {
                 return
             }
             checkpointContinuation.yield(checkpoint)
-            _ = releaseReservation.wait(timeout: .now() + .seconds(10))
+            releaseReservation.wait()
         }
         let client = LibGit2AgentStudioGitLocalClient(
             branchDeletionWriter: LibGit2LocalBranchDeletionWriter(transactionControl: control)
