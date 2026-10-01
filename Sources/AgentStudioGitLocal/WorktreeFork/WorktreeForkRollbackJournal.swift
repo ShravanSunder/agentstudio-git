@@ -92,8 +92,6 @@ struct WorktreeForkRollbackJournal {
     /// Compensates every entry in dependency order, then re-probes each one. Returns ordered residue;
     /// an empty result means every journaled artifact is verified absent. No cleanup error is discarded.
     func rollback(faults: WorktreeForkFaultInjector) -> [GitWorktreeForkResidue] {
-        let activeLockFacts = lockTracker.activeLocks()
-        let ownedLockPaths = Set(lockTracker.ownedResidue().map(\.path))
         var residue = lockTracker.ownedResidue().map { fact in
             GitWorktreeForkResidue(kind: .lockFile, location: lockLocation(fact.path))
         }
@@ -114,49 +112,22 @@ struct WorktreeForkRollbackJournal {
             if case .nestedAdministration(let path, let location, let identity) = entry,
                 !removeUnlessProtecting(path, { removeOwned(path, identity: identity) })
             {
-                let hasOwnedLock = ownedLockPaths.contains {
-                    relativeComponents(of: $0, beneath: path) != nil
-                }
-                let hasForeignLock = activeLockFacts.contains { fact in
-                    !ownedLockPaths.contains(fact.path)
-                        && relativeComponents(of: fact.path, beneath: path) != nil
-                }
-                if hasForeignLock || !hasOwnedLock {
-                    residue.append(GitWorktreeForkResidue(kind: .nestedAdministration, location: location))
-                }
+                residue.append(GitWorktreeForkResidue(kind: .nestedAdministration, location: location))
             }
         }
         for entry in entries {
             if case .destinationRoot(let path, let identity) = entry,
                 !removeUnlessProtecting(path, { removeDestination(path, identity: identity, faults: faults) })
             {
-                let hasOwnedLock = ownedLockPaths.contains {
-                    relativeComponents(of: $0, beneath: path) != nil
-                }
-                let hasForeignLock = activeLockFacts.contains { fact in
-                    !ownedLockPaths.contains(fact.path)
-                        && relativeComponents(of: fact.path, beneath: path) != nil
-                }
-                if hasForeignLock || !hasOwnedLock {
-                    residue.append(GitWorktreeForkResidue(kind: .destinationContent, location: "."))
-                }
+                residue.append(GitWorktreeForkResidue(kind: .destinationContent, location: "."))
             }
         }
         for entry in entries {
             if case .linkedWorktreeAdministration(let name, let path, let identity) = entry,
                 !removeUnlessProtecting(path, { removeOwned(path, identity: identity) })
             {
-                let hasOwnedLock = ownedLockPaths.contains {
-                    relativeComponents(of: $0, beneath: path) != nil
-                }
-                let hasForeignLock = activeLockFacts.contains { fact in
-                    !ownedLockPaths.contains(fact.path)
-                        && relativeComponents(of: fact.path, beneath: path) != nil
-                }
-                if hasForeignLock || !hasOwnedLock {
-                    residue.append(
-                        GitWorktreeForkResidue(kind: .linkedWorktreeAdministration, location: "worktrees/\(name)"))
-                }
+                residue.append(
+                    GitWorktreeForkResidue(kind: .linkedWorktreeAdministration, location: "worktrees/\(name)"))
             }
         }
         for entry in entries {
