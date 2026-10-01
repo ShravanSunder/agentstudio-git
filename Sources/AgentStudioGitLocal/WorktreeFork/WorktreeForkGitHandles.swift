@@ -1,5 +1,6 @@
 import AgentStudioGitContracts
 import CLibGit2Local
+import Darwin
 import Foundation
 
 struct WorktreeForkTreeEntry: Equatable, Sendable {
@@ -37,20 +38,102 @@ enum WorktreeForkGitHandles {
 
     /// Creates a local branch at the captured commit; fails rather than moving an existing branch.
     static func createBranch(
-        shortName: String,
+        referenceName: String,
         commitOID: String,
-        repository: OpaquePointer
+        repository: OpaquePointer,
+        faults: WorktreeForkFaultInjector,
+        lockTracker: WorktreeForkLockTracker,
+        onCreated: () -> Void
     ) throws(GitWorktreeForkError) {
-        let commit = try lookupCommit(commitOID, repository: repository)
-        defer { git_commit_free(commit) }
-        var reference: OpaquePointer?
-        let createResult = shortName.withCString { git_branch_create(&reference, repository, $0, commit, 0) }
-        if let reference {
-            git_reference_free(reference)
+        let referenceLockFact = try lockFact(for: .reference(name: referenceName), repository: repository)
+        lockTracker.beginAttempt(for: [referenceLockFact])
+
+        guard var commitOIDValue = WorktreeForkObjectID.parse(commitOID) else {
+            throw .gitFailure(.requiredObjectNotFound(oid: commitOID))
         }
-        guard createResult >= 0 else {
-            throw .gitFailure(LibGit2ErrorCapture.failure(code: createResult))
+
+        var transaction: OpaquePointer?
+        let transactionResult = git_transaction_new(&transaction, repository)
+        guard transactionResult >= 0, let transactionHandle = transaction else {
+            throw .gitFailure(LibGit2ErrorCapture.failure(code: transactionResult))
         }
+        defer {
+            if let transaction {
+                git_transaction_free(transaction)
+            }
+        }
+
+        errno = 0
+        let lockResult = referenceName.withCString { git_transaction_lock_ref(transactionHandle, $0) }
+        let lockErrorNumber = errno
+        guard lockResult >= 0 else {
+            lockTracker.recordFailure(for: [referenceLockFact], code: lockResult)
+            throw .gitFailure(
+                LibGit2ErrorCapture.failure(
+                    code: lockResult,
+                    lockFacts: [referenceLockFact],
+                    systemErrorCode: lockErrorNumber
+                ))
+        }
+        lockTracker.recordAcquisition(of: referenceLockFact)
+        try faults.reach(.afterBranchReferenceLockAcquired(referenceName: referenceName))
+
+        var existingReference: OpaquePointer?
+        let existingResult = referenceName.withCString { git_reference_lookup(&existingReference, repository, $0) }
+        if let existingReference {
+            git_reference_free(existingReference)
+            throw .rejected(reason: .branchAlreadyExists)
+        }
+        guard existingResult == GIT_ENOTFOUND.rawValue else {
+            lockTracker.recordFailure(for: [referenceLockFact], code: existingResult)
+            throw .gitFailure(LibGit2ErrorCapture.failure(code: existingResult))
+        }
+
+        let logMessage = "branch: Created from \(commitOID)"
+        errno = 0
+        let setTargetResult = referenceName.withCString { referencePointer in
+            logMessage.withCString { messagePointer in
+                withUnsafePointer(to: &commitOIDValue) { oidPointer in
+                    git_transaction_set_target(
+                        transactionHandle,
+                        referencePointer,
+                        oidPointer,
+                        nil,
+                        messagePointer
+                    )
+                }
+            }
+        }
+        let setTargetErrorNumber = errno
+        guard setTargetResult >= 0 else {
+            lockTracker.recordFailure(for: [referenceLockFact], code: setTargetResult)
+            throw .gitFailure(
+                LibGit2ErrorCapture.failure(
+                    code: setTargetResult,
+                    lockFacts: [referenceLockFact],
+                    systemErrorCode: setTargetErrorNumber
+                ))
+        }
+
+        errno = 0
+        let commitResult = git_transaction_commit(transactionHandle)
+        let commitErrorNumber = errno
+        guard commitResult >= 0 else {
+            if referencePointsTo(referenceName, commitOID: commitOID, repository: repository) {
+                onCreated()
+            }
+            lockTracker.recordFailure(for: [referenceLockFact], code: commitResult)
+            throw .gitFailure(
+                LibGit2ErrorCapture.failure(
+                    code: commitResult,
+                    lockFacts: [referenceLockFact],
+                    systemErrorCode: commitErrorNumber
+                ))
+        }
+
+        onCreated()
+        git_transaction_free(transactionHandle)
+        transaction = nil
     }
 
     /// Registers the linked worktree without checking anything out: libgit2 creates the destination
@@ -60,7 +143,8 @@ enum WorktreeForkGitHandles {
         name: String,
         destination: URL,
         branchReferenceName: String,
-        repository: OpaquePointer
+        repository: OpaquePointer,
+        lockTracker: WorktreeForkLockTracker
     ) throws(GitWorktreeForkError) {
         var options = git_worktree_add_options()
         do {
@@ -78,58 +162,158 @@ enum WorktreeForkGitHandles {
         }
         defer { git_reference_free(reference) }
         options.ref = reference
+
+        guard let commonDirectory = git_repository_commondir(repository) else {
+            throw .gitFailure(.unsupported(message: "repository common directory unavailable"))
+        }
+        let commonDirectoryPath = URL(fileURLWithPath: String(cString: commonDirectory), isDirectory: true)
+        let worktreesDirectoryPath = commonDirectoryPath.appending(path: "worktrees")
+        let administrationPath = worktreesDirectoryPath.appending(path: name)
+        let headLockFact = GitLockFact(
+            path: administrationPath.appending(path: "HEAD.lock").standardizedFileURL,
+            resource: .reference(name: "HEAD")
+        )
+        lockTracker.beginAttempt(for: [headLockFact])
         var worktree: OpaquePointer?
+        errno = 0
         let addResult = name.withCString { namePointer in
             destination.path.withCString { git_worktree_add(&worktree, repository, namePointer, $0, &options) }
         }
+        let addErrorNumber = errno
         if let worktree {
             git_worktree_free(worktree)
         }
         guard addResult >= 0 else {
-            throw .gitFailure(LibGit2ErrorCapture.failure(code: addResult))
+            lockTracker.recordFailure(for: [headLockFact], code: addResult)
+            throw .gitFailure(
+                LibGit2ErrorCapture.failure(
+                    code: addResult,
+                    lockFacts: [headLockFact],
+                    systemErrorCode: addErrorNumber,
+                    permissionDirectories: [
+                        destination.deletingLastPathComponent(),
+                        administrationPath,
+                        worktreesDirectoryPath,
+                        commonDirectoryPath,
+                    ]
+                ))
         }
     }
 
     /// Checks out the captured commit into the transaction-owned empty destination. The commit tree is
     /// explicit so a concurrent source HEAD move cannot change what the destination receives.
-    static func checkoutCapturedHead(_ commitOID: String, repository: OpaquePointer) throws(GitWorktreeForkError) {
+    static func checkoutCapturedHead(
+        _ commitOID: String,
+        repository: OpaquePointer,
+        worktreePath: URL,
+        lockTracker: WorktreeForkLockTracker
+    ) throws(GitWorktreeForkError) {
         let commit = try lookupCommit(commitOID, repository: repository)
         defer { git_commit_free(commit) }
+        let indexLockFact = try lockFact(for: .index(worktreePath: worktreePath), repository: repository)
+        lockTracker.beginAttempt(for: [indexLockFact])
         var options = git_checkout_options()
         let optionsResult = git_checkout_options_init(&options, UInt32(GIT_CHECKOUT_OPTIONS_VERSION))
         guard optionsResult >= 0 else {
             throw .gitFailure(LibGit2ErrorCapture.failure(code: optionsResult))
         }
         options.checkout_strategy = GIT_CHECKOUT_FORCE.rawValue
+        errno = 0
         let checkoutResult = git_checkout_tree(repository, commit, &options)
+        let checkoutErrorNumber = errno
         guard checkoutResult >= 0 else {
-            throw .gitFailure(LibGit2ErrorCapture.failure(code: checkoutResult))
+            lockTracker.recordFailure(for: [indexLockFact], code: checkoutResult)
+            throw .gitFailure(
+                LibGit2ErrorCapture.failure(
+                    code: checkoutResult,
+                    lockFacts: [indexLockFact],
+                    systemErrorCode: checkoutErrorNumber
+                ))
         }
     }
 
-    static func detachHead(worktreePath: URL, commitOID: String) throws(GitWorktreeForkError) {
+    static func detachHead(
+        worktreePath: URL,
+        commitOID: String,
+        lockTracker: WorktreeForkLockTracker
+    ) throws(GitWorktreeForkError) {
         let repository = try openWorktree(worktreePath)
         defer { git_repository_free(repository) }
         guard var oid = WorktreeForkObjectID.parse(commitOID) else {
             throw .gitFailure(.requiredObjectNotFound(oid: commitOID))
         }
+        let headLockFact = try lockFact(for: .reference(name: "HEAD"), repository: repository)
+        lockTracker.beginAttempt(for: [headLockFact])
+        errno = 0
         let detachResult = git_repository_set_head_detached(repository, &oid)
+        let detachErrorNumber = errno
         guard detachResult >= 0 else {
-            throw .gitFailure(LibGit2ErrorCapture.failure(code: detachResult))
+            lockTracker.recordFailure(for: [headLockFact], code: detachResult)
+            throw .gitFailure(
+                LibGit2ErrorCapture.failure(
+                    code: detachResult,
+                    lockFacts: [headLockFact],
+                    systemErrorCode: detachErrorNumber
+                ))
         }
     }
 
-    static func deleteBranch(referenceName: String, repository: OpaquePointer) throws(GitWorktreeForkError) {
+    static func deleteBranch(
+        referenceName: String,
+        repository: OpaquePointer,
+        lockTracker: WorktreeForkLockTracker
+    ) throws(GitWorktreeForkError) {
+        let referenceLockFact = try lockFact(for: .reference(name: referenceName), repository: repository)
+        let configurationLockFact = try lockFact(for: .config, repository: repository)
+        let lockFacts = [configurationLockFact, referenceLockFact]
+        lockTracker.beginAttempt(for: lockFacts)
         var reference: OpaquePointer?
         let lookupResult = referenceName.withCString { git_reference_lookup(&reference, repository, $0) }
         guard lookupResult >= 0, let reference else {
             throw .gitFailure(LibGit2ErrorCapture.failure(code: lookupResult))
         }
         defer { git_reference_free(reference) }
+        errno = 0
         let deleteResult = git_branch_delete(reference)
+        let deleteErrorNumber = errno
         guard deleteResult >= 0 else {
-            throw .gitFailure(LibGit2ErrorCapture.failure(code: deleteResult))
+            lockTracker.recordFailure(for: lockFacts, code: deleteResult)
+            throw .gitFailure(
+                LibGit2ErrorCapture.failure(
+                    code: deleteResult,
+                    lockFacts: lockFacts,
+                    systemErrorCode: deleteErrorNumber
+                ))
         }
+    }
+
+    static func lockFact(for resource: GitLockResource, repository: OpaquePointer) throws(GitWorktreeForkError)
+        -> GitLockFact
+    {
+        do {
+            return try LibGit2LockPathResolver.fact(for: resource, repository: repository)
+        } catch let error as GitDataPlaneError {
+            throw .gitFailure(error)
+        } catch {
+            throw .gitFailure(.unsupported(message: String(describing: error)))
+        }
+    }
+
+    private static func referencePointsTo(
+        _ referenceName: String,
+        commitOID: String,
+        repository: OpaquePointer
+    ) -> Bool {
+        var reference: OpaquePointer?
+        let lookupResult = referenceName.withCString { git_reference_lookup(&reference, repository, $0) }
+        guard lookupResult >= 0, let reference else {
+            return false
+        }
+        defer { git_reference_free(reference) }
+        guard let target = git_reference_target(reference) else {
+            return false
+        }
+        return oidString(target) == commitOID
     }
 
     /// Every blob, symlink, and gitlink path of a tree with its object ID and mode.

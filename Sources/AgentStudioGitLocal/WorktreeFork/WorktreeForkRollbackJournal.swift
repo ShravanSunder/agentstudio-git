@@ -23,15 +23,33 @@ struct WorktreeForkRollbackJournal {
     let commonDirectory: URL
     let destinationRoot: URL
     let runtime: LibGit2Runtime
+    let lockTracker: WorktreeForkLockTracker
 
-    init(commonDirectory: URL, destinationRoot: URL, runtime: LibGit2Runtime) {
+    init(
+        commonDirectory: URL,
+        destinationRoot: URL,
+        runtime: LibGit2Runtime,
+        lockTracker: WorktreeForkLockTracker = WorktreeForkLockTracker()
+    ) {
         self.commonDirectory = commonDirectory
         self.destinationRoot = destinationRoot
         self.runtime = runtime
+        self.lockTracker = lockTracker
     }
 
     mutating func record(_ entry: WorktreeForkJournalEntry) {
         entries.append(entry)
+    }
+
+    mutating func recordForeignLock(in error: GitWorktreeForkError) {
+        switch error {
+        case .gitFailure(.lockHeld(let fact)):
+            lockTracker.recordForeignLock(fact)
+        case .cleanupIncomplete(let primary, _):
+            recordForeignLock(in: primary)
+        default:
+            break
+        }
     }
 
     mutating func confirmDestinationIdentity(_ identity: WorktreeForkEntryIdentity) {
@@ -74,13 +92,17 @@ struct WorktreeForkRollbackJournal {
     /// Compensates every entry in dependency order, then re-probes each one. Returns ordered residue;
     /// an empty result means every journaled artifact is verified absent. No cleanup error is discarded.
     func rollback(faults: WorktreeForkFaultInjector) -> [GitWorktreeForkResidue] {
-        var residue: [GitWorktreeForkResidue] = []
+        let activeLockFacts = lockTracker.activeLocks()
+        let ownedLockPaths = Set(lockTracker.ownedResidue().map(\.path))
+        var residue = lockTracker.ownedResidue().map { fact in
+            GitWorktreeForkResidue(kind: .lockFile, location: lockLocation(fact.path))
+        }
         // Paths whose removal was refused in this rollback. A confirmed ancestor of any of them is kept and
         // reported too: removing it recursively would delete the refused path anyway.
-        var refused: [URL] = []
+        var refused = lockTracker.protectedPaths()
         func removeUnlessProtecting(_ path: URL, _ remove: () -> Bool) -> Bool {
             let protectsRefusedPath = refused.contains {
-                WorktreeForkAdministrativeSymlinks.relativeComponents(of: $0, beneath: path) != nil
+                relativeComponents(of: $0, beneath: path) != nil
             }
             guard !protectsRefusedPath, remove() else {
                 refused.append(path)
@@ -92,22 +114,49 @@ struct WorktreeForkRollbackJournal {
             if case .nestedAdministration(let path, let location, let identity) = entry,
                 !removeUnlessProtecting(path, { removeOwned(path, identity: identity) })
             {
-                residue.append(GitWorktreeForkResidue(kind: .nestedAdministration, location: location))
+                let hasOwnedLock = ownedLockPaths.contains {
+                    relativeComponents(of: $0, beneath: path) != nil
+                }
+                let hasForeignLock = activeLockFacts.contains { fact in
+                    !ownedLockPaths.contains(fact.path)
+                        && relativeComponents(of: fact.path, beneath: path) != nil
+                }
+                if hasForeignLock || !hasOwnedLock {
+                    residue.append(GitWorktreeForkResidue(kind: .nestedAdministration, location: location))
+                }
             }
         }
         for entry in entries {
             if case .destinationRoot(let path, let identity) = entry,
                 !removeUnlessProtecting(path, { removeDestination(path, identity: identity, faults: faults) })
             {
-                residue.append(GitWorktreeForkResidue(kind: .destinationContent, location: "."))
+                let hasOwnedLock = ownedLockPaths.contains {
+                    relativeComponents(of: $0, beneath: path) != nil
+                }
+                let hasForeignLock = activeLockFacts.contains { fact in
+                    !ownedLockPaths.contains(fact.path)
+                        && relativeComponents(of: fact.path, beneath: path) != nil
+                }
+                if hasForeignLock || !hasOwnedLock {
+                    residue.append(GitWorktreeForkResidue(kind: .destinationContent, location: "."))
+                }
             }
         }
         for entry in entries {
             if case .linkedWorktreeAdministration(let name, let path, let identity) = entry,
                 !removeUnlessProtecting(path, { removeOwned(path, identity: identity) })
             {
-                residue.append(
-                    GitWorktreeForkResidue(kind: .linkedWorktreeAdministration, location: "worktrees/\(name)"))
+                let hasOwnedLock = ownedLockPaths.contains {
+                    relativeComponents(of: $0, beneath: path) != nil
+                }
+                let hasForeignLock = activeLockFacts.contains { fact in
+                    !ownedLockPaths.contains(fact.path)
+                        && relativeComponents(of: fact.path, beneath: path) != nil
+                }
+                if hasForeignLock || !hasOwnedLock {
+                    residue.append(
+                        GitWorktreeForkResidue(kind: .linkedWorktreeAdministration, location: "worktrees/\(name)"))
+                }
             }
         }
         for entry in entries {
@@ -117,7 +166,31 @@ struct WorktreeForkRollbackJournal {
                 residue.append(GitWorktreeForkResidue(kind: .createdBranch, location: referenceName))
             }
         }
+        let reportedLockLocations = Set(residue.filter { $0.kind == .lockFile }.map(\.location))
+        for fact in lockTracker.ownedResidue() {
+            let location = lockLocation(fact.path)
+            if !reportedLockLocations.contains(location) {
+                residue.append(GitWorktreeForkResidue(kind: .lockFile, location: location))
+            }
+        }
         return residue
+    }
+
+    private func lockLocation(_ path: URL) -> String {
+        if let components = relativeComponents(of: path, beneath: commonDirectory) {
+            return components
+        }
+        if let components = relativeComponents(of: path, beneath: destinationRoot) {
+            return components
+        }
+        return path.lastPathComponent
+    }
+
+    private func relativeComponents(of path: URL, beneath root: URL) -> String? {
+        WorktreeForkAdministrativeSymlinks.relativeComponents(
+            of: path.resolvingSymlinksInPath().standardizedFileURL,
+            beneath: root.resolvingSymlinksInPath().standardizedFileURL
+        )
     }
 
     private func removeDestination(
@@ -199,6 +272,17 @@ struct WorktreeForkRollbackJournal {
         }
         defer { git_repository_free(repository) }
 
+        let referenceLockFact: GitLockFact
+        let configurationLockFact: GitLockFact
+        do {
+            referenceLockFact = try LibGit2LockPathResolver.fact(
+                for: .reference(name: referenceName), repository: repository)
+            configurationLockFact = try LibGit2LockPathResolver.fact(for: .config, repository: repository)
+        } catch {
+            return false
+        }
+        let lockFacts = [configurationLockFact, referenceLockFact]
+
         var reference: OpaquePointer?
         let lookupResult = referenceName.withCString { git_reference_lookup(&reference, repository, $0) }
         if lookupResult == GIT_ENOTFOUND.rawValue {
@@ -211,7 +295,20 @@ struct WorktreeForkRollbackJournal {
         guard let target = git_reference_target(reference), oidString(target) == targetOID else {
             return false
         }
-        guard git_branch_delete(reference) >= 0 else {
+        lockTracker.beginAttempt(for: lockFacts)
+        errno = 0
+        let deleteResult = git_branch_delete(reference)
+        let deleteErrorNumber = errno
+        guard deleteResult >= 0 else {
+            lockTracker.recordFailure(for: lockFacts, code: deleteResult)
+            let deletionFailure = LibGit2ErrorCapture.failure(
+                code: deleteResult,
+                lockFacts: lockFacts,
+                systemErrorCode: deleteErrorNumber
+            )
+            if case .lockHeld(let fact) = deletionFailure {
+                lockTracker.recordForeignLock(fact)
+            }
             return false
         }
         var probe: OpaquePointer?

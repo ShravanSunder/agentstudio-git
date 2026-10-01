@@ -73,6 +73,7 @@ struct LibGit2WorktreeForkWriter: Sendable {
                 cancellation: cancellation
             )
         } catch {
+            journal.recordForeignLock(in: error)
             let residue = journal.rollback(faults: faults)
             try? faults.reach(.afterRollback)
             guard residue.isEmpty else {
@@ -126,8 +127,10 @@ struct LibGit2WorktreeForkWriter: Sendable {
         try faults.reach(.afterMaterialization)
         try cancellation.throwIfCancelled()
 
-        let rehomedNodes = try GitRepositoryStateRehomer(plan: plan, cancellation: cancellation)
-            .rehome(journal: &journal)
+        let rehomedNodes = try GitRepositoryStateRehomer(
+            plan: plan, cancellation: cancellation, lockTracker: journal.lockTracker
+        )
+        .rehome(journal: &journal)
         try faults.reach(.afterGitStateRehomed)
         observations.normalizedEntries += try materializer.finalizeDirectories(
             plan.filesystem,
@@ -153,7 +156,9 @@ struct LibGit2WorktreeForkWriter: Sendable {
             worktreePath: plan.destinationRoot,
             capturedHead: plan.capturedHead,
             skipWorktreePaths: plan.gitTopology.rootSparse?.skipWorktreePaths ?? [],
-            adoption: adoption(plan.gitTopology.rootSourceIndex, prefix: "")
+            adoption: adoption(plan.gitTopology.rootSourceIndex, prefix: ""),
+            lockWorktreePath: plan.destinationRequestPath,
+            lockTracker: journal.lockTracker
         )
         indexObserver.observe("", indexEvidence)
         var nodeIndexEvidence: [String: WorktreeForkIndexRefreshEvidence] = [:]
@@ -163,7 +168,8 @@ struct LibGit2WorktreeForkWriter: Sendable {
                 worktreePath: rehomed.destinationWorktree,
                 capturedHead: rehomed.node.capturedHead,
                 skipWorktreePaths: rehomed.node.sparse?.skipWorktreePaths ?? [],
-                adoption: adoption(rehomed.node.sourceIndex, prefix: rehomed.node.relativePath)
+                adoption: adoption(rehomed.node.sourceIndex, prefix: rehomed.node.relativePath),
+                lockTracker: journal.lockTracker
             )
             nodeIndexEvidence[rehomed.node.relativePath] = evidence
             indexObserver.observe(rehomed.node.relativePath, evidence)
@@ -175,7 +181,8 @@ struct LibGit2WorktreeForkWriter: Sendable {
             plan: plan,
             observations: observations,
             destinationRootDescriptor: destinationRootDescriptor,
-            indexEvidence: indexEvidence
+            indexEvidence: indexEvidence,
+            lockTracker: journal.lockTracker
         )
         try WorktreeForkTopologyValidator(plan: plan).validate(rehomedNodes, evidenceByNode: nodeIndexEvidence)
         try faults.reach(.afterValidation)
@@ -195,7 +202,12 @@ struct LibGit2WorktreeForkWriter: Sendable {
     ) throws(GitWorktreeForkError) -> GitForkWorktreeResult {
         let repository = try WorktreeForkGitHandles.openWorktree(plan.destinationRoot)
         defer { git_repository_free(repository) }
-        try WorktreeForkGitHandles.checkoutCapturedHead(plan.capturedHead.commitOID, repository: repository)
+        try WorktreeForkGitHandles.checkoutCapturedHead(
+            plan.capturedHead.commitOID,
+            repository: repository,
+            worktreePath: plan.destinationRequestPath,
+            lockTracker: journal.lockTracker
+        )
         try faults.reach(.afterHeadCheckedOut)
         try cancellation.throwIfCancelled()
 
@@ -208,8 +220,10 @@ struct LibGit2WorktreeForkWriter: Sendable {
         try faults.reach(.afterMaterialization)
         try cancellation.throwIfCancelled()
 
-        let rehomedNodes = try GitRepositoryStateRehomer(plan: plan, cancellation: cancellation)
-            .rehome(journal: &journal)
+        let rehomedNodes = try GitRepositoryStateRehomer(
+            plan: plan, cancellation: cancellation, lockTracker: journal.lockTracker
+        )
+        .rehome(journal: &journal)
         try faults.reach(.afterGitStateRehomed)
         try cancellation.throwIfCancelled()
 
@@ -217,7 +231,9 @@ struct LibGit2WorktreeForkWriter: Sendable {
             worktreePath: plan.destinationRoot,
             capturedHead: plan.capturedHead,
             skipWorktreePaths: [],
-            adoption: nil
+            adoption: nil,
+            lockWorktreePath: plan.destinationRequestPath,
+            lockTracker: journal.lockTracker
         )
         indexObserver.observe("", indexEvidence)
         try faults.reach(.afterIndexesBuilt)
@@ -228,7 +244,8 @@ struct LibGit2WorktreeForkWriter: Sendable {
             changesOnly: changesOnly,
             sourceRootDescriptor: sourceRootDescriptor,
             destinationRootDescriptor: destinationRootDescriptor,
-            indexEvidence: indexEvidence
+            indexEvidence: indexEvidence,
+            lockTracker: journal.lockTracker
         )
         try WorktreeForkTopologyValidator(plan: plan).validate(rehomedNodes, evidenceByNode: [:])
         try faults.reach(.afterValidation)
@@ -259,21 +276,29 @@ struct LibGit2WorktreeForkWriter: Sendable {
         case .existingBranch(let referenceName):
             addReferenceName = referenceName
         case .newBranch(let referenceName):
-            journal.record(.createdBranch(referenceName: referenceName, targetOID: plan.capturedHead.commitOID))
             try WorktreeForkGitHandles.createBranch(
-                shortName: String(referenceName.dropFirst("refs/heads/".count)),
+                referenceName: referenceName,
                 commitOID: plan.capturedHead.commitOID,
-                repository: repository
+                repository: repository,
+                faults: faults,
+                lockTracker: journal.lockTracker,
+                onCreated: {
+                    journal.record(.createdBranch(referenceName: referenceName, targetOID: plan.capturedHead.commitOID))
+                }
             )
             addReferenceName = referenceName
         case .detached:
             let carrierShortName = "agentstudio-fork-carrier/\(UUID().uuidString.lowercased())"
             let referenceName = "refs/heads/\(carrierShortName)"
-            journal.record(.createdBranch(referenceName: referenceName, targetOID: plan.capturedHead.commitOID))
             try WorktreeForkGitHandles.createBranch(
-                shortName: carrierShortName,
+                referenceName: referenceName,
                 commitOID: plan.capturedHead.commitOID,
-                repository: repository
+                repository: repository,
+                faults: faults,
+                lockTracker: journal.lockTracker,
+                onCreated: {
+                    journal.record(.createdBranch(referenceName: referenceName, targetOID: plan.capturedHead.commitOID))
+                }
             )
             addReferenceName = referenceName
             carrierReferenceName = referenceName
@@ -292,7 +317,8 @@ struct LibGit2WorktreeForkWriter: Sendable {
             name: plan.worktreeName,
             destination: plan.destinationRoot,
             branchReferenceName: addReferenceName,
-            repository: repository
+            repository: repository,
+            lockTracker: journal.lockTracker
         )
         // Only a successful add proves both exclusive mkdirs were the transaction's own.
         if case .success(let info) = WorktreeForkDescriptors.lstatPath(plan.destinationRoot) {
@@ -304,8 +330,12 @@ struct LibGit2WorktreeForkWriter: Sendable {
         }
         if let carrierReferenceName {
             try WorktreeForkGitHandles.detachHead(
-                worktreePath: plan.destinationRoot, commitOID: plan.capturedHead.commitOID)
-            try WorktreeForkGitHandles.deleteBranch(referenceName: carrierReferenceName, repository: repository)
+                worktreePath: plan.destinationRoot,
+                commitOID: plan.capturedHead.commitOID,
+                lockTracker: journal.lockTracker
+            )
+            try WorktreeForkGitHandles.deleteBranch(
+                referenceName: carrierReferenceName, repository: repository, lockTracker: journal.lockTracker)
             journal.forgetBranch(referenceName: carrierReferenceName)
         }
     }

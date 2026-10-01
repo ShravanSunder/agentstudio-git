@@ -71,12 +71,12 @@ enum LibGit2ErrorCapture {
                     return .lockHeld(lockFact)
                 }
                 if systemErrorCode == EACCES || deniedLockDirectory(for: lockFact.path) != nil {
-                    return .permissionDenied(path: lockFact.path.deletingLastPathComponent())
+                    return .permissionDenied(path: lockDirectoryPath(for: lockFact.path))
                 }
                 return .lockUnidentified(lockFact.resource)
             }
             if systemErrorCode == EACCES || deniedLockDirectory(for: lockFact.path) != nil {
-                return .permissionDenied(path: lockFact.path.deletingLastPathComponent())
+                return .permissionDenied(path: lockDirectoryPath(for: lockFact.path))
             }
         }
 
@@ -86,6 +86,38 @@ enum LibGit2ErrorCapture {
             errorSource: errorSource
         )
         return failure(capturedError)
+    }
+
+    static func failure(
+        code: Int32,
+        lockFacts: [GitLockFact],
+        systemErrorCode: Int32,
+        permissionDirectories: [URL] = [],
+        residueObserver: GitLockResidueObserver = .live,
+        fallbackMessage: String? = nil,
+        errorSource: LibGit2ErrorSource = .live
+    ) -> GitDataPlaneError {
+        if code != GIT_ELOCKED.rawValue, systemErrorCode == EACCES {
+            let deniedLockFact = lockFacts.first { deniedLockDirectory(for: $0.path) != nil }
+            if let deniedLockFact {
+                return .permissionDenied(path: lockDirectoryPath(for: deniedLockFact.path))
+            }
+            if let deniedDirectory = permissionDirectories.first(where: Self.isAccessDenied) {
+                return .permissionDenied(path: normalizedDirectoryPath(deniedDirectory))
+            }
+        }
+
+        let candidate =
+            lockFacts.first { residueObserver.status(of: $0.path) == .present }
+            ?? lockFacts.first
+        return failure(
+            code: code,
+            lockFact: candidate,
+            systemErrorCode: systemErrorCode,
+            residueObserver: residueObserver,
+            fallbackMessage: fallbackMessage,
+            errorSource: errorSource
+        )
     }
 
     static func fallbackFailure(code: Int32, message: String) -> GitDataPlaneError {
@@ -101,10 +133,26 @@ enum LibGit2ErrorCapture {
     }
 
     private static func deniedLockDirectory(for lockPath: URL) -> URL? {
-        let directoryPath = lockPath.deletingLastPathComponent()
+        let directoryPath = lockDirectoryPath(for: lockPath)
         guard directoryPath.path.withCString({ access($0, W_OK | X_OK) }) != 0, errno == EACCES else {
             return nil
         }
         return directoryPath
+    }
+
+    private static func lockDirectoryPath(for lockPath: URL) -> URL {
+        normalizedDirectoryPath(lockPath.deletingLastPathComponent())
+    }
+
+    private static func normalizedDirectoryPath(_ path: URL) -> URL {
+        var canonicalPath = path.resolvingSymlinksInPath().path
+        while canonicalPath.count > 1, canonicalPath.hasSuffix("/") {
+            canonicalPath.removeLast()
+        }
+        return URL(fileURLWithPath: canonicalPath, isDirectory: false)
+    }
+
+    private static func isAccessDenied(_ directory: URL) -> Bool {
+        directory.path.withCString { access($0, W_OK | X_OK) != 0 && errno == EACCES }
     }
 }

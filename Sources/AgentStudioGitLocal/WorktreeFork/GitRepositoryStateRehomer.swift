@@ -1,5 +1,6 @@
 import AgentStudioGitContracts
 import CLibGit2Local
+import Darwin
 import Foundation
 
 /// Where one re-homed Git node now lives.
@@ -16,6 +17,17 @@ struct WorktreeForkRehomedNode: Sendable {
 struct GitRepositoryStateRehomer: Sendable {
     let plan: WorktreeForkPlan
     let cancellation: WorktreeForkCancellation
+    let lockTracker: WorktreeForkLockTracker
+
+    init(
+        plan: WorktreeForkPlan,
+        cancellation: WorktreeForkCancellation,
+        lockTracker: WorktreeForkLockTracker = WorktreeForkLockTracker()
+    ) {
+        self.plan = plan
+        self.cancellation = cancellation
+        self.lockTracker = lockTracker
+    }
 
     var rootAdministration: URL {
         plan.commonDirectory.appending(path: "worktrees").appending(path: plan.worktreeName)
@@ -111,7 +123,11 @@ struct GitRepositoryStateRehomer: Sendable {
         if node.sparse != nil {
             configurationEdits.append(.setBool("index.sparse", false))
         }
-        try WorktreeForkConfigurationFile.apply(configurationEdits, to: administration.appending(path: "config"))
+        try WorktreeForkConfigurationFile.apply(
+            configurationEdits,
+            to: administration.appending(path: "config"),
+            lockTracker: lockTracker
+        )
         if case .submodule = node.kind {
             let pointer = "gitdir: \(WorktreeForkRelativePath.from(worktree, to: administration))\n"
             try writeText(pointer, to: worktree.appending(path: ".git"), reportPath: reportPath)
@@ -176,7 +192,8 @@ struct GitRepositoryStateRehomer: Sendable {
         guard case .success = WorktreeForkDescriptors.lstatPath(configuration) else {
             return
         }
-        try WorktreeForkConfigurationFile.apply([.delete("core.worktree"), .delete("core.bare")], to: configuration)
+        try WorktreeForkConfigurationFile.apply(
+            [.delete("core.worktree"), .delete("core.bare")], to: configuration, lockTracker: lockTracker)
     }
 
     private func headContents(_ node: WorktreeForkGitNode) -> String {
@@ -251,7 +268,10 @@ struct GitRepositoryStateRehomer: Sendable {
         let destination = administration.appending(path: "config.worktree")
         try writeData(worktreeConfiguration, to: destination, reportPath: reportPath)
         try WorktreeForkConfigurationFile.apply(
-            [.setBool("index.sparse", false), .delete("core.worktree"), .delete("core.bare")], to: destination)
+            [.setBool("index.sparse", false), .delete("core.worktree"), .delete("core.bare")],
+            to: destination,
+            lockTracker: lockTracker
+        )
     }
 
     static func directAlternates(_ objectsDirectory: URL, _ reportPath: String) throws(GitWorktreeForkError) -> [URL] {
@@ -287,14 +307,24 @@ enum WorktreeForkConfigurationEdit: Sendable {
 
 /// Edits one Git configuration file through libgit2 so its syntax and locking stay Git's.
 enum WorktreeForkConfigurationFile {
-    static func apply(_ edits: [WorktreeForkConfigurationEdit], to path: URL) throws(GitWorktreeForkError) {
+    static func apply(
+        _ edits: [WorktreeForkConfigurationEdit],
+        to path: URL,
+        lockTracker: WorktreeForkLockTracker? = nil
+    ) throws(GitWorktreeForkError) {
         var configuration: OpaquePointer?
         let openResult = path.path.withCString { git_config_open_ondisk(&configuration, $0) }
         guard openResult >= 0, let configuration else {
             throw .gitFailure(LibGit2ErrorCapture.failure(code: openResult))
         }
         defer { git_config_free(configuration) }
+        let lockFact = GitLockFact(
+            path: URL(fileURLWithPath: "\(path.path).lock").standardizedFileURL,
+            resource: .config
+        )
         for edit in edits {
+            lockTracker?.beginAttempt(for: [lockFact])
+            errno = 0
             let result: Int32
             switch edit {
             case .setBool(let name, let value):
@@ -305,8 +335,15 @@ enum WorktreeForkConfigurationFile {
                 let deleteResult = git_config_delete_entry(configuration, name)
                 result = deleteResult == GIT_ENOTFOUND.rawValue ? 0 : deleteResult
             }
+            let systemErrorCode = errno
             guard result >= 0 else {
-                throw .gitFailure(LibGit2ErrorCapture.failure(code: result))
+                lockTracker?.recordFailure(for: [lockFact], code: result)
+                throw .gitFailure(
+                    LibGit2ErrorCapture.failure(
+                        code: result,
+                        lockFacts: [lockFact],
+                        systemErrorCode: systemErrorCode
+                    ))
             }
         }
     }

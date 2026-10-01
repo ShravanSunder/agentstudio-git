@@ -1,5 +1,6 @@
 import AgentStudioGitContracts
 import CLibGit2Local
+import Darwin
 import Foundation
 
 /// Which tracked entries the one-time stat refresh could not mark clean: they differ from the captured
@@ -17,7 +18,9 @@ struct WorktreeForkIndexBuilder: Sendable {
         worktreePath: URL,
         capturedHead: WorktreeForkCapturedHead?,
         skipWorktreePaths: Set<String>,
-        adoption: WorktreeForkAdoptionContext?
+        adoption: WorktreeForkAdoptionContext?,
+        lockWorktreePath: URL? = nil,
+        lockTracker: WorktreeForkLockTracker? = nil
     ) throws(GitWorktreeForkError) -> WorktreeForkIndexRefreshEvidence {
         let repository = try openRepository(worktreePath)
         defer { git_repository_free(repository) }
@@ -39,7 +42,21 @@ struct WorktreeForkIndexBuilder: Sendable {
             try adoption.map { context throws(GitWorktreeForkError) in
                 try adoptCleanEntries(context, index: index, worktreePath: worktreePath)
             } ?? []
-        try check(git_index_write(index))
+        let indexLockFact = try WorktreeForkGitHandles.lockFact(
+            for: .index(worktreePath: lockWorktreePath ?? worktreePath), repository: repository)
+        lockTracker?.beginAttempt(for: [indexLockFact])
+        errno = 0
+        let writeResult = git_index_write(index)
+        let writeErrorNumber = errno
+        guard writeResult >= 0 else {
+            lockTracker?.recordFailure(for: [indexLockFact], code: writeResult)
+            throw .gitFailure(
+                LibGit2ErrorCapture.failure(
+                    code: writeResult,
+                    lockFacts: [indexLockFact],
+                    systemErrorCode: writeErrorNumber
+                ))
+        }
         let refreshPaths = trackedPathsNeedingRefresh(index, excluding: adoptedPaths)
         let unrefreshed =
             refreshPaths.isEmpty

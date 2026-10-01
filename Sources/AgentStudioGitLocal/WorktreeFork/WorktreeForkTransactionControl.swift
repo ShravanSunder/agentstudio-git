@@ -28,6 +28,7 @@ enum WorktreeForkFaultPoint: Hashable, Sendable {
     case afterPreflight
     case afterPlanning
     case afterChangesOnlyCapture
+    case afterBranchReferenceLockAcquired(referenceName: String)
     case afterIdentityCreated
     case afterWorktreeAdded
     case afterHeadCheckedOut

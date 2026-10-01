@@ -12,7 +12,8 @@ struct WorktreeForkValidator: Sendable {
         plan: WorktreeForkPlan,
         observations: WorktreeForkMaterializationObservations,
         destinationRootDescriptor: Int32,
-        indexEvidence: WorktreeForkIndexRefreshEvidence
+        indexEvidence: WorktreeForkIndexRefreshEvidence,
+        lockTracker: WorktreeForkLockTracker
     ) throws(GitWorktreeForkError) -> GitWorktreeSnapshot {
         let snapshot = try validateRegistration(plan)
         try validateHead(plan)
@@ -25,7 +26,7 @@ struct WorktreeForkValidator: Sendable {
             evidence: indexEvidence,
             reportPrefix: ""
         )
-        try validateNoTransactionArtifacts(plan)
+        try validateNoTransactionArtifacts(plan, lockTracker: lockTracker)
         return snapshot
     }
 
@@ -34,7 +35,8 @@ struct WorktreeForkValidator: Sendable {
         changesOnly: WorktreeForkChangesOnlyPlan,
         sourceRootDescriptor: Int32,
         destinationRootDescriptor: Int32,
-        indexEvidence: WorktreeForkIndexRefreshEvidence
+        indexEvidence: WorktreeForkIndexRefreshEvidence,
+        lockTracker: WorktreeForkLockTracker
     ) throws(GitWorktreeForkError) -> GitWorktreeSnapshot {
         let snapshot = try validateRegistration(plan)
         try validateHead(plan)
@@ -82,7 +84,7 @@ struct WorktreeForkValidator: Sendable {
             evidence: indexEvidence,
             reportPrefix: ""
         )
-        try validateNoTransactionArtifacts(plan)
+        try validateNoTransactionArtifacts(plan, lockTracker: lockTracker)
         return snapshot
     }
 
@@ -256,16 +258,35 @@ struct WorktreeForkValidator: Sendable {
         }
     }
 
-    private func validateNoTransactionArtifacts(_ plan: WorktreeForkPlan) throws(GitWorktreeForkError) {
+    private func validateNoTransactionArtifacts(
+        _ plan: WorktreeForkPlan,
+        lockTracker: WorktreeForkLockTracker
+    ) throws(GitWorktreeForkError) {
         let administration = plan.commonDirectory.appending(path: "worktrees").appending(path: plan.worktreeName)
-        var lockPaths = [administration.appending(path: "index.lock"), administration.appending(path: "HEAD.lock")]
+        var lockFacts = [
+            GitLockFact(
+                path: administration.appending(path: "index.lock").standardizedFileURL,
+                resource: .index(worktreePath: plan.destinationRequestPath)
+            ),
+            GitLockFact(
+                path: administration.appending(path: "HEAD.lock").standardizedFileURL,
+                resource: .reference(name: "HEAD")
+            ),
+            GitLockFact(
+                path: administration.appending(path: "config.worktree.lock").standardizedFileURL,
+                resource: .config
+            ),
+        ]
         if let referenceName = plan.branchIdentity.referenceName {
-            lockPaths.append(plan.commonDirectory.appending(path: "\(referenceName).lock"))
+            lockFacts.append(
+                GitLockFact(
+                    path: plan.commonDirectory.appending(path: "\(referenceName).lock").standardizedFileURL,
+                    resource: .reference(name: referenceName)
+                ))
         }
-        for lockPath in lockPaths {
-            if case .success = WorktreeForkDescriptors.lstatPath(lockPath) {
-                throw .validationFailed(reason: .transactionArtifactRemains, relativePath: lockPath.lastPathComponent)
-            }
+        lockTracker.beginAttempt(for: lockFacts)
+        if let fact = lockTracker.activeLocks().first {
+            throw .validationFailed(reason: .transactionArtifactRemains, relativePath: fact.path.lastPathComponent)
         }
     }
 
