@@ -75,7 +75,8 @@ struct WorktreeForkValidator: Sendable {
             guard sourceNode.kind == .regularFile,
                 sourceNode.identity == restoration.identity,
                 sourceNode.size == restoration.size,
-                sourceNode.contentSHA256 == restoration.contentSHA256
+                sourceNode.contentSHA256 == restoration.contentSHA256,
+                sourceNode.mode & 0o777 == restoration.mode & 0o777
             else {
                 throw .sourceChanged(relativePath: restoration.relativePath, reason: .contentChanged)
             }

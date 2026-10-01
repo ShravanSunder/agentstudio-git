@@ -3,6 +3,7 @@ import CryptoKit
 import Darwin
 import Foundation
 import Testing
+import os
 
 @testable import AgentStudioGitLocal
 
@@ -58,6 +59,50 @@ struct GitWorktreeForkChangesOnlyFilterIntegrationTests {
         #expect(destinationInfo.st_mode & S_IXUSR != 0)
         #expect(sourceInfo.st_ino != destinationInfo.st_ino)
         #expect(try Data(contentsOf: destination.appending(path: "asset.bin")) == payload)
+    }
+
+    @Test("LFS restoration validation rejects a source mode changed after overlay")
+    func lfsRestorationSourceModeTamperingFailsValidation() async throws {
+        // Arrange
+        let (fixture, _) = try Self.makeSmudgedLargeFileFixture(prefix: "agentstudio-git-fork-lfs-source-mode-tamper")
+        defer { fixture.remove() }
+        let sourceAsset = fixture.source.appending(path: "asset.bin")
+        #expect(sourceAsset.path.withCString { chmod($0, 0o755) } == 0)
+        let destination = fixture.destination()
+        let chmodResult = OSAllocatedUnfairLock(initialState: Int32(-1))
+        let faults = WorktreeForkFaultInjector { point throws(GitWorktreeForkError) in
+            guard point == .afterChangesOnlyOverlay else {
+                return
+            }
+            let result = sourceAsset.path.withCString { chmod($0, 0o644) }
+            chmodResult.withLock { $0 = result }
+        }
+        let client = LibGit2AgentStudioGitLocalClient(
+            writerRegistry: GitRepositoryWriterRegistry(),
+            worktreeForkWriter: LibGit2WorktreeForkWriter(faults: faults)
+        )
+
+        // Act
+        let failure: GitWorktreeForkError?
+        do {
+            _ = try await client.forkWorktree(
+                fixture.request(
+                    destination: destination,
+                    mode: .newBranch(name: "fork-lfs-source-mode-tamper"),
+                    materialization: .changesOnly
+                )
+            )
+            failure = nil
+        } catch {
+            failure = error
+        }
+
+        // Assert
+        #expect(chmodResult.withLock { $0 } == 0)
+        #expect(failure == .sourceChanged(relativePath: "asset.bin", reason: .contentChanged))
+        #expect(!GitWorktreeForkFileProbe.exists(destination))
+        #expect(!GitWorktreeForkFileProbe.exists(fixture.linkedWorktreeAdministration("fork-lfs-source-mode-tamper")))
+        #expect(try fixture.branchNames() == ["refs/heads/main"])
     }
 
     @Test("LFS restoration validation rejects a destination mode changed after overlay")
