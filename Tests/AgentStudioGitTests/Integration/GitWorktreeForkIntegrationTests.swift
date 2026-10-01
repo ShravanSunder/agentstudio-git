@@ -53,8 +53,12 @@ struct GitWorktreeForkIntegrationTests {
             #expect(cached.mtimeSeconds == file.st_mtimespec.tv_sec)
         }
         #expect(result.worktree.canonicalPath.lastPathComponent == "fork")
-        #expect(result.materialization.clonedRegularFileCount == 8)
-        #expect(result.materialization.skippedEntries.isEmpty)
+        guard case .copyOnWrite(let materializationReport) = result.materialization else {
+            Issue.record("expected copy-on-write materialization")
+            return
+        }
+        #expect(materializationReport.clonedRegularFileCount == 8)
+        #expect(materializationReport.skippedEntries.isEmpty)
     }
 
     @Test("new, existing, and detached modes all resolve to the captured HEAD")
@@ -140,7 +144,8 @@ struct GitWorktreeForkIntegrationTests {
         let request = GitForkWorktreeRequest(
             sourceWorktreePath: subdirectory,
             destinationPath: fixture.destination(),
-            mode: .detached
+            mode: .detached,
+            materialization: .copyOnWrite
         )
 
         // Act

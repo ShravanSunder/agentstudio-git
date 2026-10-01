@@ -10,7 +10,11 @@ public protocol AgentStudioGitLocalClient: Sendable {
     /// storage. Normal `createWorktree` is unaffected by whether this capability is available.
     func forkWorktree(_ request: GitForkWorktreeRequest) async throws(GitWorktreeForkError) -> GitForkWorktreeResult
     /// Read-only availability check for disabling fork up front; it never mutates or walks the source.
-    func forkWorktreeEligibility(sourceWorktreePath: URL, destinationPath: URL) async -> GitWorktreeForkEligibility
+    func forkWorktreeEligibility(
+        sourceWorktreePath: URL,
+        destinationPath: URL,
+        materialization: GitWorktreeForkMaterialization
+    ) async -> GitWorktreeForkEligibility
     func pruneStaleWorktree(_ request: GitPruneStaleWorktreeRequest) async throws(GitDataPlaneError)
         -> GitWorktreePruneResult
     func removeWorktree(_ request: GitRemoveWorktreeRequest) async throws(GitDataPlaneError)
@@ -71,7 +75,11 @@ extension AgentStudioGitLocalClient {
         throw .rejected(reason: .clientCapabilityUnavailable)
     }
 
-    public func forkWorktreeEligibility(sourceWorktreePath: URL, destinationPath: URL) async
+    public func forkWorktreeEligibility(
+        sourceWorktreePath: URL,
+        destinationPath: URL,
+        materialization: GitWorktreeForkMaterialization
+    ) async
         -> GitWorktreeForkEligibility
     {
         .unavailable(.clientCapabilityUnavailable)

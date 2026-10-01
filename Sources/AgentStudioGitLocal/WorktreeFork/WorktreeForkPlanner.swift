@@ -19,8 +19,9 @@ struct WorktreeForkPlanner: Sendable {
 
     /// Every pre-mutation rejection that does not require walking the source tree.
     func preflight(_ request: GitForkWorktreeRequest) throws(GitWorktreeForkError) -> WorktreeForkPreflight {
-        if let hostRejection = WorktreeForkEligibility.hostRejection(
-            operatingSystemMajorVersion: hostFacts.operatingSystemMajorVersion())
+        if request.materialization == .copyOnWrite,
+            let hostRejection = WorktreeForkEligibility.hostRejection(
+                operatingSystemMajorVersion: hostFacts.operatingSystemMajorVersion())
         {
             throw .rejected(reason: hostRejection)
         }
@@ -30,14 +31,20 @@ struct WorktreeForkPlanner: Sendable {
             throw .rejected(reason: .overlappingRoots)
         }
         let gitCapture = try captureGitState(sourceRoot: sourceRoot, destination: destination, mode: request.mode)
-        let eligibilityFacts = WorktreeForkEligibilityFacts(
-            operatingSystemMajorVersion: hostFacts.operatingSystemMajorVersion(),
-            source: try hostFacts.volumeFacts(sourceRoot),
-            destinationParent: try hostFacts.volumeFacts(destination.parent),
-            mirroredAdministrativeStores: []
-        )
-        if let rejection = WorktreeForkEligibility.rejection(for: eligibilityFacts) {
-            throw .rejected(reason: rejection)
+        let eligibilityFacts: WorktreeForkEligibilityFacts?
+        if request.materialization == .copyOnWrite {
+            let facts = WorktreeForkEligibilityFacts(
+                operatingSystemMajorVersion: hostFacts.operatingSystemMajorVersion(),
+                source: try hostFacts.volumeFacts(sourceRoot),
+                destinationParent: try hostFacts.volumeFacts(destination.parent),
+                mirroredAdministrativeStores: []
+            )
+            if let rejection = WorktreeForkEligibility.rejection(for: facts) {
+                throw .rejected(reason: rejection)
+            }
+            eligibilityFacts = facts
+        } else {
+            eligibilityFacts = nil
         }
         return WorktreeForkPreflight(
             request: request,
@@ -63,14 +70,35 @@ struct WorktreeForkPlanner: Sendable {
             throw .entryFailed(relativePath: ".", reason: .unreadableEntry, errorNumber: failure.code)
         }
         do throws(GitWorktreeForkError) {
-            let filesystem = try WorktreeForkSourceWalker(cancellation: cancellation)
-                .walk(sourceRootDescriptor: sourceRootDescriptor)
+            let filesystem: WorktreeForkFilesystemPlan
+            let changesOnly: WorktreeForkChangesOnlyPlan?
+            let nestedGitEntryPaths: [String]
+            if request.materialization == .copyOnWrite {
+                filesystem = try WorktreeForkSourceWalker(cancellation: cancellation)
+                    .walk(sourceRootDescriptor: sourceRootDescriptor)
+                nestedGitEntryPaths = filesystem.nestedGitEntryPaths
+                changesOnly = nil
+            } else {
+                filesystem = .empty
+                nestedGitEntryPaths = []
+                changesOnly = try WorktreeForkChangesOnlyPlanner(cancellation: cancellation).plan(
+                    sourceRootDescriptor: sourceRootDescriptor,
+                    sourceRoot: sourceRoot,
+                    capturedHead: gitCapture.capturedHead
+                )
+            }
             let gitTopology = try planGitTopology(
                 sourceRoot: sourceRoot,
                 capturedHead: gitCapture.capturedHead,
-                nestedGitEntryPaths: filesystem.nestedGitEntryPaths
+                nestedGitEntryPaths: nestedGitEntryPaths
             )
-            try requireMirroredStoresEligible(gitTopology, eligibilityFacts: preflight.eligibilityFacts)
+            if request.materialization == .changesOnly, gitTopology.rootSparse != nil {
+                throw .workingStateUnsupported(
+                    GitWorktreeWorkingStateRefusal(reason: .sparseOrSkipWorktree))
+            }
+            if let eligibilityFacts = preflight.eligibilityFacts {
+                try requireMirroredStoresEligible(gitTopology, eligibilityFacts: eligibilityFacts)
+            }
             let plan = WorktreeForkPlan(
                 sourceRoot: sourceRoot,
                 destinationRoot: destination.root,
@@ -79,7 +107,9 @@ struct WorktreeForkPlanner: Sendable {
                 commonDirectory: gitCapture.commonDirectory,
                 capturedHead: gitCapture.capturedHead,
                 branchIdentity: gitCapture.branchIdentity,
+                materialization: request.materialization,
                 filesystem: filesystem,
+                changesOnly: changesOnly,
                 gitTopology: gitTopology
             )
             return WorktreeForkPreparedSource(plan: plan, sourceRootDescriptor: sourceRootDescriptor)
@@ -133,15 +163,26 @@ struct WorktreeForkPlanner: Sendable {
 
     /// The read-only availability query: host, volume, and File Provider facts for the source root and
     /// destination parent. No repository is opened and no tree is walked.
-    func eligibility(sourceWorktreePath: URL, destinationPath: URL) -> GitWorktreeForkEligibility {
+    func eligibility(
+        sourceWorktreePath: URL,
+        destinationPath: URL,
+        materialization: GitWorktreeForkMaterialization
+    ) -> GitWorktreeForkEligibility {
         do throws(GitWorktreeForkError) {
-            if let hostRejection = WorktreeForkEligibility.hostRejection(
-                operatingSystemMajorVersion: hostFacts.operatingSystemMajorVersion())
+            if materialization == .copyOnWrite,
+                let hostRejection = WorktreeForkEligibility.hostRejection(
+                    operatingSystemMajorVersion: hostFacts.operatingSystemMajorVersion())
             {
                 return .unavailable(hostRejection)
             }
             let sourceRoot = try resolved(sourceWorktreePath, rejection: .sourceNotWorktreeRoot)
             let destination = try resolveDestinationParent(destinationPath)
+            if materialization == .changesOnly, Self.overlaps(sourceRoot, destination.root) {
+                return .unavailable(.overlappingRoots)
+            }
+            guard materialization == .copyOnWrite else {
+                return .available
+            }
             let facts = WorktreeForkEligibilityFacts(
                 operatingSystemMajorVersion: hostFacts.operatingSystemMajorVersion(),
                 source: try hostFacts.volumeFacts(sourceRoot),
@@ -318,7 +359,7 @@ struct WorktreeForkPreflight: Sendable {
     let sourceRoot: URL
     let destination: WorktreeForkDestination
     let gitCapture: WorktreeForkGitCapture
-    let eligibilityFacts: WorktreeForkEligibilityFacts
+    let eligibilityFacts: WorktreeForkEligibilityFacts?
 }
 
 struct WorktreeForkDestination: Sendable {

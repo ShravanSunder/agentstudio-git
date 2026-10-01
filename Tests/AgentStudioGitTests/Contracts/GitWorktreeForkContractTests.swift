@@ -33,7 +33,8 @@ struct GitWorktreeForkContractTests {
         let request = GitForkWorktreeRequest(
             sourceWorktreePath: URL(fileURLWithPath: "/tmp/source"),
             destinationPath: URL(fileURLWithPath: "/tmp/destination"),
-            mode: .newBranch(name: "fork")
+            mode: .newBranch(name: "fork"),
+            materialization: .copyOnWrite
         )
 
         // Act
@@ -44,7 +45,7 @@ struct GitWorktreeForkContractTests {
         #expect(decoded == request)
         #expect(
             jsonText(encoded)
-                == #"{"destinationPath":"file:///tmp/destination","mode":{"kind":"newBranch","name":"fork"},"#
+                == #"{"destinationPath":"file:///tmp/destination","materialization":"copyOnWrite","mode":{"kind":"newBranch","name":"fork"},"#
                 + #""sourceWorktreePath":"file:///tmp/source"}"#
         )
     }
@@ -80,15 +81,53 @@ struct GitWorktreeForkContractTests {
                 ),
             ]
         )
-        let result = GitForkWorktreeResult(worktree: worktreeSnapshot(), materialization: report)
+        let result = GitForkWorktreeResult(
+            worktree: worktreeSnapshot(), materialization: .copyOnWrite(report))
 
         // Act
         let decoded = try JSONDecoder().decode(GitForkWorktreeResult.self, from: sortedEncoder().encode(result))
 
         // Assert
         #expect(decoded == result)
-        #expect(decoded.materialization.skippedEntries.map(\.relativePath) == ["run/agent.sock"])
-        #expect(decoded.materialization.normalizedEntries.map(\.relativePath) == ["bin/tool", "shared/data"])
+        guard case .copyOnWrite(let decodedReport) = decoded.materialization else {
+            Issue.record("expected copy-on-write result")
+            return
+        }
+        #expect(decodedReport.skippedEntries.map(\.relativePath) == ["run/agent.sock"])
+        #expect(decodedReport.normalizedEntries.map(\.relativePath) == ["bin/tool", "shared/data"])
+    }
+
+    @Test("changes-only reports and refusals use explicit tagged payloads")
+    func changesOnlyContractsUseExplicitTags() throws {
+        // Arrange
+        let report = GitChangesOnlyMaterializationReport(trackedChanges: 3, untrackedFiles: 2)
+        let refusal = GitWorktreeWorkingStateRefusal(reason: .customFilter, relativePath: "assets/icon.png")
+        let result = GitWorktreeMaterializationResult.changesOnly(report)
+        let error = GitWorktreeForkError.workingStateUnsupported(refusal)
+
+        // Act
+        let encodedResult = try sortedEncoder().encode(result)
+        let encodedError = try sortedEncoder().encode(error)
+
+        // Assert
+        #expect(try JSONDecoder().decode(GitWorktreeMaterializationResult.self, from: encodedResult) == result)
+        #expect(try JSONDecoder().decode(GitWorktreeForkError.self, from: encodedError) == error)
+        #expect(
+            jsonText(encodedResult)
+                == #"{"ignoredExcluded":true,"kind":"changesOnly","trackedChanges":3,"untrackedFiles":2}"#)
+        #expect(
+            jsonText(encodedError)
+                == #"{"workingStateUnsupported":{"refusal":{"reason":"customFilter","relativePath":"assets/icon.png"}}}"#
+        )
+        for invalidPayload in [
+            #"{"kind":"changesOnly","trackedChanges":-1,"untrackedFiles":0,"ignoredExcluded":true}"#,
+            #"{"kind":"changesOnly","trackedChanges":1,"untrackedFiles":0,"ignoredExcluded":false}"#,
+            #"{"kind":"changesOnly","trackedChanges":1,"untrackedFiles":0,"ignoredExcluded":true,"clonedRegularFileCount":0}"#,
+        ] {
+            #expect(throws: DecodingError.self) {
+                _ = try JSONDecoder().decode(GitWorktreeMaterializationResult.self, from: Data(invalidPayload.utf8))
+            }
+        }
     }
 
     @Test("every fork failure variant round-trips through its explicit case key")
@@ -102,6 +141,10 @@ struct GitWorktreeForkContractTests {
         let errors: [GitWorktreeForkError] = [
             .rejected(reason: .clientCapabilityUnavailable),
             .rejected(reason: .destinationExists),
+            .workingStateUnsupported(
+                GitWorktreeWorkingStateRefusal(reason: .nestedRepository, relativePath: "vendor/module")),
+            .workingStateUnsupported(
+                GitWorktreeWorkingStateRefusal(reason: .attributesChanged, relativePath: ".gitattributes")),
             .gitFailure(.headUnavailable),
             .sourceChanged(relativePath: "src/main.swift", reason: .entryKindChanged),
             primary,
@@ -114,6 +157,7 @@ struct GitWorktreeForkContractTests {
                     GitWorktreeForkResidue(kind: .destinationContent, location: "."),
                     GitWorktreeForkResidue(kind: .linkedWorktreeAdministration, location: "worktrees/fork"),
                     GitWorktreeForkResidue(kind: .createdBranch, location: "refs/heads/fork"),
+                    GitWorktreeForkResidue(kind: .lockFile, location: "worktrees/fork/index.lock"),
                 ]
             ),
         ]
@@ -126,9 +170,13 @@ struct GitWorktreeForkContractTests {
         #expect(decoded == errors)
         #expect(
             jsonText(encoded[0]) == #"{"rejected":{"reason":"clientCapabilityUnavailable"}}"#)
-        #expect(jsonText(encoded[5]) == #"{"cancelled":{}}"#)
         #expect(
-            jsonText(encoded[2]) == #"{"gitFailure":{"error":{"headUnavailable":{}}}}"#
+            jsonText(encoded[3])
+                == #"{"workingStateUnsupported":{"refusal":{"reason":"attributesChanged","relativePath":".gitattributes"}}}"#
+        )
+        #expect(jsonText(encoded[7]) == #"{"cancelled":{}}"#)
+        #expect(
+            jsonText(encoded[4]) == #"{"gitFailure":{"error":{"headUnavailable":{}}}}"#
         )
     }
 
@@ -139,17 +187,18 @@ struct GitWorktreeForkContractTests {
             #"{"rejected":{"reason":"destinationExists"},"cancelled":{}}"#,
             #"{"teleported":{}}"#,
             #"{"rejected":{"reason":"teleported"}}"#,
+            #"{"workingStateUnsupported":{"refusal":{"reason":"customFilter","relativePath":"../escape"}}}"#,
             #"{"kind":"detached","name":"stray"}"#,
         ]
 
         // Act / Assert
-        for payload in payloads.prefix(3) {
+        for payload in payloads.prefix(4) {
             #expect(throws: DecodingError.self) {
                 _ = try JSONDecoder().decode(GitWorktreeForkError.self, from: Data(payload.utf8))
             }
         }
         #expect(throws: DecodingError.self) {
-            _ = try JSONDecoder().decode(GitForkWorktreeMode.self, from: Data(payloads[3].utf8))
+            _ = try JSONDecoder().decode(GitForkWorktreeMode.self, from: Data(payloads[4].utf8))
         }
         #expect(throws: DecodingError.self) {
             _ = try JSONDecoder().decode(GitForkWorktreeMode.self, from: Data(#"{"kind":"newBranch"}"#.utf8))
@@ -192,7 +241,8 @@ struct GitWorktreeForkContractTests {
         // Act
         let eligibility = await client.forkWorktreeEligibility(
             sourceWorktreePath: URL(fileURLWithPath: "/tmp/source"),
-            destinationPath: URL(fileURLWithPath: "/tmp/destination")
+            destinationPath: URL(fileURLWithPath: "/tmp/destination"),
+            materialization: .copyOnWrite
         )
 
         // Assert
@@ -248,7 +298,8 @@ struct GitWorktreeForkContractTests {
         let request = GitForkWorktreeRequest(
             sourceWorktreePath: URL(fileURLWithPath: "/tmp/source"),
             destinationPath: URL(fileURLWithPath: "/tmp/destination"),
-            mode: .detached
+            mode: .detached,
+            materialization: .copyOnWrite
         )
 
         // Act

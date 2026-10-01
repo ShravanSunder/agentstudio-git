@@ -50,6 +50,8 @@ suites=(
   GitWorktreeForkRollbackIntegrationTests
   GitWorktreeForkTopologyIntegrationTests
   GitWorktreeForkEligibilityIntegrationTests
+  GitWorktreeForkChangesOnlyIntegrationTests
+  GitWorktreeForkChangesOnlyFilterIntegrationTests
   GitWorktreeForkCleanAdoptionIntegrationTests
   GitCommitRangeCountIntegrationTests
   GitBranchIntegrationIntegrationTests

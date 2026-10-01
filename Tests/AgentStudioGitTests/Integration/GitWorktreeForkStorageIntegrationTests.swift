@@ -47,7 +47,11 @@ struct GitWorktreeForkStorageIntegrationTests {
         #expect(try Data(contentsOf: sourcePayload).prefix(4) == Data([0, 31, 62, 93]))
         #expect(
             try String(contentsOf: destination.appending(path: "notes.txt"), encoding: .utf8) == "source original\n")
-        #expect(result.materialization.logicalRegularFileBytes >= Int64(payloadSize))
+        guard case .copyOnWrite(let materializationReport) = result.materialization else {
+            Issue.record("expected copy-on-write materialization")
+            return
+        }
+        #expect(materializationReport.logicalRegularFileBytes >= Int64(payloadSize))
     }
 
     @Test("special entries follow their kind rules and metadata normalization is reported")
@@ -80,7 +84,10 @@ struct GitWorktreeForkStorageIntegrationTests {
         defer { _ = chmod(destination.appending(path: "sealed").path, 0o755) }
 
         // Assert
-        let report = result.materialization
+        guard case .copyOnWrite(let report) = result.materialization else {
+            Issue.record("expected copy-on-write materialization")
+            return
+        }
         #expect(report.recreatedFIFOCount == 1)
         #expect(
             (GitWorktreeForkFileProbe.info(destination.appending(path: "run/events.fifo"))?.st_mode ?? 0) & S_IFMT

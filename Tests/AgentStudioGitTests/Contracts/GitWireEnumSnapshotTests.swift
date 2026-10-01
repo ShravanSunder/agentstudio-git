@@ -255,6 +255,14 @@ struct GitWireEnumSnapshotTests {
         #expect(
             GitWorktreeForkSourceRaceReason.allCases.map(\.rawValue) == [
                 "entryMissing", "entryKindChanged", "entryIdentityChanged", "containmentEscape",
+                "contentChanged", "repositoryStateChanged",
+            ])
+        #expect(
+            GitWorktreeForkMaterialization.allCases.map(\.rawValue) == ["copyOnWrite", "changesOnly"])
+        #expect(
+            GitWorktreeWorkingStateRefusalReason.allCases.map(\.rawValue) == [
+                "conflicts", "operationInProgress", "submoduleChanged", "nestedRepository",
+                "sparseOrSkipWorktree", "intentToAdd", "unsupportedEntryKind", "customFilter", "attributesChanged",
             ])
         #expect(
             GitWorktreeForkEntryFailureReason.allCases.map(\.rawValue) == [
@@ -271,7 +279,7 @@ struct GitWireEnumSnapshotTests {
         #expect(
             GitWorktreeForkResidueKind.allCases.map(\.rawValue) == [
                 "destinationContent", "linkedWorktreeAdministration", "nestedAdministration", "createdBranch",
-                "temporaryArtifact",
+                "temporaryArtifact", "lockFile",
             ])
     }
 }

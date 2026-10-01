@@ -5,7 +5,7 @@ import Foundation
 struct LibGit2LargeFilePointerCleanliness: Sendable {
     private static let filterAttributeName = "filter"
     private static let largeFileFilterName = "lfs"
-    fileprivate static let maximumPointerByteCount = 1024
+    static let maximumPointerByteCount = 1024
     private static let hashReadByteCount = 1_048_576
 
     func isCleanSmudgedFile(
@@ -97,7 +97,7 @@ struct LibGit2LargeFilePointerCleanliness: Sendable {
     }
 }
 
-private struct LargeFilePointer {
+struct LargeFilePointer: Sendable {
     private static let versionLine = "version https://git-lfs.github.com/spec/v1"
 
     let payloadSHA256: String

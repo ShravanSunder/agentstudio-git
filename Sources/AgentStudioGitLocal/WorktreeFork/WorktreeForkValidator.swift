@@ -29,6 +29,124 @@ struct WorktreeForkValidator: Sendable {
         return snapshot
     }
 
+    func validateChangesOnly(
+        plan: WorktreeForkPlan,
+        changesOnly: WorktreeForkChangesOnlyPlan,
+        sourceRootDescriptor: Int32,
+        destinationRootDescriptor: Int32,
+        indexEvidence: WorktreeForkIndexRefreshEvidence
+    ) throws(GitWorktreeForkError) -> GitWorktreeSnapshot {
+        let snapshot = try validateRegistration(plan)
+        try validateHead(plan)
+        let sourceRepository = try WorktreeForkGitHandles.openWorktree(plan.sourceRoot)
+        defer { git_repository_free(sourceRepository) }
+        let currentRepositoryState = try WorktreeForkChangesOnlyGitSnapshotReader(
+            cancellation: WorktreeForkCancellation()
+        )
+        .repositoryState(sourceRepository, expectedHead: plan.capturedHead.commitOID)
+        guard currentRepositoryState == changesOnly.repositoryState else {
+            throw .sourceChanged(relativePath: ".", reason: .repositoryStateChanged)
+        }
+
+        let planner = WorktreeForkChangesOnlyPlanner(cancellation: WorktreeForkCancellation())
+        for entry in changesOnly.entries {
+            let sourceNode = try planner.capture(entry.relativePath, rootDescriptor: sourceRootDescriptor)
+            try validateSourceEntry(entry, current: sourceNode)
+            if entry.shouldOverlay {
+                let destinationNode = try planner.capture(entry.relativePath, rootDescriptor: destinationRootDescriptor)
+                try validateDestinationEntry(entry, current: destinationNode)
+            }
+        }
+        for restoration in changesOnly.largeFileRestorations {
+            let sourceNode = try planner.capture(restoration.relativePath, rootDescriptor: sourceRootDescriptor)
+            guard sourceNode.kind == .regularFile,
+                sourceNode.identity == restoration.identity,
+                sourceNode.size == restoration.size,
+                sourceNode.contentSHA256 == restoration.contentSHA256
+            else {
+                throw .sourceChanged(relativePath: restoration.relativePath, reason: .contentChanged)
+            }
+            let destinationNode = try planner.capture(
+                restoration.relativePath, rootDescriptor: destinationRootDescriptor)
+            guard destinationNode.kind == .regularFile,
+                destinationNode.size == restoration.size,
+                destinationNode.contentSHA256 == restoration.contentSHA256
+            else {
+                throw .validationFailed(reason: .entryKindMismatch, relativePath: restoration.relativePath)
+            }
+        }
+        try WorktreeForkIndexValidation.validate(
+            worktreePath: plan.destinationRoot,
+            treeOID: plan.capturedHead.treeOID,
+            expectedSkipWorktree: [],
+            evidence: indexEvidence,
+            reportPrefix: ""
+        )
+        try validateNoTransactionArtifacts(plan)
+        return snapshot
+    }
+
+    private func validateSourceEntry(
+        _ expected: WorktreeForkChangesOnlyEntry,
+        current: WorktreeForkChangesOnlySourceNode
+    ) throws(GitWorktreeForkError) {
+        guard current.kind.publicKind == expected.kind else {
+            throw .sourceChanged(relativePath: expected.relativePath, reason: .entryKindChanged)
+        }
+        guard current.identity == expected.identity else {
+            throw .sourceChanged(relativePath: expected.relativePath, reason: .entryIdentityChanged)
+        }
+        switch expected.kind {
+        case .directory:
+            guard current.mode & 0o777 == expected.mode & 0o777 else {
+                throw .sourceChanged(relativePath: expected.relativePath, reason: .contentChanged)
+            }
+        case .absent:
+            return
+        case .regularFile, .symbolicLink:
+            guard current.mode & 0o777 == expected.mode & 0o777,
+                current.size == expected.size,
+                current.contentSHA256 == expected.contentSHA256,
+                current.symbolicLinkText == expected.symbolicLinkText
+            else {
+                throw .sourceChanged(relativePath: expected.relativePath, reason: .contentChanged)
+            }
+        }
+    }
+
+    private func validateDestinationEntry(
+        _ expected: WorktreeForkChangesOnlyEntry,
+        current: WorktreeForkChangesOnlySourceNode
+    ) throws(GitWorktreeForkError) {
+        guard current.kind.publicKind == expected.kind else {
+            throw .validationFailed(reason: .entryKindMismatch, relativePath: expected.relativePath)
+        }
+        switch expected.kind {
+        case .absent:
+            return
+        case .directory:
+            if expected.shouldOverlay,
+                current.mode & 0o777 != expected.mode & 0o777 || current.identity == expected.identity
+            {
+                throw .validationFailed(reason: .entryKindMismatch, relativePath: expected.relativePath)
+            }
+        case .regularFile:
+            guard current.size == expected.size,
+                current.contentSHA256 == expected.contentSHA256,
+                current.mode & 0o777 == expected.mode & 0o777,
+                current.identity != expected.identity
+            else {
+                throw .validationFailed(reason: .entryKindMismatch, relativePath: expected.relativePath)
+            }
+        case .symbolicLink:
+            guard current.symbolicLinkText == expected.symbolicLinkText,
+                current.identity != expected.identity
+            else {
+                throw .validationFailed(reason: .entryKindMismatch, relativePath: expected.relativePath)
+            }
+        }
+    }
+
     private func validateRegistration(_ plan: WorktreeForkPlan) throws(GitWorktreeForkError) -> GitWorktreeSnapshot {
         let validation: GitWorktreeValidation
         do {

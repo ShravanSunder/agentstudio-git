@@ -90,6 +90,23 @@ enum WorktreeForkGitHandles {
         }
     }
 
+    /// Checks out the captured commit into the transaction-owned empty destination. The commit tree is
+    /// explicit so a concurrent source HEAD move cannot change what the destination receives.
+    static func checkoutCapturedHead(_ commitOID: String, repository: OpaquePointer) throws(GitWorktreeForkError) {
+        let commit = try lookupCommit(commitOID, repository: repository)
+        defer { git_commit_free(commit) }
+        var options = git_checkout_options()
+        let optionsResult = git_checkout_options_init(&options, UInt32(GIT_CHECKOUT_OPTIONS_VERSION))
+        guard optionsResult >= 0 else {
+            throw .gitFailure(LibGit2ErrorCapture.failure(code: optionsResult))
+        }
+        options.checkout_strategy = GIT_CHECKOUT_FORCE.rawValue
+        let checkoutResult = git_checkout_tree(repository, commit, &options)
+        guard checkoutResult >= 0 else {
+            throw .gitFailure(LibGit2ErrorCapture.failure(code: checkoutResult))
+        }
+    }
+
     static func detachHead(worktreePath: URL, commitOID: String) throws(GitWorktreeForkError) {
         let repository = try openWorktree(worktreePath)
         defer { git_repository_free(repository) }
