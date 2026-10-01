@@ -337,6 +337,7 @@ struct LibGit2WorktreeForkWriter: Sendable {
                 commitOID: plan.capturedHead.commitOID,
                 lockTracker: journal.lockTracker
             )
+            try faults.reach(.beforeCarrierBranchDeletion(referenceName: carrierReferenceName))
             try WorktreeForkGitHandles.deleteBranch(
                 referenceName: carrierReferenceName, repository: repository, lockTracker: journal.lockTracker)
             journal.forgetBranch(referenceName: carrierReferenceName)

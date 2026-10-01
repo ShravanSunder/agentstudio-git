@@ -265,7 +265,8 @@ enum WorktreeForkGitHandles {
     ) throws(GitWorktreeForkError) {
         let referenceLockFact = try lockFact(for: .reference(name: referenceName), repository: repository)
         let configurationLockFact = try lockFact(for: .config, repository: repository)
-        let lockFacts = [configurationLockFact, referenceLockFact]
+        let packedReferencesLockFact = try lockFact(for: .packedRefs, repository: repository)
+        let lockFacts = [configurationLockFact, referenceLockFact, packedReferencesLockFact]
         lockTracker.beginAttempt(for: lockFacts)
         var reference: OpaquePointer?
         let lookupResult = referenceName.withCString { git_reference_lookup(&reference, repository, $0) }

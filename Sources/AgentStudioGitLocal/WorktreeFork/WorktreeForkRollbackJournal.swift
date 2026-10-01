@@ -274,14 +274,16 @@ struct WorktreeForkRollbackJournal {
 
         let referenceLockFact: GitLockFact
         let configurationLockFact: GitLockFact
+        let packedReferencesLockFact: GitLockFact
         do {
             referenceLockFact = try LibGit2LockPathResolver.fact(
                 for: .reference(name: referenceName), repository: repository)
             configurationLockFact = try LibGit2LockPathResolver.fact(for: .config, repository: repository)
+            packedReferencesLockFact = try LibGit2LockPathResolver.fact(for: .packedRefs, repository: repository)
         } catch {
             return false
         }
-        let lockFacts = [configurationLockFact, referenceLockFact]
+        let lockFacts = [configurationLockFact, referenceLockFact, packedReferencesLockFact]
 
         var reference: OpaquePointer?
         let lookupResult = referenceName.withCString { git_reference_lookup(&reference, repository, $0) }
