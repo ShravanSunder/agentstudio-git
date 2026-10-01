@@ -12,7 +12,7 @@ struct GitBranchIntegrationHistoryPaths: Equatable, Sendable {
     }
 
     var shallowFile: URL {
-        gitDirectory.appending(path: "shallow")
+        commonDirectory.appending(path: "shallow")
     }
 
     static func resolve(

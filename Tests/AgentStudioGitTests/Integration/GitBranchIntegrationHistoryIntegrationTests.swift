@@ -53,7 +53,7 @@ struct GitBranchIntegrationHistoryIntegrationTests {
         #expect(report.assessments.first?.grade == .integrated(.ancestor))
     }
 
-    @Test("linked worktrees resolve common grafts and per-worktree shallow guards")
+    @Test("linked worktrees resolve common grafts and shallow guards")
     func linkedWorktreeHistoryGuardsUseTheirGitDirectories() async throws {
         // Arrange
         let fixture = try GitBranchIntegrationHistoryFixture.make(prefix: "agentstudio-git-integration-linked-overlays")
@@ -91,7 +91,7 @@ struct GitBranchIntegrationHistoryIntegrationTests {
         )
         #expect(historyPaths.commonDirectory != historyPaths.gitDirectory)
         #expect(historyPaths.graftsFile == fixture.repository.repositoryPath.appending(path: ".git/info/grafts"))
-        #expect(historyPaths.shallowFile.deletingLastPathComponent() == historyPaths.gitDirectory)
+        #expect(historyPaths.shallowFile.deletingLastPathComponent() == historyPaths.commonDirectory)
 
         let client = LibGit2AgentStudioGitLocalClient()
         try Data("\(fixture.targetCommit)\n".utf8).write(to: historyPaths.graftsFile)
@@ -125,6 +125,127 @@ struct GitBranchIntegrationHistoryIntegrationTests {
 
         // Assert
         #expect(shallowReport.assessments.first?.grade == .unknown(.incompleteHistory))
+    }
+
+    @Test("linked worktrees in a real shallow clone use Git's common shallow path")
+    func linkedShallowCloneUsesGitCommonShallowPath() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-integration-shallow-clone")
+        defer { fixture.remove() }
+        try fixture.write("middle.txt", contents: "middle\n")
+        try fixture.git.run("add", "middle.txt")
+        try fixture.git.run("commit", "-m", "shallow boundary commit")
+        let boundaryCommit = try fixture.git.run("rev-parse", "HEAD").trimmed
+        try fixture.write("tip.txt", contents: "tip\n")
+        try fixture.git.run("add", "tip.txt")
+        try fixture.git.run("commit", "-m", "shallow target commit")
+        let targetCommit = try fixture.git.run("rev-parse", "HEAD").trimmed
+        let shallowClonePath = fixture.root.appending(path: "shallow-clone")
+        try fixture.git.run(
+            [
+                "clone", "--depth=2", "--no-local", "--branch", "main",
+                fixture.repositoryPath.absoluteString, shallowClonePath.path,
+            ],
+            currentDirectory: fixture.root
+        )
+        let shallowCloneGit = GitProcess(repositoryPath: shallowClonePath)
+        try shallowCloneGit.run("branch", "ancestor", boundaryCommit)
+        let linkedWorktreePath = fixture.root.appending(path: "linked-shallow")
+        try shallowCloneGit.run(["worktree", "add", "-b", "linked-history", linkedWorktreePath.path, "HEAD"])
+        let linkedWorktreeGit = GitProcess(repositoryPath: linkedWorktreePath)
+        let shallowOraclePath = URL(
+            fileURLWithPath: try linkedWorktreeGit.run(
+                ["rev-parse", "--path-format=absolute", "--git-path", "shallow"]
+            ).trimmed
+        )
+        let historyPaths = try GitBranchIntegrationHistoryPaths.resolve(
+            repositoryPath: linkedWorktreePath,
+            identityResolver: GitRepositoryIdentityResolver()
+        )
+        let shallowRecords = Set(
+            try String(contentsOf: shallowOraclePath, encoding: .utf8)
+                .split(whereSeparator: \.isNewline)
+                .map(String.init)
+        )
+
+        // Act
+        let report = try await LibGit2AgentStudioGitLocalClient().assessBranchIntegration(
+            GitBranchIntegrationRequest(
+                repositoryPath: linkedWorktreePath,
+                branchNames: ["ancestor"],
+                targetCommit: targetCommit,
+                squashSearchCommitLimit: 500
+            )
+        )
+
+        // Assert
+        #expect(
+            GitBranchIntegrationHistoryPaths.canonicalURL(historyPaths.shallowFile)
+                == GitBranchIntegrationHistoryPaths.canonicalURL(shallowOraclePath)
+        )
+        #expect(historyPaths.commonDirectory != historyPaths.gitDirectory)
+        #expect(shallowRecords.contains(boundaryCommit))
+        #expect(report.assessments.first?.grade == .unknown(.incompleteHistory))
+    }
+
+    @Test("a guard changed after delta reads invalidates graph positives but preserves direct proofs")
+    func changedGuardAfterDeltaReadInvalidatesPositiveGraphProofs() throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-integration-post-delta-guard")
+        defer { fixture.remove() }
+        let baseCommit = try fixture.git.run("rev-parse", "HEAD").trimmed
+        let baseReadme = try String(contentsOf: fixture.repositoryPath.appending(path: "README.md"), encoding: .utf8)
+        let mainBranch = try fixture.git.run("branch", "--show-current").trimmed
+        try fixture.git.run("branch", "ancestor", baseCommit)
+
+        try fixture.git.run("checkout", "-b", "empty-delta", baseCommit)
+        try fixture.write("README.md", contents: "temporary\n")
+        try fixture.git.run("add", "README.md")
+        try fixture.git.run("commit", "-m", "temporary branch change")
+        try fixture.write("README.md", contents: baseReadme)
+        try fixture.git.run("add", "README.md")
+        try fixture.git.run("commit", "-m", "restore base tree")
+
+        try fixture.git.run("checkout", "-b", "squash", baseCommit)
+        try fixture.write("feature.txt", contents: "squashed contribution\n")
+        try fixture.git.run("add", "feature.txt")
+        try fixture.git.run("commit", "-m", "feature contribution")
+        try fixture.git.run("checkout", mainBranch)
+        try fixture.write("feature.txt", contents: "squashed contribution\n")
+        try fixture.git.run("add", "feature.txt")
+        try fixture.git.run("commit", "-m", "squash feature contribution")
+        try fixture.write("target.txt", contents: "advance target\n")
+        try fixture.git.run("add", "target.txt")
+        try fixture.git.run("commit", "-m", "advance after squash")
+        let targetCommit = try fixture.git.run("rev-parse", "HEAD").trimmed
+        try fixture.git.run("branch", "same-commit", targetCommit)
+        try fixture.git.run("checkout", "-b", "same-content", targetCommit)
+        try fixture.git.run("commit", "--allow-empty", "-m", "same-tree direct proof")
+        try fixture.git.run("checkout", mainBranch)
+
+        let graftsPath = fixture.repositoryPath.appending(path: ".git/info/grafts")
+        let graftRecord = Data("\(baseCommit)\n".utf8)
+        let reader = LibGit2BranchIntegrationReader(
+            deltaReader: LibGit2BranchIntegrationDeltaReader(afterDeltaRead: {
+                try? graftRecord.write(to: graftsPath)
+            })
+        )
+        let request = GitBranchIntegrationRequest(
+            repositoryPath: fixture.repositoryPath,
+            branchNames: ["ancestor", "empty-delta", "squash", "same-commit", "same-content"],
+            targetCommit: targetCommit,
+            squashSearchCommitLimit: 500
+        )
+
+        // Act
+        let report = try reader.assess(request)
+
+        // Assert
+        #expect(
+            report.assessments.map(\.grade) == [
+                .unknown(.readFailed), .unknown(.readFailed), .unknown(.readFailed),
+                .integrated(.sameCommit), .integrated(.sameContent),
+            ])
     }
 
     @Test("a malformed nonempty graft file remains a repository-level open failure")

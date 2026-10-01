@@ -68,7 +68,8 @@ extension LibGit2BranchIntegrationReader {
                 computedAssessments[assessmentIndex] = Self.computed(
                     branchName: branch.branchName,
                     branchCommit: branch.branchCommit,
-                    grade: .integrated(.squash(commit: matchingCommit))
+                    grade: .integrated(.squash(commit: matchingCommit)),
+                    dependsOnHistory: true
                 )
                 matchedAssessmentIndexes.append(assessmentIndex)
             }

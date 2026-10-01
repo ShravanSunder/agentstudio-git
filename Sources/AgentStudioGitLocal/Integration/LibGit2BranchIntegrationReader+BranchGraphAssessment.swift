@@ -10,6 +10,7 @@ extension LibGit2BranchIntegrationReader {
         _ branchName: String,
         branch: LibGit2ResolvedBranchCommit,
         targetOID: git_oid,
+        hasSameContent: Bool,
         repository: OpaquePointer
     ) -> (computed: LibGit2ComputedBranchIntegration, pending: LibGit2PendingBranchDelta?) {
         var mutableTargetOID = targetOID
@@ -27,7 +28,19 @@ extension LibGit2BranchIntegrationReader {
                 Self.computed(
                     branchName: branchName,
                     branchCommit: branch.oidString,
-                    grade: .integrated(.ancestor)
+                    grade: .integrated(.ancestor),
+                    dependsOnHistory: true
+                ),
+                nil
+            )
+        }
+
+        if hasSameContent {
+            return (
+                Self.computed(
+                    branchName: branchName,
+                    branchCommit: branch.oidString,
+                    grade: .integrated(.sameContent)
                 ),
                 nil
             )
@@ -63,7 +76,8 @@ extension LibGit2BranchIntegrationReader {
                 Self.computed(
                     branchName: branchName,
                     branchCommit: branch.oidString,
-                    grade: .integrated(.emptyDelta)
+                    grade: .integrated(.emptyDelta),
+                    dependsOnHistory: true
                 ),
                 nil
             )

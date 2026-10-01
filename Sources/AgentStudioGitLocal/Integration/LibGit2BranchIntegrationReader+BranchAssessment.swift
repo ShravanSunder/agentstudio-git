@@ -50,18 +50,17 @@ extension LibGit2BranchIntegrationReader {
                 git_oid_equal(branchTreeOIDPointer, targetTreeOIDPointer) != 0
             }
         }
-        if isSameContent {
-            return (
-                Self.computed(
-                    branchName: branchName,
-                    branchCommit: branch.oidString,
-                    grade: .integrated(.sameContent)
-                ),
-                nil
-            )
-        }
-
-        guard historyAvailability == .complete else {
+        if historyAvailability != .complete {
+            if isSameContent {
+                return (
+                    Self.computed(
+                        branchName: branchName,
+                        branchCommit: branch.oidString,
+                        grade: .integrated(.sameContent)
+                    ),
+                    nil
+                )
+            }
             let reason: GitIntegrationUnknownReason =
                 historyAvailability == .incomplete ? .incompleteHistory : .readFailed
             return directUnknown(branchName, commit: branch.oidString, reason: reason, dependsOnHistory: true)
@@ -71,6 +70,7 @@ extension LibGit2BranchIntegrationReader {
             branchName,
             branch: branch,
             targetOID: targetOID,
+            hasSameContent: isSameContent,
             repository: repository
         )
     }

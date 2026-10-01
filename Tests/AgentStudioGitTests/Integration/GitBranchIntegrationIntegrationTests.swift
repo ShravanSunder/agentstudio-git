@@ -36,6 +36,37 @@ struct GitBranchIntegrationIntegrationTests {
         #expect(report.assessments[1].grade == .unknown(.branchNotFound))
     }
 
+    @Test("complete history prefers ancestry over same content, while shallow history keeps direct proof")
+    func completeHistoryPrefersAncestorOverSameContent() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-integration-proof-order")
+        defer { fixture.remove() }
+        let baseCommit = try fixture.git.run("rev-parse", "HEAD").trimmed
+        let mainBranch = try fixture.git.run("branch", "--show-current").trimmed
+        try fixture.git.run("branch", "ancestor", baseCommit)
+        try fixture.git.run("checkout", "-b", "sibling", baseCommit)
+        try fixture.git.run("commit", "--allow-empty", "-m", "sibling empty commit")
+        try fixture.git.run("checkout", mainBranch)
+        try fixture.git.run("commit", "--allow-empty", "-m", "advance target without changing tree")
+        let targetCommit = try fixture.git.run("rev-parse", "HEAD").trimmed
+        let request = GitBranchIntegrationRequest(
+            repositoryPath: fixture.repositoryPath,
+            branchNames: ["ancestor", "sibling"],
+            targetCommit: targetCommit,
+            squashSearchCommitLimit: 500
+        )
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        // Act
+        let completeHistory = try await client.assessBranchIntegration(request)
+        try Data("\(baseCommit)\n".utf8).write(to: fixture.repositoryPath.appending(path: ".git/shallow"))
+        let shallowHistory = try await client.assessBranchIntegration(request)
+
+        // Assert
+        #expect(completeHistory.assessments.map(\.grade) == [.integrated(.ancestor), .integrated(.sameContent)])
+        #expect(shallowHistory.assessments.map(\.grade) == [.integrated(.sameContent), .integrated(.sameContent)])
+    }
+
     @Test("classifies direct, content, empty-delta, and remaining-contribution proofs")
     func classifiesDirectContentAndDeltaProofs() async throws {
         // Arrange
