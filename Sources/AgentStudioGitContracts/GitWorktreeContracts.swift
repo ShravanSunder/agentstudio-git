@@ -123,13 +123,145 @@ public struct GitRemoveWorktreeRequest: Codable, Equatable, Hashable, Sendable {
 
 public struct GitWorktreeRemovalResult: Codable, Equatable, Hashable, Sendable {
     public let removedWorktreeID: GitWorktreeID
-    public let removedWorkingDirectory: Bool
-    public let partialFailure: String?
+    public let effects: GitWorktreeRemovalEffects
 
-    public init(removedWorktreeID: GitWorktreeID, removedWorkingDirectory: Bool, partialFailure: String?) {
+    public init(removedWorktreeID: GitWorktreeID, effects: GitWorktreeRemovalEffects) {
         self.removedWorktreeID = removedWorktreeID
-        self.removedWorkingDirectory = removedWorkingDirectory
-        self.partialFailure = partialFailure
+        self.effects = effects
+    }
+}
+
+public enum GitRemovalEffect: String, Codable, CaseIterable, Equatable, Hashable, Sendable {
+    case removed
+    case retained
+    case partial
+    case unknown
+    case notRequested
+}
+
+public enum GitWorktreeRemovalFailureKind: Codable, Equatable, Hashable, Sendable {
+    case pruneFailed(code: Int32, klass: Int32)
+    case observationFailed
+    case removalIncomplete
+
+    private enum CodingKeys: String, CodingKey {
+        case kind
+        case code
+        case klass
+    }
+
+    private enum Kind: String, Codable {
+        case pruneFailed
+        case observationFailed
+        case removalIncomplete
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let kind = try container.decode(Kind.self, forKey: .kind)
+        let presentKeys = Set(container.allKeys)
+
+        switch kind {
+        case .pruneFailed:
+            guard presentKeys == Set([.kind, .code, .klass]) else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(
+                        codingPath: decoder.codingPath,
+                        debugDescription: "pruneFailed requires exactly code and klass"
+                    )
+                )
+            }
+            self = try .pruneFailed(
+                code: container.decode(Int32.self, forKey: .code),
+                klass: container.decode(Int32.self, forKey: .klass)
+            )
+        case .observationFailed:
+            guard presentKeys == Set([.kind]) else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(
+                        codingPath: decoder.codingPath,
+                        debugDescription: "observationFailed does not accept a payload"
+                    )
+                )
+            }
+            self = .observationFailed
+        case .removalIncomplete:
+            guard presentKeys == Set([.kind]) else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(
+                        codingPath: decoder.codingPath,
+                        debugDescription: "removalIncomplete does not accept a payload"
+                    )
+                )
+            }
+            self = .removalIncomplete
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .pruneFailed(let code, let klass):
+            try container.encode(Kind.pruneFailed, forKey: .kind)
+            try container.encode(code, forKey: .code)
+            try container.encode(klass, forKey: .klass)
+        case .observationFailed:
+            try container.encode(Kind.observationFailed, forKey: .kind)
+        case .removalIncomplete:
+            try container.encode(Kind.removalIncomplete, forKey: .kind)
+        }
+    }
+}
+
+public struct GitWorktreeRemovalEffects: Codable, Equatable, Hashable, Sendable {
+    public let administration: GitRemovalEffect
+    public let workingDirectory: GitRemovalEffect
+    public let failure: GitWorktreeRemovalFailureKind?
+    public let lockResidue: [URL]
+
+    public init(
+        administration: GitRemovalEffect,
+        workingDirectory: GitRemovalEffect,
+        failure: GitWorktreeRemovalFailureKind?,
+        lockResidue: [URL]
+    ) {
+        self.administration = administration
+        self.workingDirectory = workingDirectory
+        self.failure = failure
+        self.lockResidue = lockResidue
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case administration
+        case workingDirectory
+        case failure
+        case lockResidue
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let administration = try container.decode(GitRemovalEffect.self, forKey: .administration)
+        guard administration != .notRequested else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .administration,
+                in: container,
+                debugDescription: "worktree administration cannot be notRequested"
+            )
+        }
+        self.init(
+            administration: administration,
+            workingDirectory: try container.decode(GitRemovalEffect.self, forKey: .workingDirectory),
+            failure: try container.decodeIfPresent(GitWorktreeRemovalFailureKind.self, forKey: .failure),
+            lockResidue: try container.decode([URL].self, forKey: .lockResidue)
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(administration, forKey: .administration)
+        try container.encode(workingDirectory, forKey: .workingDirectory)
+        try container.encodeIfPresent(failure, forKey: .failure)
+        try container.encode(lockResidue, forKey: .lockResidue)
     }
 }
 

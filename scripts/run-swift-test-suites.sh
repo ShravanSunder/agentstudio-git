@@ -11,6 +11,8 @@ suites=(
   GitWireEnumSnapshotTests
   GitBranchIntegrationContractTests
   GitBranchDeletionContractTests
+  GitLockContractTests
+  GitWorktreeRemovalContractTests
   GitPublicContractTests
   GitInvalidDecodeTests
   GitRedactionTests
@@ -19,6 +21,8 @@ suites=(
   LibGit2RuntimeTests
   LibGit2RepositorySessionTests
   LibGit2ErrorCaptureTests
+  GitLockDiagnosticTests
+  GitLockResidueObserverTests
   GitRepositoryIdentityTests
   GitRepositoryWriterRegistryTests
   GitRepositoryWriterLaneTests
@@ -37,6 +41,9 @@ suites=(
   GitIgnoreIntegrationTests
   GitTrackedPathIntegrationTests
   GitWorktreeIntegrationTests
+  GitWorktreeRemovalIntegrationTests
+  GitLockIntegrationTests
+  GitLockRemoteIntegrationTests
   GitWorktreeForkIntegrationTests
   GitWorktreeForkStorageIntegrationTests
   GitWorktreeForkRollbackIntegrationTests

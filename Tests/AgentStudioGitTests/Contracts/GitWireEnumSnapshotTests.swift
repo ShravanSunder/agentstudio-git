@@ -83,6 +83,41 @@ struct GitWireEnumSnapshotTests {
         )
     }
 
+    @Test("worktree removal effects keep stable tagged wire values")
+    func worktreeRemovalEffectsKeepStableTaggedWireValues() throws {
+        let worktreeID = GitWorktreeID(rawValue: "common:/tmp/repository/.git|worktree:/tmp/repository/linked")
+        let effects = GitWorktreeRemovalEffects(
+            administration: .removed,
+            workingDirectory: .notRequested,
+            failure: nil,
+            lockResidue: []
+        )
+
+        let encodedPartialEffect = try JSONEncoder().encode(GitRemovalEffect.partial)
+        #expect(String(data: encodedPartialEffect, encoding: .utf8) == #""partial""#)
+        try expectWireSnapshot(
+            GitWorktreeRemovalFailureKind.pruneFailed(code: -1, klass: 7),
+            expected: #"{"code":-1,"kind":"pruneFailed","klass":7}"#
+        )
+        try expectWireSnapshot(
+            GitWorktreeRemovalFailureKind.observationFailed,
+            expected: #"{"kind":"observationFailed"}"#
+        )
+        try expectWireSnapshot(
+            GitWorktreeRemovalFailureKind.removalIncomplete,
+            expected: #"{"kind":"removalIncomplete"}"#
+        )
+        try expectWireSnapshot(
+            effects,
+            expected: #"{"administration":"removed","lockResidue":[],"workingDirectory":"notRequested"}"#
+        )
+        try expectWireSnapshot(
+            GitWorktreeRemovalResult(removedWorktreeID: worktreeID, effects: effects),
+            expected:
+                #"{"effects":{"administration":"removed","lockResidue":[],"workingDirectory":"notRequested"},"removedWorktreeID":"common:\/tmp\/repository\/.git|worktree:\/tmp\/repository\/linked"}"#
+        )
+    }
+
     @Test("wire enum raw values stay stable")
     func wireEnumRawValuesStayStable() {
         #expect(GitHeadKind.allCases.map(\.rawValue) == ["branch", "detached", "unborn"])
@@ -117,6 +152,9 @@ struct GitWireEnumSnapshotTests {
                 "incompleteHistory", "missingObjects", "readFailed",
             ])
         #expect(GitWorktreePruneRefusalReason.allCases.map(\.rawValue) == ["liveWorktree"])
+        #expect(
+            GitRemovalEffect.allCases.map(\.rawValue) == ["removed", "retained", "partial", "unknown", "notRequested"]
+        )
         #expect(
             GitWorktreeRemovalRefusalReason.allCases.map(\.rawValue) == [
                 "mainWorktree",
