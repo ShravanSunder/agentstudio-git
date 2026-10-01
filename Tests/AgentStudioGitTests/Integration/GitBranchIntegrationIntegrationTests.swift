@@ -67,6 +67,78 @@ struct GitBranchIntegrationIntegrationTests {
         #expect(shallowHistory.assessments.map(\.grade) == [.integrated(.sameContent), .integrated(.sameContent)])
     }
 
+    @Test("same content survives a failed graph read while unequal content remains unknown")
+    func sameContentSurvivesMissingSharedParent() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-integration-missing-parent")
+        defer { fixture.remove() }
+        let baseCommit = try fixture.git.run("rev-parse", "HEAD").trimmed
+        let sharedTree = try fixture.git.run("rev-parse", "HEAD^{tree}").trimmed
+        let missingParent = String(repeating: "f", count: 40)
+        #expect(try fixture.git.succeeds("cat-file", "-e", missingParent) == false)
+        func writeCommit(tree: String, parent: String, message: String) throws -> String {
+            let commitContents = """
+                tree \(tree)
+                parent \(parent)
+                author AgentStudio Test <agentstudio@example.invalid> 1700000000 +0000
+                committer AgentStudio Test <agentstudio@example.invalid> 1700000000 +0000
+
+                \(message)
+                """
+            return try fixture.git.run(
+                ["hash-object", "-t", "commit", "-w", "--stdin"],
+                standardInput: Data(commitContents.utf8)
+            ).trimmed
+        }
+        let targetCommit = try writeCommit(tree: sharedTree, parent: missingParent, message: "target missing parent")
+        let equalTreeBranchCommit = try writeCommit(
+            tree: sharedTree, parent: missingParent, message: "equal tree missing parent")
+        try fixture.git.run("update-ref", "refs/heads/equal-tree", equalTreeBranchCommit)
+        try fixture.write("different.txt", contents: "different tree\n")
+        try fixture.git.run("add", "different.txt")
+        let differentTree = try fixture.git.run("write-tree").trimmed
+        let unequalTreeBranchCommit = try writeCommit(
+            tree: differentTree, parent: missingParent, message: "unequal tree missing parent")
+        try fixture.git.run("update-ref", "refs/heads/unequal-tree", unequalTreeBranchCommit)
+        try fixture.git.run("branch", "ancestor", baseCommit)
+        let historyOverlayPaths = [
+            fixture.repositoryPath.appending(path: ".git/shallow"),
+            fixture.repositoryPath.appending(path: ".git/info/grafts"),
+            fixture.repositoryPath.appending(path: ".git/objects/info/commit-graph"),
+            fixture.repositoryPath.appending(path: ".git/objects/info/commit-graphs"),
+        ]
+        #expect(historyOverlayPaths.allSatisfy { !FileManager.default.fileExists(atPath: $0.path) })
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        // Act
+        let missingParentReport = try await client.assessBranchIntegration(
+            GitBranchIntegrationRequest(
+                repositoryPath: fixture.repositoryPath,
+                branchNames: ["equal-tree", "unequal-tree"],
+                targetCommit: targetCommit,
+                squashSearchCommitLimit: 500
+            )
+        )
+        let emptyDescendant = try fixture.git.run(
+            "commit-tree", sharedTree, "-p", baseCommit, "-m", "valid empty descendant"
+        ).trimmed
+        let ancestorReport = try await client.assessBranchIntegration(
+            GitBranchIntegrationRequest(
+                repositoryPath: fixture.repositoryPath,
+                branchNames: ["ancestor"],
+                targetCommit: emptyDescendant,
+                squashSearchCommitLimit: 500
+            )
+        )
+
+        // Assert
+        #expect(
+            missingParentReport.assessments.map(\.grade)
+                == [.integrated(.sameContent), .unknown(.missingObjects)]
+        )
+        #expect(ancestorReport.assessments.first?.grade == .integrated(.ancestor))
+    }
+
     @Test("classifies direct, content, empty-delta, and remaining-contribution proofs")
     func classifiesDirectContentAndDeltaProofs() async throws {
         // Arrange

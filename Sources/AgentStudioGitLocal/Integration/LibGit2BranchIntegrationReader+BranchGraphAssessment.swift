@@ -16,13 +16,6 @@ extension LibGit2BranchIntegrationReader {
         var mutableTargetOID = targetOID
         var mutableBranchOID = branch.oid
         let descendantResult = git_graph_descendant_of(repository, &mutableTargetOID, &mutableBranchOID)
-        guard descendantResult >= 0 else {
-            return unknownGraphResult(
-                branchName,
-                commit: branch.oidString,
-                reason: Self.proofFailure(for: descendantResult)
-            )
-        }
         if descendantResult > 0 {
             return (
                 Self.computed(
@@ -43,6 +36,14 @@ extension LibGit2BranchIntegrationReader {
                     grade: .integrated(.sameContent)
                 ),
                 nil
+            )
+        }
+
+        guard descendantResult >= 0 else {
+            return unknownGraphResult(
+                branchName,
+                commit: branch.oidString,
+                reason: Self.proofFailure(for: descendantResult)
             )
         }
 
