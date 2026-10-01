@@ -1,5 +1,6 @@
 import AgentStudioGit
 import CryptoKit
+import Darwin
 import Foundation
 import Testing
 
@@ -10,30 +11,141 @@ struct GitWorktreeForkChangesOnlyFilterIntegrationTests {
     @Test("a smudged LFS path that is otherwise unchanged is restored from verified source bytes")
     func smudgedLargeFileIsVerifiedAndCopied() async throws {
         // Arrange
-        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-lfs-smudged")
+        let (fixture, payload) = try Self.makeSmudgedLargeFileFixture(prefix: "agentstudio-git-fork-lfs-smudged")
         defer { fixture.remove() }
-        let payload = Data("verified large file payload\n".utf8)
-        let hash = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
-        let pointer = "version https://git-lfs.github.com/spec/v1\noid sha256:\(hash)\nsize \(payload.count)\n"
-        try fixture.write(".gitattributes", "asset.bin filter=lfs\n")
-        try fixture.write("asset.bin", pointer)
-        try fixture.git.run("add", ".")
-        try fixture.git.run("commit", "-m", "large file pointer")
-        try payload.write(to: fixture.source.appending(path: "asset.bin"))
         let destination = fixture.destination()
-        let request = GitForkWorktreeRequest(
-            sourceWorktreePath: fixture.source,
-            destinationPath: destination,
-            mode: .newBranch(name: "fork-lfs-smudged"),
-            materialization: .changesOnly
+
+        // Act
+        let result = try await LibGit2AgentStudioGitLocalClient().forkWorktree(
+            fixture.request(
+                destination: destination, mode: .newBranch(name: "fork-lfs-smudged"), materialization: .changesOnly)
+        )
+
+        // Assert
+        guard case .changesOnly(let report) = result.materialization else {
+            Issue.record("expected changes-only materialization")
+            return
+        }
+        #expect(report.trackedChanges == 0)
+        #expect(try Data(contentsOf: destination.appending(path: "asset.bin")) == payload)
+        #expect(try Data(contentsOf: fixture.source.appending(path: "asset.bin")) == payload)
+    }
+
+    @Test("an executable-bit-only change on a smudged LFS path is counted and restored")
+    func executableModeOnlyLFSChangeIsCountedAndPreserved() async throws {
+        // Arrange
+        let (fixture, payload) = try Self.makeSmudgedLargeFileFixture(prefix: "agentstudio-git-fork-lfs-mode")
+        defer { fixture.remove() }
+        let sourceAsset = fixture.source.appending(path: "asset.bin")
+        #expect(sourceAsset.path.withCString { chmod($0, 0o755) } == 0)
+        let destination = fixture.destination()
+
+        // Act
+        let result = try await LibGit2AgentStudioGitLocalClient().forkWorktree(
+            fixture.request(
+                destination: destination, mode: .newBranch(name: "fork-lfs-mode"), materialization: .changesOnly)
+        )
+
+        // Assert
+        guard case .changesOnly(let report) = result.materialization else {
+            Issue.record("expected changes-only materialization")
+            return
+        }
+        let sourceInfo = try #require(GitWorktreeForkFileProbe.info(sourceAsset))
+        let destinationInfo = try #require(GitWorktreeForkFileProbe.info(destination.appending(path: "asset.bin")))
+        #expect(report.trackedChanges == 1)
+        #expect(sourceInfo.st_mode & S_IXUSR != 0)
+        #expect(destinationInfo.st_mode & S_IXUSR != 0)
+        #expect(sourceInfo.st_ino != destinationInfo.st_ino)
+        #expect(try Data(contentsOf: destination.appending(path: "asset.bin")) == payload)
+    }
+
+    @Test("LFS restoration validation rejects a destination mode changed after overlay")
+    func lfsRestorationModeTamperingFailsValidation() async throws {
+        // Arrange
+        let (fixture, _) = try Self.makeSmudgedLargeFileFixture(prefix: "agentstudio-git-fork-lfs-mode-tamper")
+        defer { fixture.remove() }
+        let sourceAsset = fixture.source.appending(path: "asset.bin")
+        #expect(sourceAsset.path.withCString { chmod($0, 0o755) } == 0)
+        let destination = fixture.destination()
+        let destinationAsset = destination.appending(path: "asset.bin")
+        let faults = WorktreeForkFaultInjector { point throws(GitWorktreeForkError) in
+            if point == .afterChangesOnlyOverlay {
+                _ = destinationAsset.path.withCString { chmod($0, 0o644) }
+            }
+        }
+        let client = LibGit2AgentStudioGitLocalClient(
+            writerRegistry: GitRepositoryWriterRegistry(),
+            worktreeForkWriter: LibGit2WorktreeForkWriter(faults: faults)
         )
 
         // Act
-        _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(request)
+        let failure: GitWorktreeForkError?
+        do {
+            _ = try await client.forkWorktree(
+                fixture.request(
+                    destination: destination,
+                    mode: .newBranch(name: "fork-lfs-mode-tamper"),
+                    materialization: .changesOnly
+                )
+            )
+            failure = nil
+        } catch {
+            failure = error
+        }
 
         // Assert
-        #expect(try Data(contentsOf: destination.appending(path: "asset.bin")) == payload)
-        #expect(try Data(contentsOf: fixture.source.appending(path: "asset.bin")) == payload)
+        #expect(failure == .validationFailed(reason: .entryKindMismatch, relativePath: "asset.bin"))
+        #expect(!GitWorktreeForkFileProbe.exists(destination))
+        #expect(!GitWorktreeForkFileProbe.exists(fixture.linkedWorktreeAdministration("fork-lfs-mode-tamper")))
+        #expect(try fixture.branchNames() == ["refs/heads/main"])
+    }
+
+    @Test("LFS restoration validation rejects a destination linked to the source inode")
+    func lfsRestorationSourceInodeReuseFailsValidation() async throws {
+        // Arrange
+        let (fixture, _) = try Self.makeSmudgedLargeFileFixture(prefix: "agentstudio-git-fork-lfs-inode-tamper")
+        defer { fixture.remove() }
+        let sourceAsset = fixture.source.appending(path: "asset.bin")
+        #expect(sourceAsset.path.withCString { chmod($0, 0o755) } == 0)
+        let destination = fixture.destination()
+        let destinationAsset = destination.appending(path: "asset.bin")
+        let faults = WorktreeForkFaultInjector { point throws(GitWorktreeForkError) in
+            guard point == .afterChangesOnlyOverlay else {
+                return
+            }
+            try? FileManager.default.removeItem(at: destinationAsset)
+            _ = sourceAsset.path.withCString { sourcePath in
+                destinationAsset.path.withCString { destinationPath in
+                    link(sourcePath, destinationPath)
+                }
+            }
+        }
+        let client = LibGit2AgentStudioGitLocalClient(
+            writerRegistry: GitRepositoryWriterRegistry(),
+            worktreeForkWriter: LibGit2WorktreeForkWriter(faults: faults)
+        )
+
+        // Act
+        let failure: GitWorktreeForkError?
+        do {
+            _ = try await client.forkWorktree(
+                fixture.request(
+                    destination: destination,
+                    mode: .newBranch(name: "fork-lfs-inode-tamper"),
+                    materialization: .changesOnly
+                )
+            )
+            failure = nil
+        } catch {
+            failure = error
+        }
+
+        // Assert
+        #expect(failure == .validationFailed(reason: .entryKindMismatch, relativePath: "asset.bin"))
+        #expect(!GitWorktreeForkFileProbe.exists(destination))
+        #expect(!GitWorktreeForkFileProbe.exists(fixture.linkedWorktreeAdministration("fork-lfs-inode-tamper")))
+        #expect(try fixture.branchNames() == ["refs/heads/main"])
     }
 
     @Test("a source that only has LFS pointer text keeps the checked-out pointer")
@@ -273,5 +385,20 @@ struct GitWorktreeForkChangesOnlyFilterIntegrationTests {
         } catch {
             return error
         }
+    }
+
+    private static func makeSmudgedLargeFileFixture(prefix: String) throws
+        -> (fixture: GitWorktreeForkFixture, payload: Data)
+    {
+        let fixture = try GitWorktreeForkFixture.make(prefix: prefix)
+        let payload = Data("verified large file payload\n".utf8)
+        let hash = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+        let pointer = "version https://git-lfs.github.com/spec/v1\noid sha256:\(hash)\nsize \(payload.count)\n"
+        try fixture.write(".gitattributes", "asset.bin filter=lfs\n")
+        try fixture.write("asset.bin", pointer)
+        try fixture.git.run("add", ".")
+        try fixture.git.run("commit", "-m", "large file pointer")
+        try payload.write(to: fixture.source.appending(path: "asset.bin"))
+        return (fixture, payload)
     }
 }

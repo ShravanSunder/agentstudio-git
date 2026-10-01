@@ -91,75 +91,13 @@ struct WorktreeForkChangesOnlyPlanner: Sendable {
             ))
     }
 
-    /// Status omits ignored files, so inspect only attribute files in directories represented by captured HEAD paths.
-    private func changedWorktreeAttributePath(
-        repository: OpaquePointer,
-        headEntries: [String: WorktreeForkTreeEntry],
-        sourceRootDescriptor: Int32
-    ) throws(GitWorktreeForkError) -> String? {
-        var attributePaths: Set<String> = [".gitattributes"]
-        for headPath in headEntries.keys {
-            let components = headPath.split(separator: "/")
-            for directoryDepth in 1..<components.count {
-                attributePaths.insert("\(components.prefix(directoryDepth).joined(separator: "/"))/.gitattributes")
-            }
-        }
-
-        for attributePath in attributePaths.sorted() {
-            try cancellation.throwIfCancelled()
-            let sourceNode = try capture(attributePath, rootDescriptor: sourceRootDescriptor)
-            guard let headEntry = headEntries[attributePath] else {
-                if sourceNode.kind != .absent {
-                    return attributePath
-                }
-                continue
-            }
-            guard sourceNode.kind == .regularFile,
-                headEntry.mode == UInt32(GIT_FILEMODE_BLOB.rawValue)
-                    || headEntry.mode == UInt32(GIT_FILEMODE_BLOB_EXECUTABLE.rawValue),
-                let sourceContentSHA256 = sourceNode.contentSHA256
-            else {
-                return attributePath
-            }
-            let headContentSHA256 = try WorktreeForkChangesOnlyGitSnapshotReader.blobSHA256(
-                headEntry.oid, repository: repository)
-            guard sourceContentSHA256 == headContentSHA256 else {
-                return attributePath
-            }
-        }
-        return nil
-    }
-
     private func makeChangesOnlyPlan(
         context: WorktreeForkChangesOnlyCaptureContext
     ) throws(GitWorktreeForkError) -> WorktreeForkChangesOnlyPlan {
         var candidates = try carriedCandidatePaths(context)
-        var largeFileRestorations: [WorktreeForkLargeFileRestoration] = []
-        var lfsSmudgedPaths = Set<String>()
-        for (path, pointer) in context.filters.largeFilePointers {
-            try cancellation.throwIfCancelled()
-            let node = try capture(path, rootDescriptor: context.sourceRootDescriptor)
-            guard node.kind == .regularFile,
-                node.size == Int64(pointer.payloadByteCount),
-                node.contentSHA256 == pointer.payloadSHA256,
-                let identity = node.identity
-            else {
-                continue
-            }
-            lfsSmudgedPaths.insert(path)
-            candidates.remove(path)
-            largeFileRestorations.append(
-                WorktreeForkLargeFileRestoration(
-                    relativePath: path,
-                    identity: identity,
-                    mode: node.mode,
-                    size: node.size,
-                    contentSHA256: pointer.payloadSHA256
-                ))
-        }
-
+        let largeFilePlan = try planLargeFileRestorations(context: context, candidates: &candidates)
+        var trackedChangeCount = largeFilePlan.trackedChangeCount
         var entriesByPath: [String: WorktreeForkChangesOnlyEntry] = [:]
-        var trackedChangeCount = 0
         var untrackedFileCount = 0
         for path in candidates.sorted() {
             try cancellation.throwIfCancelled()
@@ -197,7 +135,7 @@ struct WorktreeForkChangesOnlyPlanner: Sendable {
             }
             if node.kind == .regularFile,
                 context.filters.largeFilePointers[path] != nil,
-                lfsSmudgedPaths.contains(path)
+                largeFilePlan.smudgedPaths.contains(path)
             {
                 continue
             }
@@ -232,7 +170,7 @@ struct WorktreeForkChangesOnlyPlanner: Sendable {
                 let rightDepth = $1.relativePath.split(separator: "/").count
                 return leftDepth == rightDepth ? $0.relativePath < $1.relativePath : leftDepth < rightDepth
             },
-            largeFileRestorations: largeFileRestorations.sorted { $0.relativePath < $1.relativePath },
+            largeFileRestorations: largeFilePlan.restorations.sorted { $0.relativePath < $1.relativePath },
             trackedChangeCount: trackedChangeCount,
             untrackedFileCount: untrackedFileCount,
             repositoryState: context.repositoryState
@@ -525,7 +463,7 @@ struct WorktreeForkChangesOnlySourceNode {
     }
 }
 
-private struct WorktreeForkChangesOnlyCaptureContext {
+struct WorktreeForkChangesOnlyCaptureContext {
     let repository: OpaquePointer
     let sourceRootDescriptor: Int32
     let headEntries: [String: WorktreeForkTreeEntry]

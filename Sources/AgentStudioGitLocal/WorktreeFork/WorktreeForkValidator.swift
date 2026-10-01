@@ -83,7 +83,9 @@ struct WorktreeForkValidator: Sendable {
                 restoration.relativePath, rootDescriptor: destinationRootDescriptor)
             guard destinationNode.kind == .regularFile,
                 destinationNode.size == restoration.size,
-                destinationNode.contentSHA256 == restoration.contentSHA256
+                destinationNode.contentSHA256 == restoration.contentSHA256,
+                destinationNode.mode & 0o777 == restoration.mode & 0o777,
+                destinationNode.identity != sourceNode.identity
             else {
                 throw .validationFailed(reason: .entryKindMismatch, relativePath: restoration.relativePath)
             }
