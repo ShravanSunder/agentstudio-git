@@ -1,5 +1,4 @@
 import AgentStudioGitContracts
-import CLibGit2Local
 import Darwin
 import Foundation
 import os
@@ -18,7 +17,6 @@ final class WorktreeForkLockTracker: Sendable {
 
     private struct TrackedLock {
         let fact: GitLockFact
-        let baselineWasAbsent: Bool
         var acquiredIdentity: WorktreeForkEntryIdentity?
         var acquiredWhileInaccessible = false
         var foreign = false
@@ -36,7 +34,7 @@ final class WorktreeForkLockTracker: Sendable {
             for fact in facts {
                 let observed = Self.observe(fact.path)
                 guard var tracked = state.locks[fact.path] else {
-                    var newLock = TrackedLock(fact: fact, baselineWasAbsent: observed.isAbsent)
+                    var newLock = TrackedLock(fact: fact)
                     if case .present = observed {
                         newLock.foreign = true
                     } else if case .inaccessible = observed {
@@ -63,7 +61,7 @@ final class WorktreeForkLockTracker: Sendable {
     func recordAcquisition(of fact: GitLockFact) {
         let observed = Self.observe(fact.path)
         state.withLock { state in
-            var tracked = state.locks[fact.path] ?? TrackedLock(fact: fact, baselineWasAbsent: true)
+            var tracked = state.locks[fact.path] ?? TrackedLock(fact: fact)
             switch observed {
             case .present(let identity):
                 tracked.acquiredIdentity = identity
@@ -82,7 +80,7 @@ final class WorktreeForkLockTracker: Sendable {
     func recordForeignLock(_ fact: GitLockFact) {
         let observed = Self.observe(fact.path)
         state.withLock { state in
-            var tracked = state.locks[fact.path] ?? TrackedLock(fact: fact, baselineWasAbsent: false)
+            var tracked = state.locks[fact.path] ?? TrackedLock(fact: fact)
             if !Self.matchesOwnedLock(observed, tracked: tracked) {
                 tracked.foreign = true
             }
@@ -90,13 +88,12 @@ final class WorktreeForkLockTracker: Sendable {
         }
     }
 
-    /// On a failed one-shot libgit2 call, an absent baseline plus a newly present lock proves the call
-    /// acquired it unless libgit2 explicitly reported contention (`GIT_ELOCKED`).
-    func recordFailure(for facts: [GitLockFact], code: Int32) {
+    /// A failed call cannot prove it acquired a newly present candidate lock.
+    func recordFailure(for facts: [GitLockFact]) {
         state.withLock { state in
             for fact in facts {
                 let observed = Self.observe(fact.path)
-                var tracked = state.locks[fact.path] ?? TrackedLock(fact: fact, baselineWasAbsent: true)
+                var tracked = state.locks[fact.path] ?? TrackedLock(fact: fact)
                 if Self.matchesOwnedLock(observed, tracked: tracked) {
                     state.locks[fact.path] = tracked
                     continue
@@ -105,21 +102,8 @@ final class WorktreeForkLockTracker: Sendable {
                 switch observed {
                 case .absent:
                     break
-                case .present(let identity):
-                    if tracked.baselineWasAbsent, code != GIT_ELOCKED.rawValue {
-                        tracked.acquiredIdentity = identity
-                        tracked.acquiredWhileInaccessible = false
-                        tracked.foreign = false
-                    } else {
-                        tracked.foreign = true
-                    }
-                case .inaccessible:
-                    if tracked.baselineWasAbsent, code != GIT_ELOCKED.rawValue {
-                        tracked.acquiredWhileInaccessible = true
-                        tracked.foreign = false
-                    } else {
-                        tracked.foreign = true
-                    }
+                case .present, .inaccessible:
+                    tracked.foreign = true
                 }
                 state.locks[fact.path] = tracked
             }

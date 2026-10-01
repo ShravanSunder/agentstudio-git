@@ -67,7 +67,7 @@ enum WorktreeForkGitHandles {
         let lockResult = referenceName.withCString { git_transaction_lock_ref(transactionHandle, $0) }
         let lockErrorNumber = errno
         guard lockResult >= 0 else {
-            lockTracker.recordFailure(for: [referenceLockFact], code: lockResult)
+            lockTracker.recordFailure(for: [referenceLockFact])
             throw .gitFailure(
                 LibGit2ErrorCapture.failure(
                     code: lockResult,
@@ -85,7 +85,7 @@ enum WorktreeForkGitHandles {
             throw .rejected(reason: .branchAlreadyExists)
         }
         guard existingResult == GIT_ENOTFOUND.rawValue else {
-            lockTracker.recordFailure(for: [referenceLockFact], code: existingResult)
+            lockTracker.recordFailure(for: [referenceLockFact])
             throw .gitFailure(LibGit2ErrorCapture.failure(code: existingResult))
         }
 
@@ -106,7 +106,7 @@ enum WorktreeForkGitHandles {
         }
         let setTargetErrorNumber = errno
         guard setTargetResult >= 0 else {
-            lockTracker.recordFailure(for: [referenceLockFact], code: setTargetResult)
+            lockTracker.recordFailure(for: [referenceLockFact])
             throw .gitFailure(
                 LibGit2ErrorCapture.failure(
                     code: setTargetResult,
@@ -122,7 +122,7 @@ enum WorktreeForkGitHandles {
             if referencePointsTo(referenceName, commitOID: commitOID, repository: repository) {
                 onCreated()
             }
-            lockTracker.recordFailure(for: [referenceLockFact], code: commitResult)
+            lockTracker.recordFailure(for: [referenceLockFact])
             throw .gitFailure(
                 LibGit2ErrorCapture.failure(
                     code: commitResult,
@@ -184,7 +184,7 @@ enum WorktreeForkGitHandles {
             git_worktree_free(worktree)
         }
         guard addResult >= 0 else {
-            lockTracker.recordFailure(for: [headLockFact], code: addResult)
+            lockTracker.recordFailure(for: [headLockFact])
             throw .gitFailure(
                 LibGit2ErrorCapture.failure(
                     code: addResult,
@@ -222,7 +222,7 @@ enum WorktreeForkGitHandles {
         let checkoutResult = git_checkout_tree(repository, commit, &options)
         let checkoutErrorNumber = errno
         guard checkoutResult >= 0 else {
-            lockTracker.recordFailure(for: [indexLockFact], code: checkoutResult)
+            lockTracker.recordFailure(for: [indexLockFact])
             throw .gitFailure(
                 LibGit2ErrorCapture.failure(
                     code: checkoutResult,
@@ -248,7 +248,7 @@ enum WorktreeForkGitHandles {
         let detachResult = git_repository_set_head_detached(repository, &oid)
         let detachErrorNumber = errno
         guard detachResult >= 0 else {
-            lockTracker.recordFailure(for: [headLockFact], code: detachResult)
+            lockTracker.recordFailure(for: [headLockFact])
             throw .gitFailure(
                 LibGit2ErrorCapture.failure(
                     code: detachResult,
@@ -277,7 +277,7 @@ enum WorktreeForkGitHandles {
         let deleteResult = git_branch_delete(reference)
         let deleteErrorNumber = errno
         guard deleteResult >= 0 else {
-            lockTracker.recordFailure(for: lockFacts, code: deleteResult)
+            lockTracker.recordFailure(for: lockFacts)
             throw .gitFailure(
                 LibGit2ErrorCapture.failure(
                     code: deleteResult,

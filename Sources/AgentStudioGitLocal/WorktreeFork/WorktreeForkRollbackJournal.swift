@@ -300,7 +300,7 @@ struct WorktreeForkRollbackJournal {
         let deleteResult = git_branch_delete(reference)
         let deleteErrorNumber = errno
         guard deleteResult >= 0 else {
-            lockTracker.recordFailure(for: lockFacts, code: deleteResult)
+            lockTracker.recordFailure(for: lockFacts)
             let deletionFailure = LibGit2ErrorCapture.failure(
                 code: deleteResult,
                 lockFacts: lockFacts,

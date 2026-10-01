@@ -9,6 +9,81 @@ import os
 
 @Suite("Git worktree fork lock integration", .serialized)
 struct GitWorktreeForkLockIntegrationTests {
+    @Test("a newly present candidate after a generic failure is not owned residue")
+    func newlyPresentCandidateAfterGenericFailureIsForeign() throws {
+        // Arrange
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-failed-index-lock")
+        defer { fixture.remove() }
+        let lockFact = GitLockFact(
+            path: fixture.source.appending(path: ".git/index.lock").standardizedFileURL,
+            resource: .index(worktreePath: fixture.source)
+        )
+        let lockContents = "created by another writer after preflight\n"
+        let tracker = WorktreeForkLockTracker()
+        tracker.beginAttempt(for: [lockFact])
+        try Self.writeLockFile(lockFact.path, contents: lockContents)
+
+        // Act
+        tracker.recordFailure(for: [lockFact])
+
+        // Assert
+        #expect(tracker.ownedResidue().isEmpty)
+        #expect(tracker.activeLocks() == [lockFact])
+        #expect(try Data(contentsOf: lockFact.path) == Data(lockContents.utf8))
+    }
+
+    @Test("a later attempt does not promote a lock observed as foreign earlier")
+    func laterAttemptKeepsPreviouslyForeignLockUnowned() throws {
+        // Arrange
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-repeated-foreign-lock")
+        defer { fixture.remove() }
+        let lockFact = GitLockFact(
+            path: fixture.source.appending(path: ".git/index.lock").standardizedFileURL,
+            resource: .index(worktreePath: fixture.source)
+        )
+        let lockContents = "foreign lock persisted across attempts\n"
+        let tracker = WorktreeForkLockTracker()
+        tracker.beginAttempt(for: [lockFact])
+        try Self.writeLockFile(lockFact.path, contents: lockContents)
+        tracker.recordFailure(for: [lockFact])
+
+        // Act
+        tracker.beginAttempt(for: [lockFact])
+        tracker.recordFailure(for: [lockFact])
+
+        // Assert
+        #expect(tracker.ownedResidue().isEmpty)
+        #expect(tracker.activeLocks() == [lockFact])
+        #expect(try Data(contentsOf: lockFact.path) == Data(lockContents.utf8))
+    }
+
+    @Test("a mixed candidate failure does not claim a lock for an untouched resource")
+    func mixedCandidateFailureDoesNotClaimUntouchedLock() throws {
+        // Arrange
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-mixed-foreign-lock")
+        defer { fixture.remove() }
+        let indexLockFact = GitLockFact(
+            path: fixture.source.appending(path: ".git/index.lock").standardizedFileURL,
+            resource: .index(worktreePath: fixture.source)
+        )
+        let configurationLockFact = GitLockFact(
+            path: fixture.source.appending(path: ".git/config.lock").standardizedFileURL,
+            resource: .config
+        )
+        let lockContents = "unrelated configuration lock\n"
+        let tracker = WorktreeForkLockTracker()
+        tracker.beginAttempt(for: [indexLockFact, configurationLockFact])
+        try Self.writeLockFile(configurationLockFact.path, contents: lockContents)
+
+        // Act: the multi-resource call failed before reaching the configuration write.
+        tracker.recordFailure(for: [indexLockFact, configurationLockFact])
+
+        // Assert
+        #expect(tracker.ownedResidue().isEmpty)
+        #expect(tracker.activeLocks() == [configurationLockFact])
+        #expect(try Data(contentsOf: configurationLockFact.path) == Data(lockContents.utf8))
+    }
+
     @Test("a foreign requested-branch lock is reported exactly in both materialization modes")
     func requestedBranchLockIsReportedInBothModes() async throws {
         // Arrange

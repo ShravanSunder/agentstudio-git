@@ -49,7 +49,7 @@ struct WorktreeForkIndexBuilder: Sendable {
         let writeResult = git_index_write(index)
         let writeErrorNumber = errno
         guard writeResult >= 0 else {
-            lockTracker?.recordFailure(for: [indexLockFact], code: writeResult)
+            lockTracker?.recordFailure(for: [indexLockFact])
             throw .gitFailure(
                 LibGit2ErrorCapture.failure(
                     code: writeResult,

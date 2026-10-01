@@ -337,7 +337,7 @@ enum WorktreeForkConfigurationFile {
             }
             let systemErrorCode = errno
             guard result >= 0 else {
-                lockTracker?.recordFailure(for: [lockFact], code: result)
+                lockTracker?.recordFailure(for: [lockFact])
                 throw .gitFailure(
                     LibGit2ErrorCapture.failure(
                         code: result,
