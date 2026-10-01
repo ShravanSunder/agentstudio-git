@@ -51,6 +51,7 @@ suites=(
   GitWorktreeForkTopologyIntegrationTests
   GitWorktreeForkEligibilityIntegrationTests
   GitWorktreeForkChangesOnlyIntegrationTests
+  GitWorktreeForkTrackedStateIntegrationTests
   GitWorktreeForkChangesOnlyFilterIntegrationTests
   GitWorktreeForkCleanAdoptionIntegrationTests
   GitCommitRangeCountIntegrationTests

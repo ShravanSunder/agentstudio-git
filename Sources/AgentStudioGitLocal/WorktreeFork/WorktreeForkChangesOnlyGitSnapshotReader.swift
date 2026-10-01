@@ -93,6 +93,17 @@ struct WorktreeForkChangesOnlyGitSnapshotReader: Sendable {
         )
     }
 
+    func submoduleStatus(_ path: String, repository: OpaquePointer) throws(GitWorktreeForkError) -> UInt32 {
+        var status: UInt32 = 0
+        let result = path.withCString { pathPointer in
+            git_submodule_status(&status, repository, pathPointer, GIT_SUBMODULE_IGNORE_NONE)
+        }
+        guard result >= 0 else {
+            throw .gitFailure(LibGit2ErrorCapture.failure(code: result))
+        }
+        return status
+    }
+
     func inspectHeadFilters(
         _ repository: OpaquePointer,
         headEntries: [String: WorktreeForkTreeEntry]

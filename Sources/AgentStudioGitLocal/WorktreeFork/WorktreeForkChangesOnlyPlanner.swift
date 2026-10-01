@@ -8,6 +8,17 @@ import Foundation
 struct WorktreeForkChangesOnlyPlanner: Sendable {
     let cancellation: WorktreeForkCancellation
 
+    private static let materialSubmoduleChangeFlags =
+        UInt32(GIT_SUBMODULE_STATUS_INDEX_ADDED.rawValue)
+        | UInt32(GIT_SUBMODULE_STATUS_INDEX_DELETED.rawValue)
+        | UInt32(GIT_SUBMODULE_STATUS_INDEX_MODIFIED.rawValue)
+        | UInt32(GIT_SUBMODULE_STATUS_WD_ADDED.rawValue)
+        | UInt32(GIT_SUBMODULE_STATUS_WD_DELETED.rawValue)
+        | UInt32(GIT_SUBMODULE_STATUS_WD_MODIFIED.rawValue)
+        | UInt32(GIT_SUBMODULE_STATUS_WD_INDEX_MODIFIED.rawValue)
+        | UInt32(GIT_SUBMODULE_STATUS_WD_WD_MODIFIED.rawValue)
+        | UInt32(GIT_SUBMODULE_STATUS_WD_UNTRACKED.rawValue)
+
     func plan(
         sourceRootDescriptor: Int32,
         sourceRoot: URL,
@@ -76,7 +87,7 @@ struct WorktreeForkChangesOnlyPlanner: Sendable {
     private func makeChangesOnlyPlan(
         context: WorktreeForkChangesOnlyCaptureContext
     ) throws(GitWorktreeForkError) -> WorktreeForkChangesOnlyPlan {
-        var candidates = context.status.paths
+        var candidates = try carriedCandidatePaths(context)
         var largeFileRestorations: [WorktreeForkLargeFileRestoration] = []
         var lfsSmudgedPaths = Set<String>()
         for (path, pointer) in context.filters.largeFilePointers {
@@ -292,6 +303,43 @@ struct WorktreeForkChangesOnlyPlanner: Sendable {
                 )
             }
         }
+    }
+
+    private func rejectChangedSubmodules(
+        in headEntries: [String: WorktreeForkTreeEntry],
+        repository: OpaquePointer,
+        snapshotReader: WorktreeForkChangesOnlyGitSnapshotReader,
+        candidates: inout Set<String>
+    ) throws(GitWorktreeForkError) {
+        for (path, entry) in headEntries.sorted(by: { $0.key < $1.key })
+        where entry.mode == UInt32(GIT_FILEMODE_COMMIT.rawValue) {
+            try cancellation.throwIfCancelled()
+            let status = try snapshotReader.submoduleStatus(path, repository: repository)
+            if Self.submoduleHasMaterialChanges(status) {
+                throw refusal(.submoduleChanged, path: path)
+            }
+            // A clean or uninitialized gitlink is not an overlay file. Its state was checked above.
+            candidates.remove(path)
+        }
+    }
+
+    private func carriedCandidatePaths(
+        _ context: WorktreeForkChangesOnlyCaptureContext
+    ) throws(GitWorktreeForkError) -> Set<String> {
+        var candidates = context.status.paths
+        candidates.formUnion(context.headEntries.keys)
+        candidates.formUnion(context.indexPaths)
+        try rejectChangedSubmodules(
+            in: context.headEntries,
+            repository: context.repository,
+            snapshotReader: WorktreeForkChangesOnlyGitSnapshotReader(cancellation: cancellation),
+            candidates: &candidates
+        )
+        return candidates
+    }
+
+    private static func submoduleHasMaterialChanges(_ status: UInt32) -> Bool {
+        status & materialSubmoduleChangeFlags != 0
     }
 
     private func containsNestedGitAdministration(_ path: String, rootDescriptor: Int32) throws(GitWorktreeForkError)
