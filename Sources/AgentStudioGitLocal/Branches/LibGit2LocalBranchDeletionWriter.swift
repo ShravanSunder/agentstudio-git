@@ -72,13 +72,14 @@ struct LibGit2LocalBranchDeletionWriter: Sendable {
         expectedCommitOID: inout git_oid,
         repository: OpaquePointer
     ) throws(GitLockedOperationFailure<GitDeleteLocalBranchErrorReason>) -> GitDeleteLocalBranchResult {
-        let lockFacts: [GitLockFact]
+        let lockFacts: GitBranchDeletionLockFacts
         do {
-            lockFacts = [
-                try LibGit2LockPathResolver.fact(for: .reference(name: referenceName), repository: repository),
-                try LibGit2LockPathResolver.fact(for: .packedRefs, repository: repository),
-                try LibGit2LockPathResolver.fact(for: .config, repository: repository),
-            ]
+            lockFacts = GitBranchDeletionLockFacts(
+                reference: try LibGit2LockPathResolver.fact(
+                    for: .reference(name: referenceName), repository: repository),
+                packedReferences: try LibGit2LockPathResolver.fact(for: .packedRefs, repository: repository),
+                configurationPath: try LibGit2LockPathResolver.fact(for: .config, repository: repository).path
+            )
         } catch let error as GitDataPlaneError {
             throw failure(.gitFailure(error))
         } catch {
@@ -86,28 +87,29 @@ struct LibGit2LocalBranchDeletionWriter: Sendable {
         }
 
         let outcome: GitBranchDeletionOutcome
+        var lockLedger = GitBranchDeletionLockLedger()
         do throws(GitLockedOperationFailure<GitDeleteLocalBranchErrorReason>) {
             outcome = try deleteUnderReferenceLock(
                 request,
                 referenceName: referenceName,
                 expectedCommitOID: &expectedCommitOID,
-                referenceLockFact: lockFacts[0],
-                packedReferencesLockFact: lockFacts[1],
+                lockFacts: lockFacts,
+                lockLedger: &lockLedger,
                 repository: repository
             )
         } catch {
-            throw failure(error.reason, lockResidue: lockResidueObserver.residue(for: lockFacts.map(\.path)))
+            throw failure(error.reason, lockResidue: lockLedger.residue(using: lockResidueObserver))
         }
 
-        return outcome.result(lockResidue: lockResidueObserver.residue(for: lockFacts.map(\.path)))
+        return outcome.result(lockResidue: lockLedger.residue(using: lockResidueObserver))
     }
 
     private func deleteUnderReferenceLock(
         _ request: GitDeleteLocalBranchRequest,
         referenceName: String,
         expectedCommitOID: inout git_oid,
-        referenceLockFact: GitLockFact,
-        packedReferencesLockFact: GitLockFact,
+        lockFacts: GitBranchDeletionLockFacts,
+        lockLedger: inout GitBranchDeletionLockLedger,
         repository: OpaquePointer
     ) throws(GitLockedOperationFailure<GitDeleteLocalBranchErrorReason>) -> GitBranchDeletionOutcome {
         var transaction: OpaquePointer?
@@ -129,14 +131,12 @@ struct LibGit2LocalBranchDeletionWriter: Sendable {
         guard lockResult >= 0 else {
             let lockError = LibGit2ErrorCapture.failure(
                 code: lockResult,
-                lockFact: referenceLockFact,
+                lockFact: lockFacts.reference,
                 systemErrorCode: lockSystemErrorCode
             )
-            if case .lockHeld = lockError {
-                throw failure(.refLockContended)
-            }
             throw failure(.gitFailure(lockError))
         }
+        lockLedger.recordSuccessfulAcquisition(at: lockFacts.reference.path)
         transactionControl.reachCheckpoint(.afterReferenceLock)
 
         switch try assessLockedReference(
@@ -179,8 +179,8 @@ struct LibGit2LocalBranchDeletionWriter: Sendable {
             commitResult < 0
             ? deletionCommitFailure(
                 code: commitResult,
-                referenceLockFact: referenceLockFact,
-                packedReferencesLockFact: packedReferencesLockFact,
+                referenceLockFact: lockFacts.reference,
+                packedReferencesLockFact: lockFacts.packedReferences,
                 systemErrorCode: commitSystemErrorCode
             )
             : nil
@@ -193,6 +193,9 @@ struct LibGit2LocalBranchDeletionWriter: Sendable {
                 cleanup: cleanAfterDeletion(
                     branchName: request.branchName,
                     referenceName: referenceName,
+                    referenceLockPath: lockFacts.reference.path,
+                    configurationLockPath: lockFacts.configurationPath,
+                    lockLedger: &lockLedger,
                     repositoryPath: request.repositoryPath
                 ))
         case .present(let reference):
@@ -258,6 +261,9 @@ struct LibGit2LocalBranchDeletionWriter: Sendable {
     private func cleanAfterDeletion(
         branchName: String,
         referenceName: String,
+        referenceLockPath: URL,
+        configurationLockPath: URL,
+        lockLedger: inout GitBranchDeletionLockLedger,
         repositoryPath: URL
     ) -> GitBranchMetadataCleanup {
         transactionControl.reachCheckpoint(.beforeCleanupReservation)
@@ -292,6 +298,7 @@ struct LibGit2LocalBranchDeletionWriter: Sendable {
                 repositoryPath: repositoryPath
             )
         }
+        lockLedger.recordSuccessfulAcquisition(at: referenceLockPath)
 
         transactionControl.reachCheckpoint(.afterCleanupReservation)
         switch probeReference(referenceName, at: repositoryPath) {
@@ -308,7 +315,9 @@ struct LibGit2LocalBranchDeletionWriter: Sendable {
         return metadataCleaner.clean(
             branchName: branchName,
             referenceName: referenceName,
-            repository: repository
+            repository: repository,
+            configurationLockPath: configurationLockPath,
+            lockLedger: &lockLedger
         )
     }
 
@@ -430,6 +439,12 @@ private enum LockedBranchAssessment {
     case notFound
     case moved(String)
     case matchesExpectedCommit
+}
+
+private struct GitBranchDeletionLockFacts {
+    let reference: GitLockFact
+    let packedReferences: GitLockFact
+    let configurationPath: URL
 }
 
 private enum BranchReferenceProbe {

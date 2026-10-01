@@ -7,17 +7,26 @@ struct LibGit2BranchMetadataCleaner: Sendable {
     func clean(
         branchName: String,
         referenceName: String,
-        repository: OpaquePointer
+        repository: OpaquePointer,
+        configurationLockPath: URL,
+        lockLedger: inout GitBranchDeletionLockLedger
     ) -> GitBranchMetadataCleanup {
         GitBranchMetadataCleanup(
-            configuration: removeBranchConfiguration(named: branchName, repository: repository),
+            configuration: removeBranchConfiguration(
+                named: branchName,
+                repository: repository,
+                configurationLockPath: configurationLockPath,
+                lockLedger: &lockLedger
+            ),
             reflog: removeBranchReflog(named: referenceName, repository: repository)
         )
     }
 
     private func removeBranchConfiguration(
         named branchName: String,
-        repository: OpaquePointer
+        repository: OpaquePointer,
+        configurationLockPath: URL,
+        lockLedger: inout GitBranchDeletionLockLedger
     ) -> GitBranchMetadataDisposition {
         var repositoryConfiguration: OpaquePointer?
         let repositoryConfigurationResult = git_repository_config(&repositoryConfiguration, repository)
@@ -46,6 +55,7 @@ struct LibGit2BranchMetadataCleaner: Sendable {
         guard lockResult >= 0, let configurationTransaction else {
             return .leftInPlace(.removalFailed)
         }
+        lockLedger.recordSuccessfulAcquisition(at: configurationLockPath)
         defer { git_transaction_free(configurationTransaction) }
 
         let entryNames: [String]

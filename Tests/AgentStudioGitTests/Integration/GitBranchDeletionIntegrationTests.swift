@@ -287,8 +287,8 @@ struct GitBranchDeletionIntegrationTests {
         #expect(try fixture.localReferences() == referencesBefore)
     }
 
-    @Test("a competing native reference lock is reported with its exact residue path")
-    func competingReferenceLockIsReportedWithExactResidue() async throws {
+    @Test("a competing reference lock reports the exact blocker without own residue")
+    func competingReferenceLockReportsExactBlockerWithoutOwnResidue() async throws {
         // Arrange
         let fixture = try GitBranchDeletionFixture.make(prefix: "agentstudio-git-delete-ref-lock")
         defer { fixture.remove() }
@@ -296,6 +296,7 @@ struct GitBranchDeletionIntegrationTests {
         let topicCommit = try fixture.branchCommit("topic")
         let lockPath = fixture.gitDirectory.appending(path: "refs/heads/topic.lock")
         try fixture.writeLockFile(lockPath)
+        let lockContentsBefore = try Data(contentsOf: lockPath)
         let configBefore = try fixture.localConfiguration()
         let reflogBefore = try #require(try fixture.reflogBytes(for: "topic"))
         let client = LibGit2AgentStudioGitLocalClient()
@@ -311,9 +312,20 @@ struct GitBranchDeletionIntegrationTests {
             )
             Issue.record("branch deletion unexpectedly acquired an existing ref lock")
         } catch {
-            #expect(error.reason == .refLockContended)
-            #expect(error.lockResidue == [lockPath.standardizedFileURL])
+            #expect(
+                error.reason
+                    == .gitFailure(
+                        .lockHeld(
+                            GitLockFact(
+                                path: lockPath.standardizedFileURL,
+                                resource: .reference(name: "refs/heads/topic")
+                            )
+                        )
+                    )
+            )
+            #expect(error.lockResidue?.isEmpty == true)
         }
+        #expect(try Data(contentsOf: lockPath) == lockContentsBefore)
         #expect(try fixture.branchCommit("topic") == topicCommit)
         #expect(try fixture.localConfiguration() == configBefore)
         #expect(try fixture.reflogBytes(for: "topic") == reflogBefore)

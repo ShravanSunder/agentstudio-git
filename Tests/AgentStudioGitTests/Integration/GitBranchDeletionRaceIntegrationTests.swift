@@ -21,6 +21,9 @@ struct GitBranchDeletionRaceIntegrationTests {
         try fixture.git.run("add", "moved-target.txt")
         try fixture.git.run("commit", "-m", "advance main target")
         let movedCommit = try fixture.git.run("rev-parse", "HEAD").trimmingCharacters(in: .whitespacesAndNewlines)
+        let configurationLock = fixture.gitDirectory.appending(path: "config.lock")
+        try fixture.writeLockFile(configurationLock)
+        let configurationLockContentsBefore = try Data(contentsOf: configurationLock)
         let releaseLockBoundary = DispatchSemaphore(value: 0)
         let (checkpoints, checkpointContinuation) = AsyncStream.makeStream(of: GitBranchDeletionCheckpoint.self)
         var checkpointIterator = checkpoints.makeAsyncIterator()
@@ -55,6 +58,7 @@ struct GitBranchDeletionRaceIntegrationTests {
         #expect(try fixture.branchCommit("topic") == movedCommit)
         #expect(try fixture.localConfiguration() == configAfterMove)
         #expect(try fixture.reflogBytes(for: "topic") == reflogAfterMove)
+        #expect(try Data(contentsOf: configurationLock) == configurationLockContentsBefore)
     }
 
     @Test("a malformed linked worktree administration refuses deletion without changing branch metadata")
@@ -101,6 +105,7 @@ struct GitBranchDeletionRaceIntegrationTests {
         try fixture.git.run("pack-refs", "--all", "--prune")
         let packedReferencesLock = fixture.gitDirectory.appending(path: "packed-refs.lock")
         try fixture.writeLockFile(packedReferencesLock)
+        let packedReferencesLockContentsBefore = try Data(contentsOf: packedReferencesLock)
         let configBefore = try fixture.localConfiguration()
         let reflogBefore = try #require(try fixture.reflogBytes(for: "topic"))
         let client = LibGit2AgentStudioGitLocalClient()
@@ -121,12 +126,13 @@ struct GitBranchDeletionRaceIntegrationTests {
                     error: .lockHeld(
                         GitLockFact(path: packedReferencesLock, resource: .packedRefs)
                     ),
-                    lockResidue: [packedReferencesLock]
+                    lockResidue: []
                 )
         )
         #expect(try fixture.branchCommit("topic") == topicCommit)
         #expect(try fixture.localConfiguration() == configBefore)
         #expect(try fixture.reflogBytes(for: "topic") == reflogBefore)
+        #expect(try Data(contentsOf: packedReferencesLock) == packedReferencesLockContentsBefore)
     }
 
     @Test("metadata cleanup failure leaves the affected config and reports its lock")
@@ -139,6 +145,7 @@ struct GitBranchDeletionRaceIntegrationTests {
         try fixture.git.run("config", "--local", "branch.topic.remote", "origin")
         let configurationLock = fixture.gitDirectory.appending(path: "config.lock")
         try fixture.writeLockFile(configurationLock)
+        let configurationLockContentsBefore = try Data(contentsOf: configurationLock)
         let reflogBefore = try #require(try fixture.reflogBytes(for: "topic"))
         let client = LibGit2AgentStudioGitLocalClient()
 
@@ -159,12 +166,13 @@ struct GitBranchDeletionRaceIntegrationTests {
                         configuration: .leftInPlace(.removalFailed),
                         reflog: .removed
                     ),
-                    lockResidue: [configurationLock]
+                    lockResidue: []
                 )
         )
         #expect(try fixture.git.succeeds("show-ref", "--verify", "refs/heads/topic") == false)
         #expect(try fixture.configValue("branch.topic.remote") == "origin")
         #expect(try fixture.reflogBytes(for: "topic") == nil)
+        #expect(try Data(contentsOf: configurationLock) == configurationLockContentsBefore)
         #expect(!reflogBefore.isEmpty)
     }
 
@@ -255,6 +263,7 @@ struct GitBranchDeletionRaceIntegrationTests {
         defer { releaseReservation.signal() }
         #expect(await checkpointIterator.next() == .beforeCleanupReservation)
         try fixture.writeLockFile(referenceLock)
+        let referenceLockContentsBefore = try Data(contentsOf: referenceLock)
         releaseReservation.signal()
         reachedReservation.continuation.finish()
         let result = try await deleteTask.value
@@ -267,9 +276,10 @@ struct GitBranchDeletionRaceIntegrationTests {
                         configuration: .leftInPlace(.reservationUnavailable),
                         reflog: .leftInPlace(.reservationUnavailable)
                     ),
-                    lockResidue: [referenceLock]
+                    lockResidue: []
                 )
         )
+        #expect(try Data(contentsOf: referenceLock) == referenceLockContentsBefore)
         #expect(try fixture.git.succeeds("show-ref", "--verify", "refs/heads/topic") == false)
         #expect(try fixture.configValue("branch.topic.remote") == "origin")
         #expect(try fixture.reflogBytes(for: "topic") != nil)
