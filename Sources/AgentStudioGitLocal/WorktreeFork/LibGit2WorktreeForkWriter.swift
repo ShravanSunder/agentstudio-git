@@ -177,7 +177,7 @@ struct LibGit2WorktreeForkWriter: Sendable {
         try faults.reach(.afterIndexesBuilt)
         try cancellation.throwIfCancelled()
 
-        let snapshot = try WorktreeForkValidator(reader: reader).validate(
+        let snapshot = try WorktreeForkValidator(reader: reader, cancellation: cancellation, faults: faults).validate(
             plan: plan,
             observations: observations,
             destinationRootDescriptor: destinationRootDescriptor,
@@ -186,6 +186,7 @@ struct LibGit2WorktreeForkWriter: Sendable {
         )
         try WorktreeForkTopologyValidator(plan: plan).validate(rehomedNodes, evidenceByNode: nodeIndexEvidence)
         try faults.reach(.afterValidation)
+        try cancellation.throwIfCancelled()
         return GitForkWorktreeResult(
             worktree: snapshot,
             materialization: .copyOnWrite(report(plan, observations))
@@ -239,16 +240,18 @@ struct LibGit2WorktreeForkWriter: Sendable {
         try faults.reach(.afterIndexesBuilt)
         try cancellation.throwIfCancelled()
 
-        let snapshot = try WorktreeForkValidator(reader: reader).validateChangesOnly(
-            plan: plan,
-            changesOnly: changesOnly,
-            sourceRootDescriptor: sourceRootDescriptor,
-            destinationRootDescriptor: destinationRootDescriptor,
-            indexEvidence: indexEvidence,
-            lockTracker: journal.lockTracker
-        )
+        let snapshot = try WorktreeForkValidator(reader: reader, cancellation: cancellation, faults: faults)
+            .validateChangesOnly(
+                plan: plan,
+                changesOnly: changesOnly,
+                sourceRootDescriptor: sourceRootDescriptor,
+                destinationRootDescriptor: destinationRootDescriptor,
+                indexEvidence: indexEvidence,
+                lockTracker: journal.lockTracker
+            )
         try WorktreeForkTopologyValidator(plan: plan).validate(rehomedNodes, evidenceByNode: [:])
         try faults.reach(.afterValidation)
+        try cancellation.throwIfCancelled()
         return GitForkWorktreeResult(
             worktree: snapshot,
             materialization: .changesOnly(

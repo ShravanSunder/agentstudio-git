@@ -7,6 +7,18 @@ import Foundation
 /// checks the plan, the realized destination, the captured-HEAD index, and the refreshed stat data.
 struct WorktreeForkValidator: Sendable {
     let reader: LibGit2WorktreeReader
+    let cancellation: WorktreeForkCancellation
+    let faults: WorktreeForkFaultInjector
+
+    init(
+        reader: LibGit2WorktreeReader,
+        cancellation: WorktreeForkCancellation,
+        faults: WorktreeForkFaultInjector = .production
+    ) {
+        self.reader = reader
+        self.cancellation = cancellation
+        self.faults = faults
+    }
 
     func validate(
         plan: WorktreeForkPlan,
@@ -42,15 +54,14 @@ struct WorktreeForkValidator: Sendable {
         try validateHead(plan)
         let sourceRepository = try WorktreeForkGitHandles.openWorktree(plan.sourceRoot)
         defer { git_repository_free(sourceRepository) }
-        let currentRepositoryState = try WorktreeForkChangesOnlyGitSnapshotReader(
-            cancellation: WorktreeForkCancellation()
-        )
-        .repositoryState(sourceRepository, expectedHead: plan.capturedHead.commitOID)
+        let gitSnapshotReader = WorktreeForkChangesOnlyGitSnapshotReader(cancellation: cancellation)
+        let currentRepositoryState = try gitSnapshotReader.repositoryState(
+            sourceRepository, expectedHead: plan.capturedHead.commitOID)
         guard currentRepositoryState == changesOnly.repositoryState else {
             throw .sourceChanged(relativePath: ".", reason: .repositoryStateChanged)
         }
 
-        let planner = WorktreeForkChangesOnlyPlanner(cancellation: WorktreeForkCancellation())
+        let planner = WorktreeForkChangesOnlyPlanner(cancellation: cancellation)
         for entry in changesOnly.entries {
             let sourceNode = try planner.capture(entry.relativePath, rootDescriptor: sourceRootDescriptor)
             try validateSourceEntry(entry, current: sourceNode)
@@ -76,6 +87,12 @@ struct WorktreeForkValidator: Sendable {
             else {
                 throw .validationFailed(reason: .entryKindMismatch, relativePath: restoration.relativePath)
             }
+        }
+        try faults.reach(.afterChangesOnlyContentRehash)
+        let finalRepositoryState = try gitSnapshotReader.repositoryState(
+            sourceRepository, expectedHead: plan.capturedHead.commitOID)
+        guard finalRepositoryState == changesOnly.repositoryState else {
+            throw .sourceChanged(relativePath: ".", reason: .repositoryStateChanged)
         }
         try WorktreeForkIndexValidation.validate(
             worktreePath: plan.destinationRoot,
@@ -240,7 +257,7 @@ struct WorktreeForkValidator: Sendable {
         _ plan: WorktreeForkFilesystemPlan,
         destinationRootDescriptor: Int32
     ) throws(GitWorktreeForkError) {
-        let realized = try WorktreeForkSourceWalker(cancellation: WorktreeForkCancellation())
+        let realized = try WorktreeForkSourceWalker(cancellation: cancellation)
             .walk(sourceRootDescriptor: destinationRootDescriptor)
         guard Self.pathKinds(of: realized) == Self.pathKinds(of: plan) else {
             let mismatch = Self.pathKinds(of: realized).symmetricDifference(Self.pathKinds(of: plan))

@@ -42,6 +42,7 @@ enum WorktreeForkFaultPoint: Hashable, Sendable {
     case afterGitStateRehomed
     case afterDirectoryMetadataApplied
     case afterIndexesBuilt
+    case afterChangesOnlyContentRehash
     case afterValidation
     case rollbackRemovingDestination
     case afterRollback
