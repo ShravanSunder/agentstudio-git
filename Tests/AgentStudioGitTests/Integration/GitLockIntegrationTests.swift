@@ -135,6 +135,8 @@ struct GitLockIntegrationTests {
             for: .index(worktreePath: fixture.repositoryPath),
             repositoryPath: fixture.repositoryPath
         )
+        let lockContents = Data("incidental candidate lock\n".utf8)
+        try lockContents.write(to: lockFact.path)
 
         let error = LibGit2ErrorCapture.failure(
             code: Int32(GIT_ELOCKED.rawValue),
@@ -145,6 +147,39 @@ struct GitLockIntegrationTests {
         let deniedDirectory = lockFact.path.deletingLastPathComponent()
         let expectedDeniedPath = URL(fileURLWithPath: deniedDirectory.path, isDirectory: false)
         #expect(error == .permissionDenied(path: expectedDeniedPath))
+        #expect(try Data(contentsOf: lockFact.path) == lockContents)
+    }
+
+    @Test("captured EACCES beats a present packed-reference lock during deletion commit mapping")
+    func deletionCommitPermissionErrorBeatsPresentPackedReferenceLock() throws {
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-delete-permission-lock")
+        defer { fixture.remove() }
+        let referenceLockFact = try repositoryLockFact(
+            for: .reference(name: "refs/heads/main"), repositoryPath: fixture.repositoryPath)
+        let packedReferencesLockFact = try repositoryLockFact(for: .packedRefs, repositoryPath: fixture.repositoryPath)
+        let lockContents = Data("incidental packed lock\n".utf8)
+        try lockContents.write(to: packedReferencesLockFact.path)
+        let writer = LibGit2LocalBranchDeletionWriter()
+
+        let permissionFailure = writer.deletionCommitFailure(
+            code: Int32(GIT_ELOCKED.rawValue),
+            referenceLockFact: referenceLockFact,
+            packedReferencesLockFact: packedReferencesLockFact,
+            systemErrorCode: EACCES
+        )
+        let contentionFailure = writer.deletionCommitFailure(
+            code: Int32(GIT_ELOCKED.rawValue),
+            referenceLockFact: referenceLockFact,
+            packedReferencesLockFact: packedReferencesLockFact,
+            systemErrorCode: 0
+        )
+
+        guard case .permissionDenied = permissionFailure else {
+            Issue.record("expected captured EACCES to win over the incidental lock, got \(permissionFailure)")
+            return
+        }
+        #expect(contentionFailure == .lockHeld(packedReferencesLockFact))
+        #expect(try Data(contentsOf: packedReferencesLockFact.path) == lockContents)
     }
 
     @Test("linked worktree index locks are per-worktree and branch locks are common")

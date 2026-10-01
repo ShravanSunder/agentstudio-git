@@ -67,11 +67,11 @@ enum LibGit2ErrorCapture {
     ) -> GitDataPlaneError {
         if let lockFact {
             if code == Int32(GIT_ELOCKED.rawValue) {
-                if residueObserver.status(of: lockFact.path) == .present {
-                    return .lockHeld(lockFact)
-                }
                 if systemErrorCode == EACCES || deniedLockDirectory(for: lockFact.path) != nil {
                     return .permissionDenied(path: lockDirectoryPath(for: lockFact.path))
+                }
+                if residueObserver.status(of: lockFact.path) == .present {
+                    return .lockHeld(lockFact)
                 }
                 return .lockUnidentified(lockFact.resource)
             }

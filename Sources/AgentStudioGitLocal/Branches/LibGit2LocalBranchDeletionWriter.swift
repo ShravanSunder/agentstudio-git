@@ -370,18 +370,18 @@ struct LibGit2LocalBranchDeletionWriter: Sendable {
         return result >= 0 && isValid != 0
     }
 
-    private func deletionCommitFailure(
+    func deletionCommitFailure(
         code: Int32,
         referenceLockFact: GitLockFact,
         packedReferencesLockFact: GitLockFact,
         systemErrorCode: Int32
     ) -> GitDataPlaneError {
         if code == GIT_ELOCKED.rawValue {
-            if lockResidueObserver.status(of: packedReferencesLockFact.path) == .present {
-                return .lockHeld(packedReferencesLockFact)
-            }
             if systemErrorCode == EACCES {
                 return .permissionDenied(path: deniedDirectory(for: [packedReferencesLockFact, referenceLockFact]))
+            }
+            if lockResidueObserver.status(of: packedReferencesLockFact.path) == .present {
+                return .lockHeld(packedReferencesLockFact)
             }
             return .lockUnidentified(.packedRefs)
         }
