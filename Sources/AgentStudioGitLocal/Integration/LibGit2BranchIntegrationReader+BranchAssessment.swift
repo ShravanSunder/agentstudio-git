@@ -25,7 +25,12 @@ extension LibGit2BranchIntegrationReader {
         }
         defer { git_commit_free(branch.commit) }
 
-        if git_oid_equal(withUnsafePointer(to: branch.oid) { $0 }, withUnsafePointer(to: targetOID) { $0 }) != 0 {
+        let isSameCommit = withUnsafePointer(to: branch.oid) { branchOIDPointer in
+            withUnsafePointer(to: targetOID) { targetOIDPointer in
+                git_oid_equal(branchOIDPointer, targetOIDPointer) != 0
+            }
+        }
+        if isSameCommit {
             return (
                 Self.computed(
                     branchName: branchName,
@@ -40,10 +45,12 @@ extension LibGit2BranchIntegrationReader {
             return directUnknown(branchName, commit: branch.oidString, reason: .readFailed)
         }
         let branchTreeOID = branchTreeOIDPointer.pointee
-        if git_oid_equal(
-            withUnsafePointer(to: branchTreeOID) { $0 },
-            withUnsafePointer(to: targetTreeOID) { $0 }
-        ) != 0 {
+        let isSameContent = withUnsafePointer(to: branchTreeOID) { branchTreeOIDPointer in
+            withUnsafePointer(to: targetTreeOID) { targetTreeOIDPointer in
+                git_oid_equal(branchTreeOIDPointer, targetTreeOIDPointer) != 0
+            }
+        }
+        if isSameContent {
             return (
                 Self.computed(
                     branchName: branchName,

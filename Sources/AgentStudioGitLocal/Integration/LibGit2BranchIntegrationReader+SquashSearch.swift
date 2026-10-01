@@ -37,11 +37,9 @@ extension LibGit2BranchIntegrationReader {
 
             let parentOID = parentOIDPointer.pointee
             var parentCommit: OpaquePointer?
-            let parentResult = git_commit_lookup(
-                &parentCommit,
-                repository,
-                withUnsafePointer(to: parentOID) { $0 }
-            )
+            let parentResult = withUnsafePointer(to: parentOID) { parentOIDPointer in
+                git_commit_lookup(&parentCommit, repository, parentOIDPointer)
+            }
             guard parentResult >= 0, let parentCommit else {
                 failure = Self.proofFailure(for: parentResult)
                 break

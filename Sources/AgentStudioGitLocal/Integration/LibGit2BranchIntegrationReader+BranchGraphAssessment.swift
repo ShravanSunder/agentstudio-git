@@ -85,12 +85,11 @@ extension LibGit2BranchIntegrationReader {
         repository: OpaquePointer
     ) -> Result<OpaquePointer, LibGit2BranchIntegrationGraphFailure> {
         var mergeBases = git_oidarray(ids: nil, count: 0)
-        let result = git_merge_bases(
-            &mergeBases,
-            repository,
-            withUnsafePointer(to: targetOID) { $0 },
-            withUnsafePointer(to: branchOID) { $0 }
-        )
+        let result = withUnsafePointer(to: targetOID) { targetOIDPointer in
+            withUnsafePointer(to: branchOID) { branchOIDPointer in
+                git_merge_bases(&mergeBases, repository, targetOIDPointer, branchOIDPointer)
+            }
+        }
         defer { git_oidarray_dispose(&mergeBases) }
 
         if result == GIT_ENOTFOUND.rawValue || (result >= 0 && mergeBases.count < 1) {
@@ -107,11 +106,9 @@ extension LibGit2BranchIntegrationReader {
         }
 
         var mergeBaseCommit: OpaquePointer?
-        let mergeBaseResult = git_commit_lookup(
-            &mergeBaseCommit,
-            repository,
-            withUnsafePointer(to: mergeBaseOIDPointer.pointee) { $0 }
-        )
+        let mergeBaseResult = withUnsafePointer(to: mergeBaseOIDPointer.pointee) { mergeBaseOID in
+            git_commit_lookup(&mergeBaseCommit, repository, mergeBaseOID)
+        }
         guard mergeBaseResult >= 0, let mergeBaseCommit else {
             return .failure(.init(reason: Self.proofFailure(for: mergeBaseResult)))
         }
