@@ -1,5 +1,6 @@
 import AgentStudioGit
 import AgentStudioGitContracts
+import AgentStudioGitLockSupport
 import Darwin
 import Foundation
 import Testing
@@ -9,6 +10,38 @@ import os
 
 @Suite("Git branch deletion race integration", .serialized)
 struct GitBranchDeletionRaceIntegrationTests {
+    @Test("an acquired lock remains residue when its inode cannot be read at acquisition")
+    func acquiredLockWithUnknownInodeRemainsResidue() throws {
+        // Arrange
+        let fixture = try GitBranchDeletionFixture.make(prefix: "agentstudio-git-delete-unknown-lock-inode")
+        let referencesDirectory = fixture.gitDirectory.appending(path: "refs/heads")
+        let lockPath = referencesDirectory.appending(path: "topic.lock").standardizedFileURL
+        var originalDirectoryStatus = stat()
+        let statResult = referencesDirectory.path.withCString { stat($0, &originalDirectoryStatus) }
+        guard statResult == 0 else {
+            fixture.remove()
+            Issue.record("could not stat the local branch reference directory")
+            return
+        }
+        let originalMode = originalDirectoryStatus.st_mode
+        defer {
+            _ = referencesDirectory.path.withCString { chmod($0, originalMode) }
+            fixture.remove()
+        }
+        try fixture.writeLockFile(lockPath)
+        var ledger = GitBranchDeletionLockLedger()
+        let chmodResult = referencesDirectory.path.withCString { chmod($0, mode_t(0)) }
+        #expect(chmodResult == 0)
+
+        // Act
+        ledger.recordSuccessfulAcquisition(at: lockPath)
+        _ = referencesDirectory.path.withCString { chmod($0, originalMode) }
+
+        // Assert
+        #expect(ledger.residue(using: .live) == [lockPath])
+        #expect(FileManager.default.fileExists(atPath: lockPath.path))
+    }
+
     @Test("a tip moved before the locked compare is retained with metadata unchanged")
     func tipMovedBeforeLockedCompareIsRetained() async throws {
         // Arrange
@@ -392,5 +425,63 @@ struct GitBranchDeletionRaceIntegrationTests {
         #expect(try fixture.branchCommit("topic") == topicCommit)
         #expect(try fixture.localConfiguration() == configBefore)
         #expect(try fixture.reflogBytes(for: "topic") == reflogBefore)
+    }
+
+    @Test("an acquired reference lock remains residue when release and observation are denied")
+    func checkoutFailureWithUnsearchableReferenceLockReportsResidue() async throws {
+        // Arrange
+        let fixture = try GitBranchDeletionFixture.make(prefix: "agentstudio-git-delete-unsearchable-lock")
+        let referencesDirectory = fixture.gitDirectory.appending(path: "refs/heads")
+        var originalDirectoryStatus = stat()
+        let statResult = referencesDirectory.path.withCString { stat($0, &originalDirectoryStatus) }
+        guard statResult == 0 else {
+            fixture.remove()
+            Issue.record("could not stat the local branch reference directory")
+            return
+        }
+        let originalMode = originalDirectoryStatus.st_mode
+        defer {
+            _ = referencesDirectory.path.withCString { chmod($0, originalMode) }
+            fixture.remove()
+        }
+        try fixture.makeBranch("topic")
+        _ = try fixture.addLinkedWorktree(named: "linked-corrupt", onBranch: "topic")
+        let administrationHead = fixture.gitDirectory.appending(path: "worktrees/linked-corrupt/HEAD")
+        try Data("not a symbolic ref\n".utf8).write(to: administrationHead)
+        let topicCommit = try fixture.branchCommit("topic")
+        let chmodResult = OSAllocatedUnfairLock(initialState: Int32(-1))
+        let control = GitBranchDeletionTransactionControl { checkpoint in
+            guard checkpoint == .afterReferenceLock else {
+                return
+            }
+            let result = referencesDirectory.path.withCString { chmod($0, mode_t(0)) }
+            chmodResult.withLock { $0 = result }
+        }
+        let client = LibGit2AgentStudioGitLocalClient(
+            branchDeletionWriter: LibGit2LocalBranchDeletionWriter(transactionControl: control)
+        )
+        let referenceLock = fixture.gitDirectory.appending(path: "refs/heads/topic.lock").standardizedFileURL
+
+        // Act / Assert
+        do {
+            _ = try await client.deleteLocalBranch(
+                GitDeleteLocalBranchRequest(
+                    repositoryPath: fixture.repositoryPath,
+                    branchName: "topic",
+                    expectedCommit: topicCommit
+                )
+            )
+            Issue.record("branch deletion unexpectedly ignored corrupt linked worktree administration")
+        } catch {
+            guard case .gitFailure(.libgit2Failure(code: -14, klass: 2, message: _)) = error.reason else {
+                Issue.record("expected the locked reference read failure to remain primary, got \(error.reason)")
+                return
+            }
+            #expect(error.lockResidue == [referenceLock])
+        }
+        #expect(chmodResult.withLock { $0 } == 0)
+        _ = referencesDirectory.path.withCString { chmod($0, originalMode) }
+        #expect(FileManager.default.fileExists(atPath: referenceLock.path))
+        #expect(try fixture.branchCommit("topic") == topicCommit)
     }
 }

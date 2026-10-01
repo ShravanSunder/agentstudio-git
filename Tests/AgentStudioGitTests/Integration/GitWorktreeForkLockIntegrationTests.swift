@@ -9,6 +9,62 @@ import os
 
 @Suite("Git worktree fork lock integration", .serialized)
 struct GitWorktreeForkLockIntegrationTests {
+    @Test("an acquired lock remains residue when acquisition identity and later observation are inaccessible")
+    func acquiredLockWithUnknownIdentityRemainsResidue() throws {
+        // Arrange
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-unknown-lock-identity")
+        defer { fixture.remove() }
+        let referenceName = "refs/heads/fork-unknown-identity"
+        let lockFact = GitLockFact(
+            path: fixture.source.appending(path: ".git/\(referenceName).lock").standardizedFileURL,
+            resource: .reference(name: referenceName)
+        )
+        let observationCount = OSAllocatedUnfairLock(initialState: 0)
+        let tracker = WorktreeForkLockTracker(pathObserver: { _ in
+            observationCount.withLock { count in
+                count += 1
+                return count == 1 ? .absent : .inaccessible
+            }
+        })
+        tracker.beginAttempt(for: [lockFact])
+        try Self.writeLockFile(lockFact.path, contents: "native transaction lock\n")
+
+        // Act
+        tracker.recordAcquisition(of: lockFact)
+
+        // Assert
+        #expect(tracker.ownedResidue() == [lockFact])
+    }
+
+    @Test("a replacement inode is not reported as an acquired lock survivor")
+    func replacedAcquiredLockIsNotResidue() throws {
+        // Arrange
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-replaced-lock-inode")
+        defer { fixture.remove() }
+        let referenceName = "refs/heads/fork-replaced-inode"
+        let lockFact = GitLockFact(
+            path: fixture.source.appending(path: ".git/\(referenceName).lock").standardizedFileURL,
+            resource: .reference(name: referenceName)
+        )
+        let originalPath = lockFact.path.appendingPathExtension("acquired")
+        let tracker = WorktreeForkLockTracker()
+        tracker.beginAttempt(for: [lockFact])
+        try Self.writeLockFile(lockFact.path, contents: "acquired inode\n")
+        tracker.recordAcquisition(of: lockFact)
+        let moveResult = lockFact.path.path.withCString { source in
+            originalPath.path.withCString { destination in
+                rename(source, destination)
+            }
+        }
+        #expect(moveResult == 0)
+        try Self.writeLockFile(lockFact.path, contents: "replacement inode\n")
+
+        // Act / Assert
+        #expect(tracker.ownedResidue().isEmpty)
+        #expect(try Data(contentsOf: originalPath) == Data("acquired inode\n".utf8))
+        #expect(try Data(contentsOf: lockFact.path) == Data("replacement inode\n".utf8))
+    }
+
     @Test("a newly present candidate after a generic failure is not owned residue")
     func newlyPresentCandidateAfterGenericFailureIsForeign() throws {
         // Arrange
@@ -308,6 +364,112 @@ struct GitWorktreeForkLockIntegrationTests {
         #expect(!GitWorktreeForkFileProbe.exists(destination))
         #expect(!GitWorktreeForkFileProbe.exists(fixture.linkedWorktreeAdministration(branchName)))
         #expect(try fixture.branchNames() == ["refs/heads/main"])
+    }
+
+    @Test("an acquired branch lock stays in rollback residue when its parent becomes unsearchable")
+    func unsearchableAcquiredBranchLockIsReportedByRollback() async throws {
+        // Arrange
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-unsearchable-lock")
+        let referenceDirectory = fixture.source.appending(path: ".git/refs/heads")
+        var originalDirectoryStatus = stat()
+        let statResult = referenceDirectory.path.withCString { stat($0, &originalDirectoryStatus) }
+        guard statResult == 0 else {
+            fixture.remove()
+            Issue.record("could not stat the branch reference directory")
+            return
+        }
+        let originalMode = originalDirectoryStatus.st_mode
+        let unreadableMode = mode_t(0)
+        defer {
+            _ = referenceDirectory.path.withCString { chmod($0, originalMode) }
+            fixture.remove()
+        }
+        let branchName = "fork-unsearchable-lock"
+        let referenceName = "refs/heads/\(branchName)"
+        let lockPath = referenceDirectory.appending(path: "\(branchName).lock").standardizedFileURL
+        let destination = fixture.destination(branchName)
+        let chmodResult = OSAllocatedUnfairLock(initialState: Int32(-1))
+        let faults = WorktreeForkFaultInjector { point throws(GitWorktreeForkError) in
+            guard point == .afterBranchReferenceLockAcquired(referenceName: referenceName) else {
+                return
+            }
+            let result = referenceDirectory.path.withCString { chmod($0, unreadableMode) }
+            chmodResult.withLock { $0 = result }
+            guard result == 0 else {
+                throw .entryFailed(relativePath: "refs/heads", reason: .unreadableEntry, errorNumber: errno)
+            }
+            throw .entryFailed(relativePath: referenceName, reason: .unreadableEntry, errorNumber: EACCES)
+        }
+        let client = LibGit2AgentStudioGitLocalClient(worktreeForkWriter: LibGit2WorktreeForkWriter(faults: faults))
+
+        // Act
+        let failure = await Self.forkFailure(
+            client,
+            fixture.request(destination: destination, mode: .newBranch(name: branchName)))
+        _ = referenceDirectory.path.withCString { chmod($0, originalMode) }
+
+        // Assert
+        #expect(chmodResult.withLock { $0 } == 0)
+        guard case .cleanupIncomplete(let primary, let residue) = failure else {
+            Issue.record("expected unreadable acquired lock residue, got \(String(describing: failure))")
+            return
+        }
+        #expect(primary == .entryFailed(relativePath: referenceName, reason: .unreadableEntry, errorNumber: EACCES))
+        #expect(residue == [GitWorktreeForkResidue(kind: .lockFile, location: "\(referenceName).lock")])
+        #expect(GitWorktreeForkFileProbe.exists(lockPath))
+        #expect(!GitWorktreeForkFileProbe.exists(destination))
+        #expect(!GitWorktreeForkFileProbe.exists(fixture.linkedWorktreeAdministration(branchName)))
+        #expect(try fixture.branchNames() == ["refs/heads/main"])
+    }
+
+    @Test("an inaccessible never-acquired foreign lock is protected without owned residue")
+    func inaccessibleForeignBranchLockIsNotOwnedResidue() async throws {
+        // Arrange
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-inaccessible-foreign-lock")
+        let referenceDirectory = fixture.source.appending(path: ".git/refs/heads")
+        var originalDirectoryStatus = stat()
+        let statResult = referenceDirectory.path.withCString { stat($0, &originalDirectoryStatus) }
+        guard statResult == 0 else {
+            fixture.remove()
+            Issue.record("could not stat the branch reference directory")
+            return
+        }
+        let originalMode = originalDirectoryStatus.st_mode
+        defer {
+            _ = referenceDirectory.path.withCString { chmod($0, originalMode) }
+            fixture.remove()
+        }
+        let branchName = "fork-inaccessible-foreign-lock"
+        let lockPath = referenceDirectory.appending(path: "\(branchName).lock").standardizedFileURL
+        let lockBytes = Data("foreign lock owned by another writer\n".utf8)
+        try lockBytes.write(to: lockPath)
+        let chmodResult = OSAllocatedUnfairLock(initialState: Int32(-1))
+        let faults = WorktreeForkFaultInjector { point throws(GitWorktreeForkError) in
+            guard point == .afterPreflight else {
+                return
+            }
+            let result = referenceDirectory.path.withCString { chmod($0, mode_t(0)) }
+            chmodResult.withLock { $0 = result }
+            guard result == 0 else {
+                throw .entryFailed(relativePath: "refs/heads", reason: .unreadableEntry, errorNumber: errno)
+            }
+        }
+        let client = LibGit2AgentStudioGitLocalClient(worktreeForkWriter: LibGit2WorktreeForkWriter(faults: faults))
+
+        // Act
+        let failure = await Self.forkFailure(
+            client,
+            fixture.request(destination: fixture.destination(branchName), mode: .newBranch(name: branchName)))
+        _ = referenceDirectory.path.withCString { chmod($0, originalMode) }
+
+        // Assert
+        #expect(chmodResult.withLock { $0 } == 0)
+        guard case .gitFailure(.permissionDenied(path: let deniedPath)) = failure else {
+            Issue.record("expected a permission failure without owned residue, got \(String(describing: failure))")
+            return
+        }
+        #expect(deniedPath == referenceDirectory)
+        #expect(try Data(contentsOf: lockPath) == lockBytes)
     }
 
     @Test("an acquired branch lock that remains at final validation is reported as owned residue")
