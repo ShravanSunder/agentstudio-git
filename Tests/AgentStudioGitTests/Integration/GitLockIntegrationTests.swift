@@ -142,7 +142,9 @@ struct GitLockIntegrationTests {
             systemErrorCode: EACCES
         )
 
-        #expect(error == .permissionDenied(path: lockFact.path.deletingLastPathComponent()))
+        let deniedDirectory = lockFact.path.deletingLastPathComponent()
+        let expectedDeniedPath = URL(fileURLWithPath: deniedDirectory.path, isDirectory: false)
+        #expect(error == .permissionDenied(path: expectedDeniedPath))
     }
 
     @Test("linked worktree index locks are per-worktree and branch locks are common")
@@ -229,7 +231,8 @@ struct GitLockIntegrationTests {
             )
         }
 
-        #expect(error == .permissionDenied(path: gitDirectoryPath))
+        let expectedDeniedPath = URL(fileURLWithPath: gitDirectoryPath.path, isDirectory: false)
+        #expect(error == .permissionDenied(path: expectedDeniedPath))
     }
 }
 

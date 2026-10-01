@@ -397,7 +397,7 @@ struct LibGit2LocalBranchDeletionWriter: Sendable {
             let directory = lockFact.path.deletingLastPathComponent()
             let accessResult = directory.path.withCString { access($0, W_OK | X_OK) }
             if accessResult != 0, errno == EACCES {
-                return directory
+                return LibGit2ErrorCapture.normalizedDirectoryPath(directory)
             }
         }
         return nil

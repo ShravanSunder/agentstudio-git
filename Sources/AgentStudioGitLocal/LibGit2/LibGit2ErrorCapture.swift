@@ -144,7 +144,7 @@ enum LibGit2ErrorCapture {
         normalizedDirectoryPath(lockPath.deletingLastPathComponent())
     }
 
-    private static func normalizedDirectoryPath(_ path: URL) -> URL {
+    static func normalizedDirectoryPath(_ path: URL) -> URL {
         var canonicalPath = path.resolvingSymlinksInPath().path
         while canonicalPath.count > 1, canonicalPath.hasSuffix("/") {
             canonicalPath.removeLast()
