@@ -27,8 +27,14 @@ final class WorktreeForkCancellation: Sendable {
 enum WorktreeForkFaultPoint: Hashable, Sendable {
     case afterPreflight
     case afterPlanning
+    case afterChangesOnlyCapture
+    case beforeCarrierBranchDeletion(referenceName: String)
+    case afterBranchReferenceLockAcquired(referenceName: String)
     case afterIdentityCreated
     case afterWorktreeAdded
+    case afterHeadCheckedOut
+    case afterChangesOnlyOverlay
+    case beforeChangesOnlyFileCopy(relativePath: String)
     case afterDirectoriesCreated
     case leafBatchStarted
     /// After a regular file's descriptor is verified against the plan and before it is cloned.
@@ -36,7 +42,9 @@ enum WorktreeForkFaultPoint: Hashable, Sendable {
     case afterMaterialization
     case afterGitStateRehomed
     case afterDirectoryMetadataApplied
+    case afterInitialIndexWriteBeforeStatRefresh(lockPath: URL)
     case afterIndexesBuilt
+    case afterChangesOnlyContentRehash
     case afterValidation
     case rollbackRemovingDestination
     case afterRollback

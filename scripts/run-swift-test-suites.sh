@@ -9,6 +9,10 @@ fi
 
 suites=(
   GitWireEnumSnapshotTests
+  GitBranchIntegrationContractTests
+  GitBranchDeletionContractTests
+  GitLockContractTests
+  GitWorktreeRemovalContractTests
   GitPublicContractTests
   GitInvalidDecodeTests
   GitRedactionTests
@@ -17,6 +21,8 @@ suites=(
   LibGit2RuntimeTests
   LibGit2RepositorySessionTests
   LibGit2ErrorCaptureTests
+  GitLockDiagnosticTests
+  GitLockResidueObserverTests
   GitRepositoryIdentityTests
   GitRepositoryWriterRegistryTests
   GitRepositoryWriterLaneTests
@@ -35,13 +41,36 @@ suites=(
   GitIgnoreIntegrationTests
   GitTrackedPathIntegrationTests
   GitWorktreeIntegrationTests
+  GitWorktreeRemovalIntegrationTests
+  GitFetchIntegrationTests
+  GitLockIntegrationTests
+  GitLockAcquisitionRetirementIntegrationTests
+  GitLockRemoteIntegrationTests
   GitWorktreeForkIntegrationTests
+  GitWorktreeForkLockIntegrationTests
+  GitWorktreeForkIndexLockIntegrationTests
+  GitWorktreeForkPackedReferenceLockIntegrationTests
   GitWorktreeForkStorageIntegrationTests
   GitWorktreeForkRollbackIntegrationTests
   GitWorktreeForkTopologyIntegrationTests
   GitWorktreeForkEligibilityIntegrationTests
+  GitWorktreeForkChangesOnlyIntegrationTests
+  GitWorktreeForkCancellationIntegrationTests
+  GitWorktreeForkTrackedStateIntegrationTests
+  GitWorktreeForkChangesOnlyFilterIntegrationTests
   GitWorktreeForkCleanAdoptionIntegrationTests
   GitCommitRangeCountIntegrationTests
+  GitBranchIntegrationIntegrationTests
+  GitBranchIntegrationHistoryIntegrationTests
+  GitBranchIntegrationBatchIntegrationTests
+  GitBranchIntegrationDeltaTests
+  GitBranchIntegrationSquashEdgeIntegrationTests
+  GitBranchIntegrationRealSquashIntegrationTests
+  GitBranchIntegrationEntryDeltaIntegrationTests
+  GitBranchIntegrationPathDeltaIntegrationTests
+  GitBranchIntegrationReadOnlyIntegrationTests
+  GitBranchDeletionIntegrationTests
+  GitBranchDeletionRaceIntegrationTests
   GitDiffImpactSummaryIntegrationTests
   GitReviewDataIntegrationTests
   GitLargeFilePointerReviewIntegrationTests

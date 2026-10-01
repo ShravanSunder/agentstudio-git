@@ -56,7 +56,11 @@ struct GitWorktreeForkTopologyIntegrationTests {
         #expect(
             try fixture.git.run(["config", "--get", "core.worktree"], currentDirectory: destinationLibrary)
                 .contains("fork/deps/library"))
-        #expect(result.materialization.preservedGitRepositoryCount == 2)
+        guard case .copyOnWrite(let materializationReport) = result.materialization else {
+            Issue.record("expected copy-on-write materialization")
+            return
+        }
+        #expect(materializationReport.preservedGitRepositoryCount == 2)
     }
 
     @Test("nested repositories, linked worktrees, and alternates are re-homed without source administration")
@@ -122,7 +126,11 @@ struct GitWorktreeForkTopologyIntegrationTests {
             try fixture.git.succeeds(
                 "cat-file", "-e", "HEAD:outside.txt", currentDirectory: destination.appending(path: "vendor/alt")))
         #expect(!alternates(of: destination.appending(path: "vendor/alt")).isEmpty)
-        #expect(result.materialization.preservedGitRepositoryCount == 3)
+        guard case .copyOnWrite(let materializationReport) = result.materialization else {
+            Issue.record("expected copy-on-write materialization")
+            return
+        }
+        #expect(materializationReport.preservedGitRepositoryCount == 3)
     }
 
     @Test(

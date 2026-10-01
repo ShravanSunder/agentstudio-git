@@ -8,6 +8,7 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
     private let worktreeReader: LibGit2WorktreeReader
     private let worktreeWriter: LibGit2WorktreeWriter
     private let worktreeForkWriter: LibGit2WorktreeForkWriter
+    private let branchDeletionWriter: LibGit2LocalBranchDeletionWriter
     private let blockingReadExecutor: LibGit2BlockingReadExecutor
 
     public init() {
@@ -17,6 +18,7 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
             worktreeReader: LibGit2WorktreeReader(),
             worktreeWriter: LibGit2WorktreeWriter(),
             worktreeForkWriter: LibGit2WorktreeForkWriter(),
+            branchDeletionWriter: LibGit2LocalBranchDeletionWriter(),
             blockingReadExecutor: .shared
         )
     }
@@ -27,6 +29,7 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
         worktreeReader: LibGit2WorktreeReader = LibGit2WorktreeReader(),
         worktreeWriter: LibGit2WorktreeWriter = LibGit2WorktreeWriter(),
         worktreeForkWriter: LibGit2WorktreeForkWriter = LibGit2WorktreeForkWriter(),
+        branchDeletionWriter: LibGit2LocalBranchDeletionWriter = LibGit2LocalBranchDeletionWriter(),
         blockingReadExecutor: LibGit2BlockingReadExecutor = .shared
     ) {
         self.identityResolver = identityResolver
@@ -34,6 +37,7 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
         self.worktreeReader = worktreeReader
         self.worktreeWriter = worktreeWriter
         self.worktreeForkWriter = worktreeForkWriter
+        self.branchDeletionWriter = branchDeletionWriter
         self.blockingReadExecutor = blockingReadExecutor
     }
 
@@ -101,12 +105,20 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
     }
 
     /// Runs on the blocking read executor, not the writer lane, so availability never waits behind mutations.
-    public func forkWorktreeEligibility(sourceWorktreePath: URL, destinationPath: URL) async
+    public func forkWorktreeEligibility(
+        sourceWorktreePath: URL,
+        destinationPath: URL,
+        materialization: GitWorktreeForkMaterialization
+    ) async
         -> GitWorktreeForkEligibility
     {
         let forkWriter = worktreeForkWriter
         return await blockingReadExecutor.execute {
-            forkWriter.eligibility(sourceWorktreePath: sourceWorktreePath, destinationPath: destinationPath)
+            forkWriter.eligibility(
+                sourceWorktreePath: sourceWorktreePath,
+                destinationPath: destinationPath,
+                materialization: materialization
+            )
         }
     }
 
@@ -217,6 +229,32 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
     public func branches(for repositoryPath: URL) async throws(GitDataPlaneError) -> [GitBranchSnapshot] {
         try await executeBlockingRead {
             try LibGit2BranchReader().branches(for: repositoryPath)
+        }
+    }
+
+    public func assessBranchIntegration(_ request: GitBranchIntegrationRequest) async throws(GitDataPlaneError)
+        -> GitBranchIntegrationReport
+    {
+        try await executeBlockingRead {
+            try LibGit2BranchIntegrationReader().assess(request)
+        }
+    }
+
+    public func deleteLocalBranch(_ request: GitDeleteLocalBranchRequest)
+        async throws(GitLockedOperationFailure<GitDeleteLocalBranchErrorReason>)
+        -> GitDeleteLocalBranchResult
+    {
+        let lane: GitRepositoryWriterLane
+        do throws(GitDataPlaneError) {
+            lane = try await writer(for: request.repositoryPath)
+        } catch {
+            throw GitLockedOperationFailure(reason: .gitFailure(error), lockResidue: [])
+        }
+        let branchDeletionWriter = self.branchDeletionWriter
+        return try await lane.run {
+            () throws(GitLockedOperationFailure<GitDeleteLocalBranchErrorReason>)
+                -> GitDeleteLocalBranchResult in
+            try branchDeletionWriter.deleteLocalBranch(request)
         }
     }
 

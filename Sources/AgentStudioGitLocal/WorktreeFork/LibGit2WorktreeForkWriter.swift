@@ -29,9 +29,17 @@ struct LibGit2WorktreeForkWriter: Sendable {
     }
 
     /// Read-only availability from host, volume, and File Provider facts; never the writer lane.
-    func eligibility(sourceWorktreePath: URL, destinationPath: URL) -> GitWorktreeForkEligibility {
+    func eligibility(
+        sourceWorktreePath: URL,
+        destinationPath: URL,
+        materialization: GitWorktreeForkMaterialization
+    ) -> GitWorktreeForkEligibility {
         WorktreeForkPlanner(runtime: runtime, hostFacts: hostFacts, cancellation: WorktreeForkCancellation())
-            .eligibility(sourceWorktreePath: sourceWorktreePath, destinationPath: destinationPath)
+            .eligibility(
+                sourceWorktreePath: sourceWorktreePath,
+                destinationPath: destinationPath,
+                materialization: materialization
+            )
     }
 
     func forkWorktree(
@@ -54,6 +62,9 @@ struct LibGit2WorktreeForkWriter: Sendable {
         )
         do throws(GitWorktreeForkError) {
             try faults.reach(.afterPlanning)
+            if plan.materialization == .changesOnly {
+                try faults.reach(.afterChangesOnlyCapture)
+            }
             try cancellation.throwIfCancelled()
             return try execute(
                 plan,
@@ -62,6 +73,7 @@ struct LibGit2WorktreeForkWriter: Sendable {
                 cancellation: cancellation
             )
         } catch {
+            journal.recordForeignLock(in: error)
             let residue = journal.rollback(faults: faults)
             try? faults.reach(.afterRollback)
             guard residue.isEmpty else {
@@ -83,6 +95,19 @@ struct LibGit2WorktreeForkWriter: Sendable {
 
         let destinationRootDescriptor = try openDestinationRoot(plan, journal: journal)
         defer { close(destinationRootDescriptor) }
+        if plan.materialization == .changesOnly {
+            guard let changesOnly = plan.changesOnly else {
+                throw .validationFailed(reason: .entryCountMismatch, relativePath: nil)
+            }
+            return try executeChangesOnly(
+                plan,
+                changesOnly: changesOnly,
+                sourceRootDescriptor: sourceRootDescriptor,
+                destinationRootDescriptor: destinationRootDescriptor,
+                journal: &journal,
+                cancellation: cancellation
+            )
+        }
         let materializer = APFSStrictCloneMaterializer(cancellation: cancellation, faults: faults)
         var observations = WorktreeForkMaterializationObservations()
         observations.createdDirectoryCount = try materializer.createDirectories(
@@ -102,8 +127,10 @@ struct LibGit2WorktreeForkWriter: Sendable {
         try faults.reach(.afterMaterialization)
         try cancellation.throwIfCancelled()
 
-        let rehomedNodes = try GitRepositoryStateRehomer(plan: plan, cancellation: cancellation)
-            .rehome(journal: &journal)
+        let rehomedNodes = try GitRepositoryStateRehomer(
+            plan: plan, cancellation: cancellation, lockTracker: journal.lockTracker
+        )
+        .rehome(journal: &journal)
         try faults.reach(.afterGitStateRehomed)
         observations.normalizedEntries += try materializer.finalizeDirectories(
             plan.filesystem,
@@ -113,7 +140,7 @@ struct LibGit2WorktreeForkWriter: Sendable {
         try faults.reach(.afterDirectoryMetadataApplied)
         try cancellation.throwIfCancelled()
 
-        let indexBuilder = WorktreeForkIndexBuilder()
+        let indexBuilder = WorktreeForkIndexBuilder(faults: faults)
         let plannedStats = Self.plannedRegularFileStats(plan.filesystem)
         func adoption(_ sourceIndex: WorktreeForkSourceIndexSnapshot?, prefix: String) -> WorktreeForkAdoptionContext? {
             sourceIndex.map {
@@ -129,7 +156,9 @@ struct LibGit2WorktreeForkWriter: Sendable {
             worktreePath: plan.destinationRoot,
             capturedHead: plan.capturedHead,
             skipWorktreePaths: plan.gitTopology.rootSparse?.skipWorktreePaths ?? [],
-            adoption: adoption(plan.gitTopology.rootSourceIndex, prefix: "")
+            adoption: adoption(plan.gitTopology.rootSourceIndex, prefix: ""),
+            lockWorktreePath: plan.destinationRequestPath,
+            lockTracker: journal.lockTracker
         )
         indexObserver.observe("", indexEvidence)
         var nodeIndexEvidence: [String: WorktreeForkIndexRefreshEvidence] = [:]
@@ -139,7 +168,8 @@ struct LibGit2WorktreeForkWriter: Sendable {
                 worktreePath: rehomed.destinationWorktree,
                 capturedHead: rehomed.node.capturedHead,
                 skipWorktreePaths: rehomed.node.sparse?.skipWorktreePaths ?? [],
-                adoption: adoption(rehomed.node.sourceIndex, prefix: rehomed.node.relativePath)
+                adoption: adoption(rehomed.node.sourceIndex, prefix: rehomed.node.relativePath),
+                lockTracker: journal.lockTracker
             )
             nodeIndexEvidence[rehomed.node.relativePath] = evidence
             indexObserver.observe(rehomed.node.relativePath, evidence)
@@ -147,15 +177,90 @@ struct LibGit2WorktreeForkWriter: Sendable {
         try faults.reach(.afterIndexesBuilt)
         try cancellation.throwIfCancelled()
 
-        let snapshot = try WorktreeForkValidator(reader: reader).validate(
+        let snapshot = try WorktreeForkValidator(reader: reader, cancellation: cancellation, faults: faults).validate(
             plan: plan,
             observations: observations,
             destinationRootDescriptor: destinationRootDescriptor,
-            indexEvidence: indexEvidence
+            indexEvidence: indexEvidence,
+            lockTracker: journal.lockTracker
         )
         try WorktreeForkTopologyValidator(plan: plan).validate(rehomedNodes, evidenceByNode: nodeIndexEvidence)
         try faults.reach(.afterValidation)
-        return GitForkWorktreeResult(worktree: snapshot, materialization: report(plan, observations))
+        try cancellation.throwIfCancelled()
+        return GitForkWorktreeResult(
+            worktree: snapshot,
+            materialization: .copyOnWrite(report(plan, observations))
+        )
+    }
+
+    private func executeChangesOnly(
+        _ plan: WorktreeForkPlan,
+        changesOnly: WorktreeForkChangesOnlyPlan,
+        sourceRootDescriptor: Int32,
+        destinationRootDescriptor: Int32,
+        journal: inout WorktreeForkRollbackJournal,
+        cancellation: WorktreeForkCancellation
+    ) throws(GitWorktreeForkError) -> GitForkWorktreeResult {
+        let repository = try WorktreeForkGitHandles.openWorktree(plan.destinationRoot)
+        defer { git_repository_free(repository) }
+        try WorktreeForkGitHandles.checkoutCapturedHead(
+            plan.capturedHead.commitOID,
+            repository: repository,
+            worktreePath: plan.destinationRequestPath,
+            lockTracker: journal.lockTracker
+        )
+        try faults.reach(.afterHeadCheckedOut)
+        try cancellation.throwIfCancelled()
+
+        try WorktreeForkChangesOnlyMaterializer(cancellation: cancellation, faults: faults).apply(
+            changesOnly,
+            sourceRootDescriptor: sourceRootDescriptor,
+            destinationRootDescriptor: destinationRootDescriptor
+        )
+        try faults.reach(.afterChangesOnlyOverlay)
+        try faults.reach(.afterMaterialization)
+        try cancellation.throwIfCancelled()
+
+        let rehomedNodes = try GitRepositoryStateRehomer(
+            plan: plan, cancellation: cancellation, lockTracker: journal.lockTracker
+        )
+        .rehome(journal: &journal)
+        try faults.reach(.afterGitStateRehomed)
+        try cancellation.throwIfCancelled()
+
+        let indexEvidence = try WorktreeForkIndexBuilder(faults: faults).buildIndex(
+            worktreePath: plan.destinationRoot,
+            capturedHead: plan.capturedHead,
+            skipWorktreePaths: [],
+            adoption: nil,
+            lockWorktreePath: plan.destinationRequestPath,
+            lockTracker: journal.lockTracker
+        )
+        indexObserver.observe("", indexEvidence)
+        try faults.reach(.afterIndexesBuilt)
+        try cancellation.throwIfCancelled()
+
+        let snapshot = try WorktreeForkValidator(reader: reader, cancellation: cancellation, faults: faults)
+            .validateChangesOnly(
+                plan: plan,
+                changesOnly: changesOnly,
+                sourceRootDescriptor: sourceRootDescriptor,
+                destinationRootDescriptor: destinationRootDescriptor,
+                indexEvidence: indexEvidence,
+                lockTracker: journal.lockTracker
+            )
+        try WorktreeForkTopologyValidator(plan: plan).validate(rehomedNodes, evidenceByNode: [:])
+        try faults.reach(.afterValidation)
+        try cancellation.throwIfCancelled()
+        return GitForkWorktreeResult(
+            worktree: snapshot,
+            materialization: .changesOnly(
+                GitChangesOnlyMaterializationReport(
+                    trackedChanges: changesOnly.trackedChangeCount,
+                    untrackedFiles: changesOnly.untrackedFileCount
+                )
+            )
+        )
     }
 
     /// Creates the destination branch identity and registers the linked worktree with an empty checkout.
@@ -174,21 +279,29 @@ struct LibGit2WorktreeForkWriter: Sendable {
         case .existingBranch(let referenceName):
             addReferenceName = referenceName
         case .newBranch(let referenceName):
-            journal.record(.createdBranch(referenceName: referenceName, targetOID: plan.capturedHead.commitOID))
             try WorktreeForkGitHandles.createBranch(
-                shortName: String(referenceName.dropFirst("refs/heads/".count)),
+                referenceName: referenceName,
                 commitOID: plan.capturedHead.commitOID,
-                repository: repository
+                repository: repository,
+                faults: faults,
+                lockTracker: journal.lockTracker,
+                onCreated: {
+                    journal.record(.createdBranch(referenceName: referenceName, targetOID: plan.capturedHead.commitOID))
+                }
             )
             addReferenceName = referenceName
         case .detached:
             let carrierShortName = "agentstudio-fork-carrier/\(UUID().uuidString.lowercased())"
             let referenceName = "refs/heads/\(carrierShortName)"
-            journal.record(.createdBranch(referenceName: referenceName, targetOID: plan.capturedHead.commitOID))
             try WorktreeForkGitHandles.createBranch(
-                shortName: carrierShortName,
+                referenceName: referenceName,
                 commitOID: plan.capturedHead.commitOID,
-                repository: repository
+                repository: repository,
+                faults: faults,
+                lockTracker: journal.lockTracker,
+                onCreated: {
+                    journal.record(.createdBranch(referenceName: referenceName, targetOID: plan.capturedHead.commitOID))
+                }
             )
             addReferenceName = referenceName
             carrierReferenceName = referenceName
@@ -207,7 +320,8 @@ struct LibGit2WorktreeForkWriter: Sendable {
             name: plan.worktreeName,
             destination: plan.destinationRoot,
             branchReferenceName: addReferenceName,
-            repository: repository
+            repository: repository,
+            lockTracker: journal.lockTracker
         )
         // Only a successful add proves both exclusive mkdirs were the transaction's own.
         if case .success(let info) = WorktreeForkDescriptors.lstatPath(plan.destinationRoot) {
@@ -219,8 +333,13 @@ struct LibGit2WorktreeForkWriter: Sendable {
         }
         if let carrierReferenceName {
             try WorktreeForkGitHandles.detachHead(
-                worktreePath: plan.destinationRoot, commitOID: plan.capturedHead.commitOID)
-            try WorktreeForkGitHandles.deleteBranch(referenceName: carrierReferenceName, repository: repository)
+                worktreePath: plan.destinationRoot,
+                commitOID: plan.capturedHead.commitOID,
+                lockTracker: journal.lockTracker
+            )
+            try faults.reach(.beforeCarrierBranchDeletion(referenceName: carrierReferenceName))
+            try WorktreeForkGitHandles.deleteBranch(
+                referenceName: carrierReferenceName, repository: repository, lockTracker: journal.lockTracker)
             journal.forgetBranch(referenceName: carrierReferenceName)
         }
     }

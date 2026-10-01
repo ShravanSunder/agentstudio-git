@@ -6,6 +6,8 @@ import Foundation
 public indirect enum GitWorktreeForkError: Error, Equatable, Sendable {
     /// Rejected before any mutation: host, volume, request, or branch-mode preconditions.
     case rejected(reason: GitWorktreeForkRejectionReason)
+    /// The source has a Git state that changes-only materialization cannot verify safely.
+    case workingStateUnsupported(GitWorktreeWorkingStateRefusal)
     case gitFailure(GitDataPlaneError)
     /// The live source changed in a way the mixed-time contract does not admit.
     case sourceChanged(relativePath: String, reason: GitWorktreeForkSourceRaceReason)
@@ -44,11 +46,77 @@ public enum GitWorktreeForkRejectionReason: String, Codable, CaseIterable, Senda
     case datalessContent
 }
 
+public struct GitWorktreeWorkingStateRefusal: Codable, Equatable, Hashable, Sendable {
+    public let reason: GitWorktreeWorkingStateRefusalReason
+    /// Repository-relative path for path-specific refusals; nil for repository-wide state.
+    public let relativePath: String?
+
+    public init(reason: GitWorktreeWorkingStateRefusalReason, relativePath: String? = nil) {
+        self.reason = reason
+        self.relativePath = relativePath
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case reason
+        case relativePath
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let reason = try container.decode(GitWorktreeWorkingStateRefusalReason.self, forKey: .reason)
+        let relativePath = try container.decodeIfPresent(String.self, forKey: .relativePath)
+        if let relativePath,
+            relativePath.isEmpty || relativePath.hasPrefix("/")
+                || relativePath.split(separator: "/").contains(where: { $0 == "." || $0 == ".." })
+        {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "working-state refusal paths must be nonempty relative paths"
+                ))
+        }
+        self.reason = reason
+        self.relativePath = relativePath
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        if let relativePath,
+            relativePath.isEmpty || relativePath.hasPrefix("/")
+                || relativePath.split(separator: "/").contains(where: { $0 == "." || $0 == ".." })
+        {
+            throw EncodingError.invalidValue(
+                relativePath,
+                EncodingError.Context(
+                    codingPath: encoder.codingPath,
+                    debugDescription: "working-state refusal paths must be nonempty relative paths"
+                )
+            )
+        }
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(reason, forKey: .reason)
+        try container.encodeIfPresent(relativePath, forKey: .relativePath)
+    }
+}
+
+public enum GitWorktreeWorkingStateRefusalReason: String, Codable, CaseIterable, Hashable, Sendable {
+    case conflicts
+    case operationInProgress
+    case submoduleChanged
+    case nestedRepository
+    case sparseOrSkipWorktree
+    case intentToAdd
+    case unsupportedEntryKind
+    case customFilter
+    case attributesChanged
+}
+
 public enum GitWorktreeForkSourceRaceReason: String, Codable, CaseIterable, Sendable {
     case entryMissing
     case entryKindChanged
     case entryIdentityChanged
     case containmentEscape
+    case contentChanged
+    case repositoryStateChanged
 }
 
 public enum GitWorktreeForkEntryFailureReason: String, Codable, CaseIterable, Sendable {
@@ -96,11 +164,13 @@ public enum GitWorktreeForkResidueKind: String, Codable, CaseIterable, Sendable 
     case nestedAdministration
     case createdBranch
     case temporaryArtifact
+    case lockFile
 }
 
 extension GitWorktreeForkError: Codable {
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case rejected
+        case workingStateUnsupported
         case gitFailure
         case sourceChanged
         case entryFailed
@@ -111,6 +181,7 @@ extension GitWorktreeForkError: Codable {
 
     private enum PayloadKeys: String, CodingKey {
         case reason
+        case refusal
         case error
         case relativePath
         case errorNumber
@@ -132,6 +203,9 @@ extension GitWorktreeForkError: Codable {
         switch decodedCase {
         case .rejected:
             self = .rejected(reason: try payload.decode(GitWorktreeForkRejectionReason.self, forKey: .reason))
+        case .workingStateUnsupported:
+            self = .workingStateUnsupported(
+                try payload.decode(GitWorktreeWorkingStateRefusal.self, forKey: .refusal))
         case .gitFailure:
             self = .gitFailure(try payload.decode(GitDataPlaneError.self, forKey: .error))
         case .sourceChanged:
@@ -166,6 +240,9 @@ extension GitWorktreeForkError: Codable {
         case .rejected(let reason):
             var payload = container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .rejected)
             try payload.encode(reason, forKey: .reason)
+        case .workingStateUnsupported(let refusal):
+            var payload = container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .workingStateUnsupported)
+            try payload.encode(refusal, forKey: .refusal)
         case .gitFailure(let error):
             var payload = container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .gitFailure)
             try payload.encode(error, forKey: .error)

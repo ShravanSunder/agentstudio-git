@@ -17,7 +17,7 @@ struct SystemGitRemoteClientTests {
                 destinationPath: destinationPath,
                 checkoutBranch: "main"
             ))
-        _ = try await client.fetch(GitFetchRequest(repositoryPath: repositoryPath, remoteName: "origin"))
+        let fetchResult = try await client.fetch(GitFetchRequest(repositoryPath: repositoryPath, remoteName: "origin"))
         _ = try await client.push(
             GitPushRequest(repositoryPath: repositoryPath, remoteName: "origin", refspec: "HEAD:refs/heads/main"))
         _ = try await client.remoteReferences(
@@ -31,6 +31,9 @@ struct SystemGitRemoteClientTests {
             ])
         #expect(invocations[1].suffix(4) == ["fetch", "--porcelain", "--", "origin"])
         #expect(invocations[1].contains(repositoryPath.path))
+        #expect(fetchResult.fetchedRemoteName == "origin")
+        #expect(fetchResult.fetchedCommit == nil)
+        #expect(fetchResult.lockResidue == nil)
         #expect(invocations[2].suffix(5) == ["push", "--porcelain", "--", "origin", "HEAD:refs/heads/main"])
         #expect(invocations[2].contains(repositoryPath.path))
         #expect(invocations[3].suffix(3) == ["ls-remote", "--symref", "git@github.com:org/repo.git"])
@@ -39,6 +42,52 @@ struct SystemGitRemoteClientTests {
             #expect(invocation.contains("protocol.https.allow=always"))
             #expect(invocation.contains("protocol.ssh.allow=always"))
         }
+    }
+
+    @Test("failed whole-remote fetch leaves lock residue unobserved without extra Git commands")
+    func failedWholeRemoteFetchKeepsResidueUnobservedWithoutProbing() async throws {
+        let fakeGit = try FakeGitExecutable()
+        let client = SystemGitRemoteClient(
+            configuration: fakeGit.configuration(additionalEnvironment: ["AGENTSTUDIO_FAKE_GIT_EXIT": "128"])
+        )
+        let repositoryPath = fakeGit.root.appending(path: "repository")
+
+        do {
+            _ = try await client.fetch(GitFetchRequest(repositoryPath: repositoryPath, remoteName: "origin"))
+            Issue.record("failed fake Git fetch unexpectedly succeeded")
+        } catch {
+            guard case .processFailed = error.reason else {
+                Issue.record("expected process failure, got \(error.reason)")
+                return
+            }
+            #expect(error.lockResidue == nil)
+        }
+
+        let invocations = try fakeGit.recordedInvocations()
+        #expect(invocations.count == 1)
+        #expect(invocations[0].suffix(4) == ["fetch", "--porcelain", "--", "origin"])
+        #expect(invocations[0].contains(repositoryPath.path))
+    }
+
+    @Test("fetch rejects invalid branch names before launching system git")
+    func fetchRejectsInvalidBranchNamesBeforeLaunchingSystemGit() async throws {
+        let fakeGit = try FakeGitExecutable()
+        let client = SystemGitRemoteClient(configuration: fakeGit.configuration())
+        let request = GitFetchRequest(
+            repositoryPath: fakeGit.root.appending(path: "repository"),
+            remoteName: "origin",
+            branchName: "invalid..branch"
+        )
+
+        do {
+            _ = try await client.fetch(request)
+            Issue.record("invalid branch name unexpectedly launched a fetch")
+        } catch {
+            #expect(error.reason == .unsupported(message: "fetch branch name is invalid"))
+            #expect(error.lockResidue?.isEmpty == true)
+        }
+
+        #expect(try fakeGit.recordedInvocations().isEmpty)
     }
 
     @Test("remote references parse fake git output")

@@ -78,6 +78,12 @@ struct GitWorktreeForkBenchmarkTests {
         let freeBefore = Self.availableBytes(fixture.repository.root)
         let start = ContinuousClock.now
         let result = try await client.forkWorktree(fixture.request(destination: destination, mode: .detached))
+        let materializationReport: GitWorktreeMaterializationReport
+        if case .copyOnWrite(let report) = result.materialization {
+            materializationReport = report
+        } else {
+            throw GitWorktreeForkError.validationFailed(reason: .entryCountMismatch, relativePath: nil)
+        }
         let end = ContinuousClock.now
         let freeAfter = Self.availableBytes(fixture.repository.root)
         let statusStart = ContinuousClock.now
@@ -99,9 +105,9 @@ struct GitWorktreeForkBenchmarkTests {
             validation: mark(.afterValidation) - mark(.afterIndexesBuilt),
             total: end - start,
             firstStatus: firstStatus,
-            regularFiles: result.materialization.clonedRegularFileCount,
+            regularFiles: materializationReport.clonedRegularFileCount,
             adoptedEntries: rootEvidence.withLock { $0?.adoptedPaths.count ?? 0 },
-            logicalBytes: result.materialization.logicalRegularFileBytes,
+            logicalBytes: materializationReport.logicalRegularFileBytes,
             freeSpaceDeltaBytes: freeBefore - freeAfter
         )
     }

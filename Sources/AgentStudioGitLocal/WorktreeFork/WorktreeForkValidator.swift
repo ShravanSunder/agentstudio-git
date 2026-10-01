@@ -7,12 +7,25 @@ import Foundation
 /// checks the plan, the realized destination, the captured-HEAD index, and the refreshed stat data.
 struct WorktreeForkValidator: Sendable {
     let reader: LibGit2WorktreeReader
+    let cancellation: WorktreeForkCancellation
+    let faults: WorktreeForkFaultInjector
+
+    init(
+        reader: LibGit2WorktreeReader,
+        cancellation: WorktreeForkCancellation,
+        faults: WorktreeForkFaultInjector = .production
+    ) {
+        self.reader = reader
+        self.cancellation = cancellation
+        self.faults = faults
+    }
 
     func validate(
         plan: WorktreeForkPlan,
         observations: WorktreeForkMaterializationObservations,
         destinationRootDescriptor: Int32,
-        indexEvidence: WorktreeForkIndexRefreshEvidence
+        indexEvidence: WorktreeForkIndexRefreshEvidence,
+        lockTracker: WorktreeForkLockTracker
     ) throws(GitWorktreeForkError) -> GitWorktreeSnapshot {
         let snapshot = try validateRegistration(plan)
         try validateHead(plan)
@@ -25,8 +38,135 @@ struct WorktreeForkValidator: Sendable {
             evidence: indexEvidence,
             reportPrefix: ""
         )
-        try validateNoTransactionArtifacts(plan)
+        try validateNoTransactionArtifacts(plan, lockTracker: lockTracker)
         return snapshot
+    }
+
+    func validateChangesOnly(
+        plan: WorktreeForkPlan,
+        changesOnly: WorktreeForkChangesOnlyPlan,
+        sourceRootDescriptor: Int32,
+        destinationRootDescriptor: Int32,
+        indexEvidence: WorktreeForkIndexRefreshEvidence,
+        lockTracker: WorktreeForkLockTracker
+    ) throws(GitWorktreeForkError) -> GitWorktreeSnapshot {
+        let snapshot = try validateRegistration(plan)
+        try validateHead(plan)
+        let sourceRepository = try WorktreeForkGitHandles.openWorktree(plan.sourceRoot)
+        defer { git_repository_free(sourceRepository) }
+        let gitSnapshotReader = WorktreeForkChangesOnlyGitSnapshotReader(cancellation: cancellation)
+        let currentRepositoryState = try gitSnapshotReader.repositoryState(
+            sourceRepository, expectedHead: plan.capturedHead.commitOID)
+        guard currentRepositoryState == changesOnly.repositoryState else {
+            throw .sourceChanged(relativePath: ".", reason: .repositoryStateChanged)
+        }
+
+        let planner = WorktreeForkChangesOnlyPlanner(cancellation: cancellation)
+        for entry in changesOnly.entries {
+            let sourceNode = try planner.capture(entry.relativePath, rootDescriptor: sourceRootDescriptor)
+            try validateSourceEntry(entry, current: sourceNode)
+            if entry.shouldOverlay {
+                let destinationNode = try planner.capture(entry.relativePath, rootDescriptor: destinationRootDescriptor)
+                try validateDestinationEntry(entry, current: destinationNode)
+            }
+        }
+        for restoration in changesOnly.largeFileRestorations {
+            let sourceNode = try planner.capture(restoration.relativePath, rootDescriptor: sourceRootDescriptor)
+            guard sourceNode.kind == .regularFile,
+                sourceNode.identity == restoration.identity,
+                sourceNode.size == restoration.size,
+                sourceNode.contentSHA256 == restoration.contentSHA256,
+                sourceNode.mode & 0o777 == restoration.mode & 0o777
+            else {
+                throw .sourceChanged(relativePath: restoration.relativePath, reason: .contentChanged)
+            }
+            let destinationNode = try planner.capture(
+                restoration.relativePath, rootDescriptor: destinationRootDescriptor)
+            guard destinationNode.kind == .regularFile,
+                destinationNode.size == restoration.size,
+                destinationNode.contentSHA256 == restoration.contentSHA256,
+                destinationNode.mode & 0o777 == restoration.mode & 0o777,
+                destinationNode.identity != sourceNode.identity
+            else {
+                throw .validationFailed(reason: .entryKindMismatch, relativePath: restoration.relativePath)
+            }
+        }
+        try faults.reach(.afterChangesOnlyContentRehash)
+        let finalRepositoryState = try gitSnapshotReader.repositoryState(
+            sourceRepository, expectedHead: plan.capturedHead.commitOID)
+        guard finalRepositoryState == changesOnly.repositoryState else {
+            throw .sourceChanged(relativePath: ".", reason: .repositoryStateChanged)
+        }
+        try WorktreeForkIndexValidation.validate(
+            worktreePath: plan.destinationRoot,
+            treeOID: plan.capturedHead.treeOID,
+            expectedSkipWorktree: [],
+            evidence: indexEvidence,
+            reportPrefix: ""
+        )
+        try validateNoTransactionArtifacts(plan, lockTracker: lockTracker)
+        return snapshot
+    }
+
+    private func validateSourceEntry(
+        _ expected: WorktreeForkChangesOnlyEntry,
+        current: WorktreeForkChangesOnlySourceNode
+    ) throws(GitWorktreeForkError) {
+        guard current.kind.publicKind == expected.kind else {
+            throw .sourceChanged(relativePath: expected.relativePath, reason: .entryKindChanged)
+        }
+        guard current.identity == expected.identity else {
+            throw .sourceChanged(relativePath: expected.relativePath, reason: .entryIdentityChanged)
+        }
+        switch expected.kind {
+        case .directory:
+            guard current.mode & 0o777 == expected.mode & 0o777 else {
+                throw .sourceChanged(relativePath: expected.relativePath, reason: .contentChanged)
+            }
+        case .absent:
+            return
+        case .regularFile, .symbolicLink:
+            guard current.mode & 0o777 == expected.mode & 0o777,
+                current.size == expected.size,
+                current.contentSHA256 == expected.contentSHA256,
+                current.symbolicLinkText == expected.symbolicLinkText
+            else {
+                throw .sourceChanged(relativePath: expected.relativePath, reason: .contentChanged)
+            }
+        }
+    }
+
+    private func validateDestinationEntry(
+        _ expected: WorktreeForkChangesOnlyEntry,
+        current: WorktreeForkChangesOnlySourceNode
+    ) throws(GitWorktreeForkError) {
+        guard current.kind.publicKind == expected.kind else {
+            throw .validationFailed(reason: .entryKindMismatch, relativePath: expected.relativePath)
+        }
+        switch expected.kind {
+        case .absent:
+            return
+        case .directory:
+            if expected.shouldOverlay,
+                current.mode & 0o777 != expected.mode & 0o777 || current.identity == expected.identity
+            {
+                throw .validationFailed(reason: .entryKindMismatch, relativePath: expected.relativePath)
+            }
+        case .regularFile:
+            guard current.size == expected.size,
+                current.contentSHA256 == expected.contentSHA256,
+                current.mode & 0o777 == expected.mode & 0o777,
+                current.identity != expected.identity
+            else {
+                throw .validationFailed(reason: .entryKindMismatch, relativePath: expected.relativePath)
+            }
+        case .symbolicLink:
+            guard current.symbolicLinkText == expected.symbolicLinkText,
+                current.identity != expected.identity
+            else {
+                throw .validationFailed(reason: .entryKindMismatch, relativePath: expected.relativePath)
+            }
+        }
     }
 
     private func validateRegistration(_ plan: WorktreeForkPlan) throws(GitWorktreeForkError) -> GitWorktreeSnapshot {
@@ -120,7 +260,7 @@ struct WorktreeForkValidator: Sendable {
         _ plan: WorktreeForkFilesystemPlan,
         destinationRootDescriptor: Int32
     ) throws(GitWorktreeForkError) {
-        let realized = try WorktreeForkSourceWalker(cancellation: WorktreeForkCancellation())
+        let realized = try WorktreeForkSourceWalker(cancellation: cancellation)
             .walk(sourceRootDescriptor: destinationRootDescriptor)
         guard Self.pathKinds(of: realized) == Self.pathKinds(of: plan) else {
             let mismatch = Self.pathKinds(of: realized).symmetricDifference(Self.pathKinds(of: plan))
@@ -138,16 +278,35 @@ struct WorktreeForkValidator: Sendable {
         }
     }
 
-    private func validateNoTransactionArtifacts(_ plan: WorktreeForkPlan) throws(GitWorktreeForkError) {
+    private func validateNoTransactionArtifacts(
+        _ plan: WorktreeForkPlan,
+        lockTracker: WorktreeForkLockTracker
+    ) throws(GitWorktreeForkError) {
         let administration = plan.commonDirectory.appending(path: "worktrees").appending(path: plan.worktreeName)
-        var lockPaths = [administration.appending(path: "index.lock"), administration.appending(path: "HEAD.lock")]
+        var lockFacts = [
+            GitLockFact(
+                path: administration.appending(path: "index.lock").standardizedFileURL,
+                resource: .index(worktreePath: plan.destinationRequestPath)
+            ),
+            GitLockFact(
+                path: administration.appending(path: "HEAD.lock").standardizedFileURL,
+                resource: .reference(name: "HEAD")
+            ),
+            GitLockFact(
+                path: administration.appending(path: "config.worktree.lock").standardizedFileURL,
+                resource: .config
+            ),
+        ]
         if let referenceName = plan.branchIdentity.referenceName {
-            lockPaths.append(plan.commonDirectory.appending(path: "\(referenceName).lock"))
+            lockFacts.append(
+                GitLockFact(
+                    path: plan.commonDirectory.appending(path: "\(referenceName).lock").standardizedFileURL,
+                    resource: .reference(name: referenceName)
+                ))
         }
-        for lockPath in lockPaths {
-            if case .success = WorktreeForkDescriptors.lstatPath(lockPath) {
-                throw .validationFailed(reason: .transactionArtifactRemains, relativePath: lockPath.lastPathComponent)
-            }
+        lockTracker.beginAttempt(for: lockFacts)
+        if let fact = lockTracker.activeLocks().first {
+            throw .validationFailed(reason: .transactionArtifactRemains, relativePath: fact.path.lastPathComponent)
         }
     }
 

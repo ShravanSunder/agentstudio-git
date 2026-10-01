@@ -5,10 +5,16 @@ import Foundation
 struct LibGit2WorktreeWriter: Sendable {
     private let runtime: LibGit2Runtime
     private let reader: LibGit2WorktreeReader
+    private let removalPathObserver: GitWorktreeRemovalPathObserver
 
-    init(runtime: LibGit2Runtime = .shared, reader: LibGit2WorktreeReader = LibGit2WorktreeReader()) {
+    init(
+        runtime: LibGit2Runtime = .shared,
+        reader: LibGit2WorktreeReader = LibGit2WorktreeReader(),
+        removalPathObserver: GitWorktreeRemovalPathObserver = .live
+    ) {
         self.runtime = runtime
         self.reader = reader
+        self.removalPathObserver = removalPathObserver
     }
 
     func createWorktree(_ request: GitCreateWorktreeRequest) throws
@@ -160,23 +166,43 @@ struct LibGit2WorktreeWriter: Sendable {
             }
 
             let pruneResult = git_worktree_prune(worktree, &options)
-            if pruneResult >= 0 {
-                return GitWorktreeRemovalResult(
-                    removedWorktreeID: resolvedRequest.worktreeID,
-                    removedWorkingDirectory: request.removeWorkingDirectory,
-                    partialFailure: nil
-                )
+            let pruneFailure = pruneResult < 0 ? LibGit2ErrorCapture.capture(code: pruneResult) : nil
+            let administrationPathStatus = removalPathObserver.status(of: snapshot.gitDirectory)
+            let workingDirectoryPathStatus = removalPathObserver.status(of: snapshot.canonicalPath)
+            let administration = administrationRemovalEffect(
+                pathStatus: administrationPathStatus,
+                pruneFailed: pruneFailure != nil
+            )
+            let workingDirectory = workingDirectoryRemovalEffect(
+                pathStatus: workingDirectoryPathStatus,
+                removeRequested: request.removeWorkingDirectory,
+                administration: administration,
+                pruneFailed: pruneFailure != nil
+            )
+            let failure: GitWorktreeRemovalFailureKind?
+            if let pruneFailure {
+                failure = .pruneFailed(code: pruneFailure.code, klass: pruneFailure.klass)
+            } else if administrationPathStatus == .inaccessible
+                || (request.removeWorkingDirectory && workingDirectoryPathStatus == .inaccessible)
+            {
+                failure = .observationFailed
+            } else if administration != .removed
+                || (request.removeWorkingDirectory && workingDirectory != .removed)
+            {
+                failure = .removalIncomplete
+            } else {
+                failure = nil
             }
 
-            if !metadataStillExists(worktreeID: resolvedRequest.worktreeID) {
-                return GitWorktreeRemovalResult(
-                    removedWorktreeID: resolvedRequest.worktreeID,
-                    removedWorkingDirectory: !FileManager.default.fileExists(atPath: snapshot.canonicalPath.path),
-                    partialFailure: LibGit2ErrorCapture.capture(code: pruneResult).message
+            return GitWorktreeRemovalResult(
+                removedWorktreeID: resolvedRequest.worktreeID,
+                effects: GitWorktreeRemovalEffects(
+                    administration: administration,
+                    workingDirectory: workingDirectory,
+                    failure: failure,
+                    lockResidue: []
                 )
-            }
-
-            throw LibGit2ErrorCapture.failure(code: pruneResult)
+            )
         }
     }
 

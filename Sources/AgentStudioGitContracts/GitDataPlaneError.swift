@@ -4,6 +4,9 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
     case repositoryNotFound(path: URL)
     case worktreeNotFound(id: GitWorktreeID)
     case locked(message: String)
+    case lockHeld(GitLockFact)
+    case lockUnidentified(GitLockResource)
+    case permissionDenied(path: URL?)
     case worktreeNotPrunable(id: GitWorktreeID, reason: GitWorktreePruneRefusalReason)
     case unsafeWorktreeRemoval(reason: GitWorktreeRemovalRefusalReason)
     case contentTooLarge(path: String, sizeBytes: Int64, maxSizeBytes: Int64)
@@ -25,6 +28,9 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
         case repositoryNotFound
         case worktreeNotFound
         case locked
+        case lockHeld
+        case lockUnidentified
+        case permissionDenied
         case worktreeNotPrunable
         case unsafeWorktreeRemoval
         case contentTooLarge
@@ -58,6 +64,8 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
         case targetOID
         case headOID
         case count
+        case fact
+        case resource
     }
 
     public init(from decoder: Decoder) throws {
@@ -80,6 +88,8 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
         } else if container.contains(.locked) {
             let payload = try container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .locked)
             self = try .locked(message: payload.decode(String.self, forKey: .message))
+        } else if let lockFailure = try Self.decodeLockFailure(from: container) {
+            self = lockFailure
         } else if container.contains(.worktreeNotPrunable) {
             let payload = try container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .worktreeNotPrunable)
             self = try .worktreeNotPrunable(
@@ -123,19 +133,8 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
                 headOID: payload.decode(String.self, forKey: .headOID),
                 count: payload.decode(Int.self, forKey: .count)
             )
-        } else if container.contains(.processFailed) {
-            self = try .processFailed(container.decode(GitRemoteProcessFailure.self, forKey: .processFailed))
-        } else if container.contains(.processTimedOut) {
-            self = try .processTimedOut(container.decode(GitRemoteProcessFailure.self, forKey: .processTimedOut))
-        } else if container.contains(.processCancelled) {
-            self = try .processCancelled(container.decode(GitRemoteProcessFailure.self, forKey: .processCancelled))
-        } else if container.contains(.processOutputTooLarge) {
-            let payload = try container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .processOutputTooLarge)
-            self = try .processOutputTooLarge(
-                stream: payload.decode(GitProcessOutputStream.self, forKey: .stream),
-                sizeBytes: payload.decode(Int64.self, forKey: .sizeBytes),
-                maxSizeBytes: payload.decode(Int64.self, forKey: .maxSizeBytes)
-            )
+        } else if let processFailure = try Self.decodeProcessFailure(from: container) {
+            self = processFailure
         } else if container.contains(.remoteRefTransactionIndeterminate) {
             let payload = try container.nestedContainer(
                 keyedBy: PayloadKeys.self,
@@ -162,6 +161,47 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
         }
     }
 
+    private static func decodeLockFailure(
+        from container: KeyedDecodingContainer<CodingKeys>
+    ) throws -> Self? {
+        if container.contains(.lockHeld) {
+            let payload = try container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .lockHeld)
+            return try .lockHeld(payload.decode(GitLockFact.self, forKey: .fact))
+        }
+        if container.contains(.lockUnidentified) {
+            let payload = try container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .lockUnidentified)
+            return try .lockUnidentified(payload.decode(GitLockResource.self, forKey: .resource))
+        }
+        if container.contains(.permissionDenied) {
+            let payload = try container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .permissionDenied)
+            return try .permissionDenied(path: payload.decodeIfPresent(URL.self, forKey: .path))
+        }
+        return nil
+    }
+
+    private static func decodeProcessFailure(
+        from container: KeyedDecodingContainer<CodingKeys>
+    ) throws -> Self? {
+        if container.contains(.processFailed) {
+            return try .processFailed(container.decode(GitRemoteProcessFailure.self, forKey: .processFailed))
+        }
+        if container.contains(.processTimedOut) {
+            return try .processTimedOut(container.decode(GitRemoteProcessFailure.self, forKey: .processTimedOut))
+        }
+        if container.contains(.processCancelled) {
+            return try .processCancelled(container.decode(GitRemoteProcessFailure.self, forKey: .processCancelled))
+        }
+        if container.contains(.processOutputTooLarge) {
+            let payload = try container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .processOutputTooLarge)
+            return try .processOutputTooLarge(
+                stream: payload.decode(GitProcessOutputStream.self, forKey: .stream),
+                sizeBytes: payload.decode(Int64.self, forKey: .sizeBytes),
+                maxSizeBytes: payload.decode(Int64.self, forKey: .maxSizeBytes)
+            )
+        }
+        return nil
+    }
+
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
@@ -174,6 +214,15 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
         case .locked(let message):
             var payload = container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .locked)
             try payload.encode(message, forKey: .message)
+        case .lockHeld(let fact):
+            var payload = container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .lockHeld)
+            try payload.encode(fact, forKey: .fact)
+        case .lockUnidentified(let resource):
+            var payload = container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .lockUnidentified)
+            try payload.encode(resource, forKey: .resource)
+        case .permissionDenied(let path):
+            var payload = container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .permissionDenied)
+            try payload.encodeIfPresent(path, forKey: .path)
         case .worktreeNotPrunable(let id, let reason):
             var payload = container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .worktreeNotPrunable)
             try payload.encode(id, forKey: .id)

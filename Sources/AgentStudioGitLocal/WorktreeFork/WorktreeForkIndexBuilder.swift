@@ -1,5 +1,6 @@
 import AgentStudioGitContracts
 import CLibGit2Local
+import Darwin
 import Foundation
 
 /// Which tracked entries the one-time stat refresh could not mark clean: they differ from the captured
@@ -13,11 +14,19 @@ struct WorktreeForkIndexRefreshEvidence: Equatable, Sendable {
 /// Rebuilds a repository's index from its captured `HEAD` tree, never from source staging, then refreshes
 /// stat data once so later status reads that never refresh the index do not re-hash unchanged files.
 struct WorktreeForkIndexBuilder: Sendable {
+    private let faults: WorktreeForkFaultInjector
+
+    init(faults: WorktreeForkFaultInjector = .production) {
+        self.faults = faults
+    }
+
     func buildIndex(
         worktreePath: URL,
         capturedHead: WorktreeForkCapturedHead?,
         skipWorktreePaths: Set<String>,
-        adoption: WorktreeForkAdoptionContext?
+        adoption: WorktreeForkAdoptionContext?,
+        lockWorktreePath: URL? = nil,
+        lockTracker: WorktreeForkLockTracker? = nil
     ) throws(GitWorktreeForkError) -> WorktreeForkIndexRefreshEvidence {
         let repository = try openRepository(worktreePath)
         defer { git_repository_free(repository) }
@@ -39,13 +48,32 @@ struct WorktreeForkIndexBuilder: Sendable {
             try adoption.map { context throws(GitWorktreeForkError) in
                 try adoptCleanEntries(context, index: index, worktreePath: worktreePath)
             } ?? []
-        try check(git_index_write(index))
+        let indexLockFact = try WorktreeForkGitHandles.lockFact(
+            for: .index(worktreePath: lockWorktreePath ?? worktreePath), repository: repository)
+        lockTracker?.beginAttempt(for: [indexLockFact])
+        errno = 0
+        let writeResult = git_index_write(index)
+        let writeErrorNumber = errno
+        guard writeResult >= 0 else {
+            lockTracker?.recordFailure(for: [indexLockFact])
+            throw .gitFailure(
+                LibGit2ErrorCapture.failure(
+                    code: writeResult,
+                    lockFacts: [indexLockFact],
+                    systemErrorCode: writeErrorNumber
+                ))
+        }
         let refreshPaths = trackedPathsNeedingRefresh(index, excluding: adoptedPaths)
         let unrefreshed =
             refreshPaths.isEmpty
             ? Set<String>()
             : try refreshStatData(
-                repository: repository, index: index, onlyPaths: adoptedPaths.isEmpty ? nil : refreshPaths)
+                repository: repository,
+                index: index,
+                onlyPaths: adoptedPaths.isEmpty ? nil : refreshPaths,
+                indexLockFact: indexLockFact,
+                lockTracker: lockTracker
+            )
         return WorktreeForkIndexRefreshEvidence(unrefreshedPaths: unrefreshed, adoptedPaths: adoptedPaths)
     }
 
@@ -160,7 +188,9 @@ struct WorktreeForkIndexBuilder: Sendable {
     private func refreshStatData(
         repository: OpaquePointer,
         index: OpaquePointer,
-        onlyPaths: [String]?
+        onlyPaths: [String]?,
+        indexLockFact: GitLockFact,
+        lockTracker: WorktreeForkLockTracker?
     ) throws(GitWorktreeForkError) -> Set<String> {
         var options = git_diff_options()
         try check(git_diff_options_init(&options, UInt32(GIT_DIFF_OPTIONS_VERSION)))
@@ -172,13 +202,24 @@ struct WorktreeForkIndexBuilder: Sendable {
             let cStrings = onlyPaths.map { strdup($0) }
             defer { cStrings.forEach { free($0) } }
             var pointers: [UnsafeMutablePointer<CChar>?] = cStrings
+            try reachStatRefreshCheckpoint(indexLockFact)
+            lockTracker?.beginAttempt(for: [indexLockFact])
+            errno = 0
             let result = pointers.withUnsafeMutableBufferPointer { buffer in
                 options.pathspec = git_strarray(strings: buffer.baseAddress, count: buffer.count)
                 return git_diff_index_to_workdir(&diff, repository, index, &options)
             }
-            try check(result)
+            let systemErrorCode = errno
+            try checkStatRefresh(
+                result, systemErrorCode: systemErrorCode, lockFact: indexLockFact, lockTracker: lockTracker)
         } else {
-            try check(git_diff_index_to_workdir(&diff, repository, index, &options))
+            try reachStatRefreshCheckpoint(indexLockFact)
+            lockTracker?.beginAttempt(for: [indexLockFact])
+            errno = 0
+            let result = git_diff_index_to_workdir(&diff, repository, index, &options)
+            let systemErrorCode = errno
+            try checkStatRefresh(
+                result, systemErrorCode: systemErrorCode, lockFact: indexLockFact, lockTracker: lockTracker)
         }
         guard let diff else {
             throw .gitFailure(.unsupported(message: "index refresh produced no diff"))
@@ -192,6 +233,28 @@ struct WorktreeForkIndexBuilder: Sendable {
             unrefreshed.insert(String(cString: path))
         }
         return unrefreshed
+    }
+
+    private func reachStatRefreshCheckpoint(_ indexLockFact: GitLockFact) throws(GitWorktreeForkError) {
+        try faults.reach(.afterInitialIndexWriteBeforeStatRefresh(lockPath: indexLockFact.path))
+    }
+
+    private func checkStatRefresh(
+        _ result: Int32,
+        systemErrorCode: Int32,
+        lockFact: GitLockFact,
+        lockTracker: WorktreeForkLockTracker?
+    ) throws(GitWorktreeForkError) {
+        guard result >= 0 else {
+            lockTracker?.recordFailure(for: [lockFact])
+            throw .gitFailure(
+                LibGit2ErrorCapture.failure(
+                    code: result,
+                    lockFacts: [lockFact],
+                    systemErrorCode: systemErrorCode
+                )
+            )
+        }
     }
 
     private func openRepository(_ path: URL) throws(GitWorktreeForkError) -> OpaquePointer {

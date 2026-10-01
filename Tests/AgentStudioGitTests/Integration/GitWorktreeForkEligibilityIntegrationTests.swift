@@ -19,7 +19,8 @@ struct GitWorktreeForkEligibilityIntegrationTests {
         // Act
         let eligibility = await LibGit2AgentStudioGitLocalClient().forkWorktreeEligibility(
             sourceWorktreePath: fixture.source,
-            destinationPath: fixture.destination()
+            destinationPath: fixture.destination(),
+            materialization: .copyOnWrite
         )
 
         // Assert
@@ -72,7 +73,10 @@ struct GitWorktreeForkEligibilityIntegrationTests {
 
             // Act
             let eligibility = await client.forkWorktreeEligibility(
-                sourceWorktreePath: fixture.source, destinationPath: fixture.destination())
+                sourceWorktreePath: fixture.source,
+                destinationPath: fixture.destination(),
+                materialization: .copyOnWrite
+            )
             let forkFailure: GitWorktreeForkError?
             do {
                 _ = try await client.forkWorktree(fixture.request())
@@ -99,9 +103,15 @@ struct GitWorktreeForkEligibilityIntegrationTests {
 
         // Act
         let missingParent = await client.forkWorktreeEligibility(
-            sourceWorktreePath: fixture.source, destinationPath: fixture.destination("missing/child"))
+            sourceWorktreePath: fixture.source,
+            destinationPath: fixture.destination("missing/child"),
+            materialization: .copyOnWrite
+        )
         let fileSource = await client.forkWorktreeEligibility(
-            sourceWorktreePath: fixture.source.appending(path: "README.md"), destinationPath: fixture.destination())
+            sourceWorktreePath: fixture.source.appending(path: "README.md"),
+            destinationPath: fixture.destination(),
+            materialization: .copyOnWrite
+        )
 
         // Assert
         #expect(missingParent == .unavailable(.destinationParentMissing))
@@ -116,10 +126,36 @@ struct GitWorktreeForkEligibilityIntegrationTests {
         // Act
         let eligibility = await LibGit2AgentStudioGitLocalClient().forkWorktreeEligibility(
             sourceWorktreePath: Self.iCloudDrive,
-            destinationPath: Self.iCloudDrive.appending(path: "agentstudio-fork-never-created-\(UUID().uuidString)")
+            destinationPath: Self.iCloudDrive.appending(path: "agentstudio-fork-never-created-\(UUID().uuidString)"),
+            materialization: .copyOnWrite
         )
 
         // Assert
         #expect(eligibility == .unavailable(.fileProviderManagedLocation))
+    }
+
+    @Test("changes-only eligibility checks roots without consulting host or volume facts")
+    func changesOnlyEligibilitySkipsCloneFacts() async throws {
+        // Arrange
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-query-changes-only")
+        defer { fixture.remove() }
+        let hostFacts = WorktreeForkHostFactsProvider(
+            operatingSystemMajorVersion: { 0 },
+            volumeFacts: { _ throws(GitWorktreeForkError) in
+                throw .rejected(reason: .sourceFilesystemNotAPFS)
+            }
+        )
+        let client = LibGit2AgentStudioGitLocalClient(
+            worktreeForkWriter: LibGit2WorktreeForkWriter(hostFacts: hostFacts))
+
+        // Act
+        let eligibility = await client.forkWorktreeEligibility(
+            sourceWorktreePath: fixture.source,
+            destinationPath: fixture.destination(),
+            materialization: .changesOnly
+        )
+
+        // Assert
+        #expect(eligibility == .available)
     }
 }

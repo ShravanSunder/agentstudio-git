@@ -12,8 +12,51 @@ struct WorktreeForkPlan: Sendable {
     let commonDirectory: URL
     let capturedHead: WorktreeForkCapturedHead
     let branchIdentity: WorktreeForkBranchIdentity
+    let materialization: GitWorktreeForkMaterialization
     let filesystem: WorktreeForkFilesystemPlan
+    let changesOnly: WorktreeForkChangesOnlyPlan?
     let gitTopology: WorktreeForkGitTopology
+}
+
+struct WorktreeForkChangesOnlyPlan: Sendable {
+    let entries: [WorktreeForkChangesOnlyEntry]
+    let largeFileRestorations: [WorktreeForkLargeFileRestoration]
+    let trackedChangeCount: Int
+    let untrackedFileCount: Int
+    let repositoryState: WorktreeForkRepositoryStateSnapshot
+}
+
+struct WorktreeForkChangesOnlyEntry: Equatable, Sendable {
+    let relativePath: String
+    let kind: WorktreeForkChangesOnlyEntryKind
+    let identity: WorktreeForkEntryIdentity?
+    let mode: UInt32
+    let size: Int64
+    let contentSHA256: String?
+    let symbolicLinkText: String?
+    let tracked: Bool
+    let shouldOverlay: Bool
+}
+
+enum WorktreeForkChangesOnlyEntryKind: Equatable, Sendable {
+    case absent
+    case directory
+    case regularFile
+    case symbolicLink
+}
+
+struct WorktreeForkLargeFileRestoration: Equatable, Sendable {
+    let relativePath: String
+    let identity: WorktreeForkEntryIdentity
+    let mode: UInt32
+    let size: Int64
+    let contentSHA256: String
+}
+
+struct WorktreeForkRepositoryStateSnapshot: Equatable, Sendable {
+    let headCommitOID: String
+    let indexFingerprint: String
+    let operationState: Int32
 }
 
 struct WorktreeForkCapturedHead: Equatable, Sendable {
@@ -83,8 +126,11 @@ struct WorktreeForkFilesystemPlan: Sendable {
     /// Git-topology classification decides how each is realized.
     let nestedGitEntryPaths: [String]
 
+    static let empty = Self(
+        directories: [], leafBatches: [], hardLinkGroups: [], skippedEntries: [], nestedGitEntryPaths: [])
+
     var createdDirectoryCount: Int {
-        directories.count - 1
+        max(0, directories.count - 1)
     }
 
     func leafCount(of kind: WorktreeForkLeafKind) -> Int {

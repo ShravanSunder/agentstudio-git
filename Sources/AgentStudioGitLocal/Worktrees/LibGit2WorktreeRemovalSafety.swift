@@ -1,6 +1,87 @@
 import AgentStudioGitContracts
 import CLibGit2Local
+import Darwin
 import Foundation
+
+enum GitWorktreeRemovalPathStatus: Equatable, Sendable {
+    case present
+    case absent
+    case inaccessible
+}
+
+struct GitWorktreeRemovalPathObserver: Sendable {
+    static let live = Self(inspectPath: inspectGitWorktreeRemovalPath)
+
+    private let inspectPath: @Sendable (URL) -> GitWorktreeRemovalPathStatus
+
+    init(inspectPath: @escaping @Sendable (URL) -> GitWorktreeRemovalPathStatus) {
+        self.inspectPath = inspectPath
+    }
+
+    func status(of path: URL) -> GitWorktreeRemovalPathStatus {
+        inspectPath(path)
+    }
+}
+
+func inspectGitWorktreeRemovalPath(at path: URL) -> GitWorktreeRemovalPathStatus {
+    var fileStatus = stat()
+    let result = path.path.withCString { pathPointer in
+        lstat(pathPointer, &fileStatus)
+    }
+    guard result != 0 else {
+        return .present
+    }
+
+    let errorNumber = errno
+    if errorNumber == ENOENT || errorNumber == ENOTDIR {
+        return .absent
+    }
+    return .inaccessible
+}
+
+func administrationRemovalEffect(
+    pathStatus: GitWorktreeRemovalPathStatus,
+    pruneFailed: Bool
+) -> GitRemovalEffect {
+    switch pathStatus {
+    case .present:
+        return pruneFailed ? .partial : .retained
+    case .absent:
+        return .removed
+    case .inaccessible:
+        return .unknown
+    }
+}
+
+func workingDirectoryRemovalEffect(
+    pathStatus: GitWorktreeRemovalPathStatus,
+    removeRequested: Bool,
+    administration: GitRemovalEffect,
+    pruneFailed: Bool
+) -> GitRemovalEffect {
+    guard removeRequested else {
+        return .notRequested
+    }
+
+    switch pathStatus {
+    case .absent:
+        return .removed
+    case .inaccessible:
+        return .unknown
+    case .present:
+        guard pruneFailed else {
+            return .retained
+        }
+        switch administration {
+        case .removed:
+            return .partial
+        case .partial, .retained:
+            return .retained
+        case .unknown, .notRequested:
+            return .unknown
+        }
+    }
+}
 
 struct ResolvedWorktreeRemovalRequest: Sendable {
     let repositoryPath: URL
@@ -57,15 +138,6 @@ func worktreeDirtiness(at path: URL) throws -> WorktreeDirtiness {
     }
 
     return dirtiness
-}
-
-func metadataStillExists(worktreeID: GitWorktreeID) -> Bool {
-    do {
-        _ = try LibGit2WorktreeReader().snapshotForWorktreeID(worktreeID)
-        return true
-    } catch {
-        return false
-    }
 }
 
 extension Optional where Wrapped == String {

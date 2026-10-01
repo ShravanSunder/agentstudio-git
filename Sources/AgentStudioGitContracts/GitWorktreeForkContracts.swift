@@ -13,6 +13,14 @@ public enum GitForkWorktreeMode: Equatable, Hashable, Sendable {
     case detached
 }
 
+/// Selects how the destination worktree receives its filesystem contents.
+public enum GitWorktreeForkMaterialization: String, Codable, CaseIterable, Hashable, Sendable {
+    /// Strict APFS clone of the source worktree's filesystem.
+    case copyOnWrite
+    /// Clean checkout of captured HEAD with only the source's carried paths overlaid.
+    case changesOnly
+}
+
 extension GitForkWorktreeMode: Codable {
     private enum CodingKeys: String, CodingKey {
         case kind
@@ -65,22 +73,190 @@ public struct GitForkWorktreeRequest: Codable, Equatable, Hashable, Sendable {
     /// A nonexistent destination whose parent exists on the source's clone-capable APFS volume.
     public let destinationPath: URL
     public let mode: GitForkWorktreeMode
+    public let materialization: GitWorktreeForkMaterialization
 
-    public init(sourceWorktreePath: URL, destinationPath: URL, mode: GitForkWorktreeMode) {
+    public init(
+        sourceWorktreePath: URL,
+        destinationPath: URL,
+        mode: GitForkWorktreeMode,
+        materialization: GitWorktreeForkMaterialization
+    ) {
         self.sourceWorktreePath = sourceWorktreePath
         self.destinationPath = destinationPath
         self.mode = mode
+        self.materialization = materialization
     }
 }
 
 public struct GitForkWorktreeResult: Codable, Equatable, Hashable, Sendable {
     public let worktree: GitWorktreeSnapshot
-    public let materialization: GitWorktreeMaterializationReport
+    public let materialization: GitWorktreeMaterializationResult
 
-    public init(worktree: GitWorktreeSnapshot, materialization: GitWorktreeMaterializationReport) {
+    public init(worktree: GitWorktreeSnapshot, materialization: GitWorktreeMaterializationResult) {
         self.worktree = worktree
         self.materialization = materialization
     }
+}
+
+/// The explicitly tagged materialization evidence returned with a successful fork.
+public enum GitWorktreeMaterializationResult: Equatable, Hashable, Sendable {
+    case copyOnWrite(GitWorktreeMaterializationReport)
+    case changesOnly(GitChangesOnlyMaterializationReport)
+}
+
+extension GitWorktreeMaterializationResult: Codable {
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case kind
+        case clonedRegularFileCount
+        case createdDirectoryCount
+        case recreatedSymbolicLinkCount
+        case preservedHardLinkCount
+        case preservedGitRepositoryCount
+        case recreatedFIFOCount
+        case logicalRegularFileBytes
+        case skippedEntries
+        case normalizedEntries
+        case trackedChanges
+        case untrackedFiles
+        case ignoredExcluded
+    }
+
+    private enum Kind: String, Codable {
+        case copyOnWrite
+        case changesOnly
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(Kind.self, forKey: .kind) {
+        case .copyOnWrite:
+            let expectedKeys: Set<CodingKeys> = [
+                .kind, .clonedRegularFileCount, .createdDirectoryCount, .recreatedSymbolicLinkCount,
+                .preservedHardLinkCount, .preservedGitRepositoryCount, .recreatedFIFOCount,
+                .logicalRegularFileBytes, .skippedEntries, .normalizedEntries,
+            ]
+            guard Set(container.allKeys) == expectedKeys else {
+                throw Self.invalidPayload(decoder)
+            }
+            self = .copyOnWrite(
+                GitWorktreeMaterializationReport(
+                    clonedRegularFileCount: try container.decode(Int.self, forKey: .clonedRegularFileCount),
+                    createdDirectoryCount: try container.decode(Int.self, forKey: .createdDirectoryCount),
+                    recreatedSymbolicLinkCount: try container.decode(Int.self, forKey: .recreatedSymbolicLinkCount),
+                    preservedHardLinkCount: try container.decode(Int.self, forKey: .preservedHardLinkCount),
+                    preservedGitRepositoryCount: try container.decode(Int.self, forKey: .preservedGitRepositoryCount),
+                    recreatedFIFOCount: try container.decode(Int.self, forKey: .recreatedFIFOCount),
+                    logicalRegularFileBytes: try container.decode(Int64.self, forKey: .logicalRegularFileBytes),
+                    skippedEntries: try container.decode(
+                        [GitWorktreeMaterializationSkippedEntry].self, forKey: .skippedEntries),
+                    normalizedEntries: try container.decode(
+                        [GitWorktreeMaterializationNormalizedEntry].self, forKey: .normalizedEntries)
+                )
+            )
+        case .changesOnly:
+            let expectedKeys: Set<CodingKeys> = [.kind, .trackedChanges, .untrackedFiles, .ignoredExcluded]
+            guard Set(container.allKeys) == expectedKeys else {
+                throw Self.invalidPayload(decoder)
+            }
+            let trackedChanges = try container.decode(Int.self, forKey: .trackedChanges)
+            let untrackedFiles = try container.decode(Int.self, forKey: .untrackedFiles)
+            guard trackedChanges >= 0, untrackedFiles >= 0,
+                try container.decode(Bool.self, forKey: .ignoredExcluded)
+            else {
+                throw Self.invalidPayload(decoder)
+            }
+            self = .changesOnly(
+                GitChangesOnlyMaterializationReport(
+                    trackedChanges: trackedChanges,
+                    untrackedFiles: untrackedFiles
+                )
+            )
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .copyOnWrite(let report):
+            try container.encode(Kind.copyOnWrite, forKey: .kind)
+            try container.encode(report.clonedRegularFileCount, forKey: .clonedRegularFileCount)
+            try container.encode(report.createdDirectoryCount, forKey: .createdDirectoryCount)
+            try container.encode(report.recreatedSymbolicLinkCount, forKey: .recreatedSymbolicLinkCount)
+            try container.encode(report.preservedHardLinkCount, forKey: .preservedHardLinkCount)
+            try container.encode(report.preservedGitRepositoryCount, forKey: .preservedGitRepositoryCount)
+            try container.encode(report.recreatedFIFOCount, forKey: .recreatedFIFOCount)
+            try container.encode(report.logicalRegularFileBytes, forKey: .logicalRegularFileBytes)
+            try container.encode(report.skippedEntries, forKey: .skippedEntries)
+            try container.encode(report.normalizedEntries, forKey: .normalizedEntries)
+        case .changesOnly(let report):
+            try container.encode(Kind.changesOnly, forKey: .kind)
+            try container.encode(report.trackedChanges, forKey: .trackedChanges)
+            try container.encode(report.untrackedFiles, forKey: .untrackedFiles)
+            try container.encode(report.ignoredExcluded, forKey: .ignoredExcluded)
+        }
+    }
+
+    private static func invalidPayload(_ decoder: Decoder) -> DecodingError {
+        .dataCorrupted(
+            DecodingError.Context(
+                codingPath: decoder.codingPath,
+                debugDescription: "materialization result payload does not match its kind"
+            ))
+    }
+}
+
+/// Net changes carried into a clean HEAD checkout. Ignored files are always excluded.
+public struct GitChangesOnlyMaterializationReport: Codable, Equatable, Hashable, Sendable {
+    public let trackedChanges: Int
+    public let untrackedFiles: Int
+    public let ignoredExcluded: Bool
+
+    public init(trackedChanges: Int, untrackedFiles: Int) {
+        self.trackedChanges = trackedChanges
+        self.untrackedFiles = untrackedFiles
+        ignoredExcluded = true
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case trackedChanges
+        case untrackedFiles
+        case ignoredExcluded
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let trackedChanges = try container.decode(Int.self, forKey: .trackedChanges)
+        let untrackedFiles = try container.decode(Int.self, forKey: .untrackedFiles)
+        guard trackedChanges >= 0, untrackedFiles >= 0,
+            try container.decode(Bool.self, forKey: .ignoredExcluded)
+        else {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "changes-only counts must be nonnegative and ignored files excluded"
+                ))
+        }
+        self.trackedChanges = trackedChanges
+        self.untrackedFiles = untrackedFiles
+        ignoredExcluded = true
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        guard trackedChanges >= 0, untrackedFiles >= 0, ignoredExcluded else {
+            throw EncodingError.invalidValue(
+                self,
+                EncodingError.Context(
+                    codingPath: encoder.codingPath,
+                    debugDescription: "changes-only counts must be nonnegative and ignored files excluded"
+                )
+            )
+        }
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(trackedChanges, forKey: .trackedChanges)
+        try container.encode(untrackedFiles, forKey: .untrackedFiles)
+        try container.encode(true, forKey: .ignoredExcluded)
+    }
+
 }
 
 /// What a successful fork created, plus the entries it intentionally did not reproduce exactly.

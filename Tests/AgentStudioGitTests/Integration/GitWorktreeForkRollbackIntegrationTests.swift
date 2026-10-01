@@ -12,6 +12,90 @@ struct GitWorktreeForkRollbackIntegrationTests {
         relativePath: "injected", reason: .entryCreationFailed, errorNumber: nil)
 
     @Test(
+        "rollback reports every confirmed artifact retained around an acquired lock",
+        arguments: [
+            LockedRollbackArtifact.destinationRoot,
+            .linkedWorktreeAdministration,
+            .nestedAdministration,
+        ]
+    )
+    func retainedArtifactUnderAcquiredLockIsReported(_ artifact: LockedRollbackArtifact) throws {
+        // Arrange
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-locked-residue")
+        defer { fixture.remove() }
+        let destinationRoot = fixture.destination("locked-residue-destination")
+        let commonDirectory = fixture.source.appending(path: ".git")
+        let artifactPath: URL
+        let lockPath: URL
+        let lockFact: GitLockFact
+        let lockLocation: String
+        let residueKind: GitWorktreeForkResidueKind
+        let residueLocation: String
+        switch artifact {
+        case .destinationRoot:
+            artifactPath = destinationRoot
+            lockPath = artifactPath.appending(path: ".git/index.lock")
+            lockFact = GitLockFact(path: lockPath.standardizedFileURL, resource: .index(worktreePath: destinationRoot))
+            lockLocation = ".git/index.lock"
+            residueKind = .destinationContent
+            residueLocation = "."
+        case .linkedWorktreeAdministration:
+            let name = "locked-residue-admin"
+            artifactPath = commonDirectory.appending(path: "worktrees/\(name)")
+            lockPath = artifactPath.appending(path: "index.lock")
+            lockFact = GitLockFact(path: lockPath.standardizedFileURL, resource: .index(worktreePath: destinationRoot))
+            lockLocation = "worktrees/\(name)/index.lock"
+            residueKind = .linkedWorktreeAdministration
+            residueLocation = "worktrees/\(name)"
+        case .nestedAdministration:
+            artifactPath = destinationRoot.appending(path: ".git/modules/nested")
+            lockPath = artifactPath.appending(path: "index.lock")
+            lockFact = GitLockFact(path: lockPath.standardizedFileURL, resource: .index(worktreePath: destinationRoot))
+            lockLocation = ".git/modules/nested/index.lock"
+            residueKind = .nestedAdministration
+            residueLocation = "nested/.git/modules/nested"
+        }
+        try FileManager.default.createDirectory(
+            at: lockPath.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let lockTracker = WorktreeForkLockTracker()
+        lockTracker.beginAttempt(for: [lockFact])
+        let lockContents = Data("positively acquired lock beneath retained artifact\n".utf8)
+        try lockContents.write(to: lockPath)
+        lockTracker.recordAcquisition(of: lockFact)
+        let identity = WorktreeForkEntryIdentity(try #require(GitWorktreeForkFileProbe.info(artifactPath)))
+        var journal = WorktreeForkRollbackJournal(
+            commonDirectory: commonDirectory,
+            destinationRoot: destinationRoot,
+            runtime: LibGit2Runtime.shared,
+            lockTracker: lockTracker
+        )
+        switch artifact {
+        case .destinationRoot:
+            journal.record(.destinationRoot(path: artifactPath, identity: identity))
+        case .linkedWorktreeAdministration:
+            journal.record(
+                .linkedWorktreeAdministration(name: "locked-residue-admin", path: artifactPath, identity: identity))
+        case .nestedAdministration:
+            journal.record(
+                .nestedAdministration(path: artifactPath, reportLocation: residueLocation, identity: identity))
+        }
+
+        // Act
+        let residue = journal.rollback(faults: .production)
+
+        // Assert
+        #expect(
+            residue == [
+                GitWorktreeForkResidue(kind: .lockFile, location: lockLocation),
+                GitWorktreeForkResidue(kind: residueKind, location: residueLocation),
+            ]
+        )
+        #expect(GitWorktreeForkFileProbe.exists(artifactPath))
+        #expect(GitWorktreeForkFileProbe.exists(lockPath))
+        #expect(try Data(contentsOf: lockPath) == lockContents)
+    }
+
+    @Test(
         "a failure after each transaction phase removes the destination, administration, and created branch",
         arguments: [
             WorktreeForkFaultPoint.afterPreflight,
@@ -261,6 +345,12 @@ struct GitWorktreeForkRollbackIntegrationTests {
             return error
         }
     }
+}
+
+enum LockedRollbackArtifact: Sendable {
+    case destinationRoot
+    case linkedWorktreeAdministration
+    case nestedAdministration
 }
 
 private enum CancellationEvent: Equatable, Sendable {

@@ -10,7 +10,11 @@ public protocol AgentStudioGitLocalClient: Sendable {
     /// storage. Normal `createWorktree` is unaffected by whether this capability is available.
     func forkWorktree(_ request: GitForkWorktreeRequest) async throws(GitWorktreeForkError) -> GitForkWorktreeResult
     /// Read-only availability check for disabling fork up front; it never mutates or walks the source.
-    func forkWorktreeEligibility(sourceWorktreePath: URL, destinationPath: URL) async -> GitWorktreeForkEligibility
+    func forkWorktreeEligibility(
+        sourceWorktreePath: URL,
+        destinationPath: URL,
+        materialization: GitWorktreeForkMaterialization
+    ) async -> GitWorktreeForkEligibility
     func pruneStaleWorktree(_ request: GitPruneStaleWorktreeRequest) async throws(GitDataPlaneError)
         -> GitWorktreePruneResult
     func removeWorktree(_ request: GitRemoveWorktreeRequest) async throws(GitDataPlaneError)
@@ -33,6 +37,11 @@ public protocol AgentStudioGitLocalClient: Sendable {
     func ignoredPaths(repositoryAt worktreePath: URL, relativePaths: [String]) async throws(GitDataPlaneError)
         -> [GitIgnoreCheck]
     func branches(for repositoryPath: URL) async throws(GitDataPlaneError) -> [GitBranchSnapshot]
+    func assessBranchIntegration(_ request: GitBranchIntegrationRequest) async throws(GitDataPlaneError)
+        -> GitBranchIntegrationReport
+    func deleteLocalBranch(_ request: GitDeleteLocalBranchRequest)
+        async throws(GitLockedOperationFailure<GitDeleteLocalBranchErrorReason>)
+        -> GitDeleteLocalBranchResult
     func resolveReviewDefaultTarget(for repositoryPath: URL) async throws(GitDataPlaneError)
         -> GitReviewComparisonBranchTarget?
     func captureReviewComparisonTargets(_ request: GitReviewComparisonTargetCaptureRequest)
@@ -66,7 +75,11 @@ extension AgentStudioGitLocalClient {
         throw .rejected(reason: .clientCapabilityUnavailable)
     }
 
-    public func forkWorktreeEligibility(sourceWorktreePath: URL, destinationPath: URL) async
+    public func forkWorktreeEligibility(
+        sourceWorktreePath: URL,
+        destinationPath: URL,
+        materialization: GitWorktreeForkMaterialization
+    ) async
         -> GitWorktreeForkEligibility
     {
         .unavailable(.clientCapabilityUnavailable)
@@ -75,7 +88,8 @@ extension AgentStudioGitLocalClient {
 
 public protocol AgentStudioGitRemoteClient: Sendable {
     func clone(_ request: GitCloneRequest) async throws(GitDataPlaneError) -> GitCloneResult
-    func fetch(_ request: GitFetchRequest) async throws(GitDataPlaneError) -> GitFetchResult
+    func fetch(_ request: GitFetchRequest)
+        async throws(GitLockedOperationFailure<GitDataPlaneError>) -> GitFetchResult
     func captureRemoteTrackingSnapshot(_ request: GitRemoteTrackingSnapshotRequest)
         async throws(GitDataPlaneError) -> GitRemoteTrackingSnapshot
     func stageFetch(_ request: GitStagedFetchRequest) async throws(GitDataPlaneError) -> GitStagedFetchResult
