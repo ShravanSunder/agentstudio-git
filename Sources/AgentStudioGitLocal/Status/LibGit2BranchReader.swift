@@ -142,7 +142,9 @@ struct LibGit2BranchReader: Sendable {
         var buffer = git_buf(ptr: nil, reserved: 0, size: 0)
         let upstreamResult = git_branch_upstream_name(&buffer, repository, referenceNamePointer)
         defer { git_buf_dispose(&buffer) }
-        if upstreamResult == GIT_ENOTFOUND.rawValue {
+        // An invalid spec is upstream config libgit2 can't use, such as the URL `gh pr checkout` writes into
+        // branch.<name>.remote. That branch has no usable upstream; it must not fail the whole read.
+        if upstreamResult == GIT_ENOTFOUND.rawValue || upstreamResult == GIT_EINVALIDSPEC.rawValue {
             return nil
         }
         guard upstreamResult >= 0 else {

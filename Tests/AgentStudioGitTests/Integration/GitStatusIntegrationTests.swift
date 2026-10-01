@@ -374,6 +374,35 @@ struct GitStatusIntegrationTests {
         #expect(feature.upstreamName == nil)
     }
 
+    @Test("a branch whose configured remote is a URL reads as having no upstream")
+    func branchWithURLRemoteReadsAsHavingNoUpstream() async throws {
+        // Arrange: `gh pr checkout` writes a URL into branch.<name>.remote; system git accepts it, libgit2 rejects it.
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-status-url-remote")
+        defer { fixture.remove() }
+        let remotePath = fixture.root.appending(path: "origin.git")
+        try fixture.git.run("init", "--bare", remotePath.path, currentDirectory: fixture.root)
+        try fixture.git.run("remote", "add", "origin", remotePath.path)
+        try fixture.git.run("push", "-u", "origin", "main")
+        try fixture.git.run("branch", "pr/checkout")
+        try fixture.git.run("config", "branch.pr/checkout.remote", "https://github.com/example/repo.git")
+        try fixture.git.run("config", "branch.pr/checkout.merge", "refs/heads/pr/checkout")
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        // Act
+        let branches = try await client.branches(for: fixture.repositoryPath)
+        try fixture.git.run("checkout", "pr/checkout")
+        let currentBranchStatus = try await client.statusFacts(for: fixture.repositoryPath, options: GitStatusOptions())
+            .facts
+
+        // Assert: one odd branch never fails the whole read; the others keep their upstreams.
+        let main = try #require(branches.first { $0.name == "main" })
+        let prCheckout = try #require(branches.first { $0.name == "pr/checkout" })
+        #expect(main.upstreamName == "refs/remotes/origin/main")
+        #expect(prCheckout.upstreamName == nil)
+        #expect(currentBranchStatus.head.shortName == "pr/checkout")
+        #expect(!currentBranchStatus.summary.hasUpstream)
+    }
+
     @Test("pathspec status scopes entries to a single matching path")
     func pathspecStatusScopesEntriesToSingleMatchingPath() async throws {
         let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-status-pathspec-single")
