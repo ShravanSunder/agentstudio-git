@@ -130,10 +130,11 @@ struct LibGit2WorktreeForkWriter: Sendable {
         try faults.reach(.afterMaterialization)
         try cancellation.throwIfCancelled()
 
-        let rehomedNodes = try GitRepositoryStateRehomer(
+        let rehomeOutcome = try GitRepositoryStateRehomer(
             plan: plan, cancellation: cancellation, lockTracker: journal.lockTracker
         )
         .rehome(journal: &journal)
+        let rehomedNodes = rehomeOutcome.nodes
         try faults.reach(.afterGitStateRehomed)
         observations.normalizedEntries += try materializer.finalizeDirectories(
             plan.filesystem,
@@ -177,6 +178,8 @@ struct LibGit2WorktreeForkWriter: Sendable {
             nodeIndexEvidence[rehomed.node.relativePath] = evidence
             indexObserver.observe(rehomed.node.relativePath, evidence)
         }
+        // Nested index writes are the last administration writes; restrictive source metadata lands after them.
+        observations.normalizedEntries += try rehomeOutcome.finalizeAdministrationDirectories()
         try faults.reach(.afterIndexesBuilt)
         try cancellation.throwIfCancelled()
 
@@ -232,7 +235,7 @@ struct LibGit2WorktreeForkWriter: Sendable {
         let rehomedNodes = try GitRepositoryStateRehomer(
             plan: plan, cancellation: cancellation, lockTracker: journal.lockTracker
         )
-        .rehome(journal: &journal)
+        .rehome(journal: &journal).nodes
         try faults.reach(.afterGitStateRehomed)
         try cancellation.throwIfCancelled()
 
