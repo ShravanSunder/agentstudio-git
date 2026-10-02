@@ -59,6 +59,9 @@ struct GitWorktreeForkNestedRepositoryIntegrationTests {
         let shared = fixtures.appending(path: "shared.gitted")
         try fixture.git.run(["clone", "-q", "--bare", upstream.path, base.path])
         try fixture.git.run(["clone", "-q", "--bare", "--shared", base.path, shared.path])
+        // A committed fixture cannot record this machine's absolute paths, only relative ones.
+        try fixture.git.run(
+            ["config", "--file", "config", "remote.origin.url", "../base.gitted"], currentDirectory: shared)
         try fixture.write("objects/info/alternates", "../../base.gitted/objects\n", in: shared)
         try fixture.write("worktrees/linked/gitdir", "../../../linked/dotgit\n", in: shared)
         try fixture.write("linked/dotgit", "gitdir: stand-in\n", in: fixtures)

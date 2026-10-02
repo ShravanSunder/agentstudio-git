@@ -27,6 +27,42 @@ struct WorktreeForkTopologyValidator: Sendable {
             try validateNode(node, evidence: evidenceByNode[node.node.relativePath])
         }
         try validateMirrorSymlinks()
+        let relocation = WorktreeForkSourcePathRelocation(
+            plan: plan,
+            administrationByNode: Dictionary(
+                uniqueKeysWithValues: rehomed.map { ($0.node.relativePath, $0.destinationAdministration) })
+        )
+        for node in rehomed {
+            try validateConfigurationPaths(
+                in: node.destinationAdministration, reportPath: node.node.relativePath, relocation: relocation)
+        }
+        for copied in plan.gitTopology.copiedGitDirectories {
+            try validateConfigurationPaths(
+                in: plan.destinationRoot.appending(path: copied.relativePath), reportPath: copied.relativePath,
+                relocation: relocation)
+        }
+    }
+
+    /// A configuration value that still names the source tree or a source administration the fork re-homed
+    /// would keep the destination reading, or writing, source state.
+    private func validateConfigurationPaths(
+        in administration: URL,
+        reportPath: String,
+        relocation: WorktreeForkSourcePathRelocation
+    ) throws(GitWorktreeForkError) {
+        for fileName in WorktreeForkConfigurationFile.repositoryFileNames {
+            let file = administration.appending(path: fileName)
+            guard case .success = WorktreeForkDescriptors.lstatPath(file) else {
+                continue
+            }
+            for entry in try WorktreeForkConfigurationFile.absolutePathEntries(in: file) {
+                let path = WorktreeForkSourcePathRelocation.canonicalized(absolutePath: entry.value)
+                let destinationOwned = allowedPrefixes.contains { (path.path + "/").hasPrefix($0) }
+                if !destinationOwned, relocation.counterpart(of: path) != .outsideSource {
+                    throw .validationFailed(reason: .sourceAdministrationReference, relativePath: reportPath)
+                }
+            }
+        }
     }
 
     /// Every symlink inside a destination-owned object mirror must resolve inside that same mirror.

@@ -41,8 +41,9 @@ struct GitWorktreeForkRealCheckoutSmokeTests {
         let sourceHead = try git.run(["rev-parse", "HEAD"], currentDirectory: source)
         let destinationHead = try git.run(["rev-parse", "HEAD"], currentDirectory: destination)
         #expect(destinationHead == sourceHead)
-        #expect(try git.run(["branch", "--show-current"], currentDirectory: destination)
-            .trimmingCharacters(in: .whitespacesAndNewlines) == branch)
+        #expect(
+            try git.run(["branch", "--show-current"], currentDirectory: destination)
+                .trimmingCharacters(in: .whitespacesAndNewlines) == branch)
         let sourceStatus = try git.run(["status", "--porcelain"], currentDirectory: source)
         let destinationStatus = try git.run(["status", "--porcelain"], currentDirectory: destination)
         #expect(destinationStatus == sourceStatus, "destination status differs from source")
