@@ -165,6 +165,68 @@ struct GitWorktreeLargeFileFillIntegrationTests {
         #expect(creation.largeFiles.scan == .complete)
     }
 
+    @Test("a newly filled LFS payload reads clean and removes without force")
+    func filledLargeFileIsCleanForStatusAndRemoval() async throws {
+        // Arrange
+        let fixture = try Self.makeFixture(prefix: "agentstudio-git-lfs-removal-clean")
+        defer { fixture.repository.remove() }
+        try fixture.writeObject(fixture.payload)
+        let destination = fixture.repository.linkedWorktreePath("lfs-removal-clean")
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        // Act
+        let creation = try await createWorktree(fixture, destination: destination, branch: "lfs-removal-clean")
+        let indexDebug = try GitProcess(repositoryPath: destination).run("ls-files", "--debug", "--", "asset.bin")
+        let status = try await client.statusFacts(for: destination, options: GitStatusOptions()).facts
+        let removal = try await client.removeWorktree(
+            GitRemoveWorktreeRequest(
+                worktreeID: creation.worktree.id,
+                canonicalPath: creation.worktree.canonicalPath,
+                removeWorkingDirectory: true,
+                forceDiscardChanges: false
+            )
+        )
+
+        // Assert
+        #expect(indexDebug.contains("size: \(fixture.pointer.utf8.count)"))
+        #expect(status.summary.changedFileCount == 0)
+        #expect(status.entries.isEmpty)
+        #expect(removal.removedWorktreeID == creation.worktree.id)
+        #expect(removal.effects.workingDirectory == .removed)
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    @Test("non-forced removal refuses a same-size incorrect LFS payload")
+    func nonForcedRemovalRefusesIncorrectLargeFilePayload() async throws {
+        // Arrange
+        let fixture = try Self.makeFixture(prefix: "agentstudio-git-lfs-removal-wrong")
+        defer { fixture.repository.remove() }
+        try fixture.writeObject(fixture.payload)
+        let destination = fixture.repository.linkedWorktreePath("lfs-removal-wrong")
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        // Act
+        let creation = try await createWorktree(fixture, destination: destination, branch: "lfs-removal-wrong")
+        try Data(repeating: 0x78, count: fixture.payload.count).write(to: destination.appending(path: "asset.bin"))
+        var removalError: GitDataPlaneError?
+        do {
+            _ = try await client.removeWorktree(
+                GitRemoveWorktreeRequest(
+                    worktreeID: creation.worktree.id,
+                    canonicalPath: creation.worktree.canonicalPath,
+                    removeWorkingDirectory: true,
+                    forceDiscardChanges: false
+                )
+            )
+        } catch {
+            removalError = error
+        }
+
+        // Assert
+        #expect(removalError == .unsafeWorktreeRemoval(reason: .dirtyTrackedChanges))
+        #expect(FileManager.default.fileExists(atPath: destination.path))
+    }
+
     @Test("an early scan failure is reported without failing worktree creation")
     func earlyScanFailureKeepsWorktreeAndReportsIncompleteScan() async throws {
         // Arrange
