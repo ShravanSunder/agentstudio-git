@@ -6,15 +6,18 @@ struct LibGit2WorktreeWriter: Sendable {
     private let runtime: LibGit2Runtime
     private let reader: LibGit2WorktreeReader
     private let removalPathObserver: GitWorktreeRemovalPathObserver
+    private let largeFileStoreFill: LibGit2LargeFileStoreFill
 
     init(
         runtime: LibGit2Runtime = .shared,
         reader: LibGit2WorktreeReader = LibGit2WorktreeReader(),
-        removalPathObserver: GitWorktreeRemovalPathObserver = .live
+        removalPathObserver: GitWorktreeRemovalPathObserver = .live,
+        largeFileStoreFill: LibGit2LargeFileStoreFill = LibGit2LargeFileStoreFill()
     ) {
         self.runtime = runtime
         self.reader = reader
         self.removalPathObserver = removalPathObserver
+        self.largeFileStoreFill = largeFileStoreFill
     }
 
     func createWorktree(_ request: GitCreateWorktreeRequest) throws
@@ -98,7 +101,7 @@ struct LibGit2WorktreeWriter: Sendable {
             throw error
         }
 
-        let largeFiles = LibGit2LargeFileStoreFill().fill(worktreePath: snapshot.canonicalPath)
+        let largeFiles = largeFileStoreFill.fill(worktreePath: snapshot.canonicalPath)
         return GitWorktreeCreation(worktree: snapshot, largeFiles: largeFiles)
     }
 

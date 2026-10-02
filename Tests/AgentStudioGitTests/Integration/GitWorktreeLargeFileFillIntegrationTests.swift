@@ -3,6 +3,7 @@ import CryptoKit
 import Darwin
 import Foundation
 import Testing
+import os
 
 @testable import AgentStudioGitLocal
 
@@ -29,6 +30,13 @@ struct GitWorktreeLargeFileFillIntegrationTests {
         #expect(indexEntry.contains("100644"))
         #expect(indexEntry.contains(fixture.pointerBlobOID))
         #expect(try fileMode(destination.appending(path: "asset.bin")) & 0o111 == 0)
+        let indexDebug = try GitProcess(repositoryPath: destination).run("ls-files", "--debug", "--", "asset.bin")
+        #expect(indexDebug.contains("size: \(fixture.payload.count)"))
+        let status = try await LibGit2AgentStudioGitLocalClient()
+            .statusFacts(for: destination, options: GitStatusOptions())
+            .facts
+        #expect(status.summary.changedFileCount == 0)
+        #expect(status.entries.isEmpty)
     }
 
     @Test("create preserves the executable index mode when filling an LFS pointer")
@@ -116,6 +124,48 @@ struct GitWorktreeLargeFileFillIntegrationTests {
         #expect(try Data(contentsOf: destination.appending(path: "asset.bin")) == fixture.payload)
         #expect(creation.largeFiles.materializedCount == 1)
         #expect(creation.largeFiles.missing.isEmpty)
+    }
+
+    @Test("a foreign index lock skips the stat update without rolling back the filled worktree")
+    func indexLockSkipsUpdateAndKeepsMaterializedFile() async throws {
+        // Arrange
+        let fixture = try Self.makeFixture(prefix: "agentstudio-git-lfs-index-lock")
+        defer { fixture.repository.remove() }
+        try fixture.writeObject(fixture.payload)
+        let destination = fixture.repository.linkedWorktreePath("lfs-index-lock")
+        let lockCreationErrorNumber = OSAllocatedUnfairLock(initialState: Int32(-1))
+        let injectedLockFact = OSAllocatedUnfairLock(initialState: Optional<GitLockFact>.none)
+        let faults = LibGit2LargeFileStoreFillFaultInjector(beforeIndexWrite: { lockFact in
+            let descriptor = lockFact.path.path.withCString {
+                open($0, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+            }
+            lockCreationErrorNumber.withLock { $0 = descriptor >= 0 ? 0 : errno }
+            if descriptor >= 0 {
+                close(descriptor)
+                injectedLockFact.withLock { $0 = lockFact }
+            }
+        })
+        let storeFill = LibGit2LargeFileStoreFill(faults: faults)
+        let writer = LibGit2WorktreeWriter(largeFileStoreFill: storeFill)
+        let client = LibGit2AgentStudioGitLocalClient(worktreeWriter: writer)
+
+        // Act
+        let creation = try await client.createWorktree(
+            GitCreateWorktreeRequest(
+                repositoryPath: fixture.repository.repositoryPath,
+                destinationPath: destination,
+                mode: .newBranch(name: "lfs-index-lock", startPoint: .named("HEAD"))
+            )
+        )
+
+        // Assert
+        let expectedLockFact = try #require(injectedLockFact.withLock { $0 })
+        #expect(lockCreationErrorNumber.withLock { $0 } == 0)
+        #expect(creation.largeFiles.materializedCount == 1)
+        #expect(try Data(contentsOf: destination.appending(path: "asset.bin")) == fixture.payload)
+        #expect(creation.largeFiles.indexUpdate == .skipped(.lockHeld(expectedLockFact)))
+        #expect(FileManager.default.fileExists(atPath: expectedLockFact.path.path))
+        #expect(try GitProcess(repositoryPath: destination).succeeds("rev-parse", "--verify", "HEAD"))
     }
 
     private func createWorktree(

@@ -5,9 +5,14 @@ import Foundation
 
 struct LibGit2LargeFileStoreFill: Sendable {
     private let store: LibGit2LargeFileStore
+    private let faults: LibGit2LargeFileStoreFillFaultInjector
 
-    init(store: LibGit2LargeFileStore = LibGit2LargeFileStore()) {
+    init(
+        store: LibGit2LargeFileStore = LibGit2LargeFileStore(),
+        faults: LibGit2LargeFileStoreFillFaultInjector = LibGit2LargeFileStoreFillFaultInjector()
+    ) {
         self.store = store
+        self.faults = faults
     }
 
     func fill(worktreePath: URL) -> GitLargeFileFill {
@@ -35,31 +40,19 @@ struct LibGit2LargeFileStoreFill: Sendable {
                 isDirectory: true
             )
         } else {
-            return GitLargeFileFill(
-                materializedCount: 0,
-                missing: [],
-                indexUpdate: .skipped(.gitFailure(.repositoryIndexUnavailable))
-            )
+            return emptyFill(for: .repositoryIndexUnavailable)
         }
 
-        var index: OpaquePointer?
-        let indexResult = git_repository_index(&index, repository)
-        guard indexResult >= 0, let index else {
-            return GitLargeFileFill(
-                materializedCount: 0,
-                missing: [],
-                indexUpdate: .skipped(.gitFailure(.repositoryIndexUnavailable))
-            )
+        let index: OpaquePointer
+        switch openIndex(repository: repository) {
+        case .success(let openedIndex):
+            index = openedIndex
+        case .failure(.unavailable):
+            return emptyFill(for: .repositoryIndexUnavailable)
+        case .failure(.readFailed):
+            return emptyFill(for: .indexReadFailed)
         }
         defer { git_index_free(index) }
-        let indexReadResult = git_index_read(index, 1)
-        guard indexReadResult >= 0 else {
-            return GitLargeFileFill(
-                materializedCount: 0,
-                missing: [],
-                indexUpdate: .skipped(.gitFailure(.indexReadFailed))
-            )
-        }
 
         var missing: [GitLargeFileFillMiss] = []
         let candidates = lfsCandidates(index: index, repository: repository, missing: &missing)
@@ -128,30 +121,75 @@ struct LibGit2LargeFileStoreFill: Sendable {
         }
         defer { WorktreeForkDatalessPolicy.restore(priorDatalessPolicy) }
 
-        var materializedCount = 0
+        let candidateFill = materializeCandidatesAndUpdateIndex(
+            candidates: candidates,
+            index: index,
+            repository: repository,
+            worktreePath: canonicalWorktreePath,
+            storageRootDescriptor: storageRootDescriptor,
+            worktreeRootDescriptor: worktreeRootDescriptor
+        )
+        missing.append(contentsOf: candidateFill.missing)
+        return fillResult(
+            materializedCount: candidateFill.materializedCount,
+            missing: missing,
+            indexUpdate: candidateFill.indexUpdate
+        )
+    }
+
+    private func emptyFill(for failure: GitLargeFileIndexFailureKind) -> GitLargeFileFill {
+        GitLargeFileFill(
+            materializedCount: 0,
+            missing: [],
+            indexUpdate: .skipped(.gitFailure(failure))
+        )
+    }
+
+    private func openIndex(repository: OpaquePointer) -> Result<OpaquePointer, LargeFileFillIndexFailure> {
+        var index: OpaquePointer?
+        let indexResult = git_repository_index(&index, repository)
+        guard indexResult >= 0, let index else {
+            return .failure(.unavailable)
+        }
+        guard git_index_read(index, 1) >= 0 else {
+            git_index_free(index)
+            return .failure(.readFailed)
+        }
+        return .success(index)
+    }
+
+    private func materializeCandidatesAndUpdateIndex(
+        candidates: [LargeFileFillCandidate],
+        index: OpaquePointer,
+        repository: OpaquePointer,
+        worktreePath: URL,
+        storageRootDescriptor: Int32,
+        worktreeRootDescriptor: Int32
+    ) -> GitLargeFileFill {
+        var missing: [GitLargeFileFillMiss] = []
+        var filledPaths: [String] = []
         for candidate in candidates {
-            switch pointerIdentity(
-                for: candidate,
-                worktreeRootDescriptor: worktreeRootDescriptor
-            ) {
+            switch pointerIdentity(for: candidate, worktreeRootDescriptor: worktreeRootDescriptor) {
             case .notPointer:
                 continue
             case .readFailed(let errorNumber):
                 missing.append(
                     GitLargeFileFillMiss(path: candidate.path, reason: .readFailed(errno: errorNumber)))
             case .matches(let identity):
-                let outcome = store.materialize(
+                let request = LargeFileStoreMaterializationRequest(
                     pointer: candidate.pointer,
                     pointerData: candidate.pointerData,
                     expectedPointerIdentity: identity,
                     indexMode: candidate.indexMode,
-                    path: candidate.path,
+                    path: candidate.path
+                )
+                switch store.materialize(
+                    request: request,
                     storageRootDescriptor: storageRootDescriptor,
                     worktreeRootDescriptor: worktreeRootDescriptor
-                )
-                switch outcome {
+                ) {
                 case .success(true):
-                    materializedCount += 1
+                    filledPaths.append(candidate.path)
                 case .success(false):
                     continue
                 case .failure(let failure):
@@ -159,7 +197,18 @@ struct LibGit2LargeFileStoreFill: Sendable {
                 }
             }
         }
-        return fillResult(materializedCount: materializedCount, missing: missing)
+        let indexUpdate = updateIndexStats(
+            index: index,
+            repository: repository,
+            worktreePath: worktreePath,
+            worktreeRootDescriptor: worktreeRootDescriptor,
+            filledPaths: filledPaths
+        )
+        return fillResult(
+            materializedCount: filledPaths.count,
+            missing: missing,
+            indexUpdate: indexUpdate
+        )
     }
 
     private func lfsCandidates(
@@ -285,19 +334,139 @@ struct LibGit2LargeFileStoreFill: Sendable {
 
     private func fillResult(
         materializedCount: Int,
-        missing: [GitLargeFileFillMiss]
+        missing: [GitLargeFileFillMiss],
+        indexUpdate: GitLargeFileIndexUpdate = .updated
     ) -> GitLargeFileFill {
         GitLargeFileFill(
             materializedCount: materializedCount,
             missing: missing.sorted { $0.path < $1.path },
-            indexUpdate: .updated
+            indexUpdate: indexUpdate
         )
+    }
+
+    private func updateIndexStats(
+        index: OpaquePointer,
+        repository: OpaquePointer,
+        worktreePath: URL,
+        worktreeRootDescriptor: Int32,
+        filledPaths: [String]
+    ) -> GitLargeFileIndexUpdate {
+        guard !filledPaths.isEmpty else {
+            return .updated
+        }
+
+        let indexLockFact: GitLockFact
+        do {
+            indexLockFact = try LibGit2LockPathResolver.fact(
+                for: .index(worktreePath: worktreePath),
+                repository: repository
+            )
+        } catch let error as GitDataPlaneError {
+            return .skipped(indexSkip(for: error, fallback: .indexPathUnavailable))
+        } catch {
+            return .skipped(.gitFailure(.indexPathUnavailable))
+        }
+
+        for path in filledPaths {
+            let (parentPath, name) = WorktreeForkDescriptors.splitParent(path)
+            let parentDescriptor: Int32
+            switch WorktreeForkDescriptors.openDirectory(
+                beneath: worktreeRootDescriptor,
+                relativePath: parentPath
+            ) {
+            case .success(let descriptor):
+                parentDescriptor = descriptor
+            case .failure(let failure):
+                if failure.code == EACCES {
+                    return .skipped(.permissionDenied(path: worktreePath.appending(path: parentPath)))
+                }
+                return .skipped(.gitFailure(.entryStatFailed))
+            }
+            defer { close(parentDescriptor) }
+
+            guard var entry = path.withCString({ git_index_get_bypath(index, $0, 0) })?.pointee else {
+                return .skipped(.gitFailure(.indexEntryUnavailable))
+            }
+            let fileInfo: Darwin.stat
+            switch WorktreeForkDescriptors.statEntry(in: parentDescriptor, name: name) {
+            case .success(let info) where WorktreeForkEntryKind(mode: info.st_mode) == .regularFile:
+                fileInfo = info
+            case .success:
+                return .skipped(.gitFailure(.entryStatFailed))
+            case .failure(let failure) where failure.code == EACCES:
+                return .skipped(.permissionDenied(path: worktreePath.appending(path: path)))
+            case .failure:
+                return .skipped(.gitFailure(.entryStatFailed))
+            }
+
+            entry.ctime = git_index_time(
+                seconds: Int32(truncatingIfNeeded: fileInfo.st_ctimespec.tv_sec),
+                nanoseconds: UInt32(truncatingIfNeeded: fileInfo.st_ctimespec.tv_nsec)
+            )
+            entry.mtime = git_index_time(
+                seconds: Int32(truncatingIfNeeded: fileInfo.st_mtimespec.tv_sec),
+                nanoseconds: UInt32(truncatingIfNeeded: fileInfo.st_mtimespec.tv_nsec)
+            )
+            entry.dev = UInt32(truncatingIfNeeded: fileInfo.st_dev)
+            entry.ino = UInt32(truncatingIfNeeded: fileInfo.st_ino)
+            entry.uid = fileInfo.st_uid
+            entry.gid = fileInfo.st_gid
+            entry.file_size = UInt32(truncatingIfNeeded: fileInfo.st_size)
+            errno = 0
+            let addResult = git_index_add(index, &entry)
+            guard addResult >= 0 else {
+                let error = LibGit2ErrorCapture.failure(code: addResult, systemErrorCode: errno)
+                return .skipped(indexSkip(for: error, fallback: .indexEntryUpdateFailed))
+            }
+        }
+
+        faults.beforeIndexWrite(indexLockFact)
+        errno = 0
+        let writeResult = git_index_write(index)
+        let writeErrorNumber = errno
+        guard writeResult >= 0 else {
+            let error = LibGit2ErrorCapture.failure(
+                code: writeResult,
+                lockFacts: [indexLockFact],
+                systemErrorCode: writeErrorNumber
+            )
+            return .skipped(indexSkip(for: error, fallback: .indexWriteFailed))
+        }
+        return .updated
+    }
+
+    private func indexSkip(
+        for error: GitDataPlaneError,
+        fallback: GitLargeFileIndexFailureKind
+    ) -> GitLargeFileIndexSkip {
+        switch error {
+        case .lockHeld(let fact):
+            .lockHeld(fact)
+        case .lockUnidentified(let resource):
+            .lockUnidentified(resource)
+        case .permissionDenied(let path):
+            .permissionDenied(path: path)
+        default:
+            .gitFailure(fallback)
+        }
     }
 
     private static func currentReadErrorNumber() -> Int32 {
         errno == 0 ? EIO : errno
     }
 
+}
+
+struct LibGit2LargeFileStoreFillFaultInjector: Sendable {
+    private let beforeIndexWriteHandler: @Sendable (GitLockFact) -> Void
+
+    init(beforeIndexWrite: @escaping @Sendable (GitLockFact) -> Void = { _ in }) {
+        beforeIndexWriteHandler = beforeIndexWrite
+    }
+
+    func beforeIndexWrite(_ fact: GitLockFact) {
+        beforeIndexWriteHandler(fact)
+    }
 }
 
 private struct LargeFileFillCandidate {
@@ -311,4 +480,9 @@ private enum WorktreePointerState {
     case notPointer
     case matches(WorktreeForkEntryIdentity)
     case readFailed(Int32)
+}
+
+private enum LargeFileFillIndexFailure: Error {
+    case unavailable
+    case readFailed
 }

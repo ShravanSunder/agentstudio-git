@@ -104,16 +104,12 @@ struct LibGit2LargeFileStore: Sendable {
     }
 
     func materialize(
-        pointer: LargeFilePointer,
-        pointerData: Data,
-        expectedPointerIdentity: WorktreeForkEntryIdentity,
-        indexMode: UInt32,
-        path: String,
+        request: LargeFileStoreMaterializationRequest,
         storageRootDescriptor: Int32,
         worktreeRootDescriptor: Int32
     ) -> Result<Bool, LargeFileStoreFailure> {
         let objectDescriptor: Int32
-        switch openObject(for: pointer, storageRootDescriptor: storageRootDescriptor) {
+        switch openObject(for: request.pointer, storageRootDescriptor: storageRootDescriptor) {
         case .success(let descriptor):
             objectDescriptor = descriptor
         case .failure(let reason):
@@ -121,7 +117,7 @@ struct LibGit2LargeFileStore: Sendable {
         }
         defer { close(objectDescriptor) }
 
-        let (destinationParentPath, destinationName) = WorktreeForkDescriptors.splitParent(path)
+        let (destinationParentPath, destinationName) = WorktreeForkDescriptors.splitParent(request.path)
         let destinationParentDescriptor: Int32
         switch WorktreeForkDescriptors.openDirectory(
             beneath: worktreeRootDescriptor,
@@ -157,7 +153,7 @@ struct LibGit2LargeFileStore: Sendable {
                 objectDescriptor,
                 to: temporaryName,
                 in: destinationParentDescriptor,
-                expectedSize: pointer.payloadByteCount,
+                expectedSize: request.pointer.payloadByteCount,
                 temporaryExists: &temporaryExists
             ) {
                 return .failure(failure)
@@ -176,7 +172,7 @@ struct LibGit2LargeFileStore: Sendable {
             return .failure(LargeFileStoreFailure(reason: .readFailed(errno: Self.readErrorNumber())))
         }
         guard WorktreeForkEntryKind(mode: temporaryInfo.st_mode) == .regularFile,
-            temporaryInfo.st_size == off_t(pointer.payloadByteCount)
+            temporaryInfo.st_size == off_t(request.pointer.payloadByteCount)
         else {
             return .failure(LargeFileStoreFailure(reason: .objectMismatch))
         }
@@ -187,18 +183,18 @@ struct LibGit2LargeFileStore: Sendable {
         case .failure(let failure):
             return .failure(failure)
         }
-        guard actualSHA256 == pointer.payloadSHA256 else {
+        guard actualSHA256 == request.pointer.payloadSHA256 else {
             return .failure(LargeFileStoreFailure(reason: .objectMismatch))
         }
-        guard fchmod(temporaryDescriptor, mode_t(indexMode & 0o777)) == 0 else {
+        guard fchmod(temporaryDescriptor, mode_t(request.indexMode & 0o777)) == 0 else {
             return .failure(LargeFileStoreFailure(reason: .writeFailed(errno: errno)))
         }
         guard
             destinationStillContainsPointer(
-                pointerData,
+                request.pointerData,
                 path: destinationName,
                 parentDescriptor: destinationParentDescriptor,
-                expectedIdentity: expectedPointerIdentity
+                expectedIdentity: request.expectedPointerIdentity
             )
         else {
             return .success(false)
@@ -364,6 +360,14 @@ struct LibGit2LargeFileStore: Sendable {
     private static func readErrorNumber() -> Int32 {
         errno == 0 ? EIO : errno
     }
+}
+
+struct LargeFileStoreMaterializationRequest: Sendable {
+    let pointer: LargeFilePointer
+    let pointerData: Data
+    let expectedPointerIdentity: WorktreeForkEntryIdentity
+    let indexMode: UInt32
+    let path: String
 }
 
 struct LargeFileStoreFailure: Error, Sendable {
