@@ -15,7 +15,7 @@ struct LibGit2LargeFileStoreFill: Sendable {
         self.faults = faults
     }
 
-    func fill(worktreePath: URL) -> GitLargeFileFill {
+    func fill(worktreePath: URL, excludedPaths: Set<String> = []) -> GitLargeFileFill {
         var repository: OpaquePointer?
         let openResult = worktreePath.path.withCString {
             git_repository_open_ext(&repository, $0, GIT_REPOSITORY_OPEN_NO_SEARCH.rawValue, nil)
@@ -41,13 +41,17 @@ struct LibGit2LargeFileStoreFill: Sendable {
         }
         defer { close(worktreeRootDescriptor) }
 
-        return fill(repository: repository, worktreeRootDescriptor: worktreeRootDescriptor)
+        return fill(
+            repository: repository,
+            worktreeRootDescriptor: worktreeRootDescriptor,
+            excludedPaths: excludedPaths
+        )
     }
 
     func fill(
         repository: OpaquePointer,
         worktreeRootDescriptor: Int32,
-        eligiblePaths: Set<String>? = nil
+        excludedPaths: Set<String> = []
     ) -> GitLargeFileFill {
         let commonDirectory: URL
         if let commonDirectoryPointer = git_repository_commondir(repository) {
@@ -64,7 +68,7 @@ struct LibGit2LargeFileStoreFill: Sendable {
         }
 
         let candidates: [LargeFileFillCandidate]
-        switch lfsCandidates(repository: repository, eligiblePaths: eligiblePaths) {
+        switch lfsCandidates(repository: repository, excludedPaths: excludedPaths) {
         case .success(let scannedCandidates):
             candidates = scannedCandidates
         case .failure(.scan(let failure)):
@@ -76,14 +80,30 @@ struct LibGit2LargeFileStoreFill: Sendable {
         }
 
         var missing: [GitLargeFileFillMiss] = []
+        var readyCandidates: [ReadyLargeFileFillCandidate] = []
+        for candidate in candidates {
+            switch pointerIdentity(for: candidate, worktreeRootDescriptor: worktreeRootDescriptor) {
+            case .notPointer:
+                continue
+            case .readFailed(let errorNumber):
+                missing.append(GitLargeFileFillMiss(path: candidate.path, reason: .readFailed(errno: errorNumber)))
+            case .matches(let identity):
+                readyCandidates.append(ReadyLargeFileFillCandidate(candidate: candidate, pointerIdentity: identity))
+            }
+        }
+        guard !readyCandidates.isEmpty else {
+            faults.beforeReturning()
+            return fillResult(materializedCount: 0, missing: missing, scan: .complete)
+        }
+
         let storageRoot: URL
         switch store.storageRoot(repository: repository, commonDirectory: commonDirectory) {
         case .success(let root):
             storageRoot = root
         case .failure(let failure):
             missing.append(
-                contentsOf: candidates.map {
-                    GitLargeFileFillMiss(path: $0.path, reason: failure.reason)
+                contentsOf: readyCandidates.map {
+                    GitLargeFileFillMiss(path: $0.candidate.path, reason: failure.reason)
                 })
             return fillResult(materializedCount: 0, missing: missing, scan: .complete)
         }
@@ -93,8 +113,8 @@ struct LibGit2LargeFileStoreFill: Sendable {
             storageRootDescriptor = descriptor
         case .failure(let failure):
             missing.append(
-                contentsOf: candidates.map {
-                    GitLargeFileFillMiss(path: $0.path, reason: failure.reason)
+                contentsOf: readyCandidates.map {
+                    GitLargeFileFillMiss(path: $0.candidate.path, reason: failure.reason)
                 })
             return fillResult(materializedCount: 0, missing: missing, scan: .complete)
         }
@@ -105,20 +125,20 @@ struct LibGit2LargeFileStoreFill: Sendable {
         case .success(let prior):
             priorDatalessPolicy = prior
         case .failure(let failure):
-            let missing = candidates.map {
-                GitLargeFileFillMiss(path: $0.path, reason: .readFailed(errno: failure.code))
+            let policyMissing = readyCandidates.map {
+                GitLargeFileFillMiss(path: $0.candidate.path, reason: .readFailed(errno: failure.code))
             }
             return fillResult(
                 materializedCount: 0,
-                missing: missing,
+                missing: missing + policyMissing,
                 scan: .complete
             )
         }
         defer { WorktreeForkDatalessPolicy.restore(priorDatalessPolicy) }
 
         let candidateFill = materializeCandidates(
-            candidates: candidates,
-            initialMissing: [],
+            candidates: readyCandidates,
+            initialMissing: missing,
             storageRootDescriptor: storageRootDescriptor,
             worktreeRootDescriptor: worktreeRootDescriptor
         )
@@ -136,7 +156,7 @@ struct LibGit2LargeFileStoreFill: Sendable {
     }
 
     private func materializeCandidates(
-        candidates: [LargeFileFillCandidate],
+        candidates: [ReadyLargeFileFillCandidate],
         initialMissing: [GitLargeFileFillMiss],
         storageRootDescriptor: Int32,
         worktreeRootDescriptor: Int32
@@ -144,38 +164,32 @@ struct LibGit2LargeFileStoreFill: Sendable {
         var missing = initialMissing
         var residuePaths: [String] = []
         var materializedCount = 0
-        for candidate in candidates {
-            switch pointerIdentity(for: candidate, worktreeRootDescriptor: worktreeRootDescriptor) {
-            case .notPointer:
-                continue
-            case .readFailed(let errorNumber):
-                missing.append(
-                    GitLargeFileFillMiss(path: candidate.path, reason: .readFailed(errno: errorNumber)))
-            case .matches(let identity):
-                let request = LargeFileStoreMaterializationRequest(
-                    pointer: candidate.pointer,
-                    pointerData: candidate.pointerData,
-                    expectedPointerIdentity: identity,
-                    indexMode: candidate.headMode,
-                    path: candidate.path
-                )
-                switch store.materialize(
-                    request: request,
-                    storageRootDescriptor: storageRootDescriptor,
-                    worktreeRootDescriptor: worktreeRootDescriptor
-                ) {
-                case .success(let materialization):
-                    if materialization.didMaterialize {
-                        materializedCount += 1
-                    }
-                    if let residuePath = materialization.residuePath {
-                        residuePaths.append(residuePath)
-                    }
-                case .failure(let failure):
-                    missing.append(GitLargeFileFillMiss(path: candidate.path, reason: failure.reason))
-                    if let residuePath = failure.residuePath {
-                        residuePaths.append(residuePath)
-                    }
+        for readyCandidate in candidates {
+            let candidate = readyCandidate.candidate
+            let identity = readyCandidate.pointerIdentity
+            let request = LargeFileStoreMaterializationRequest(
+                pointer: candidate.pointer,
+                pointerData: candidate.pointerData,
+                expectedPointerIdentity: identity,
+                indexMode: candidate.headMode,
+                path: candidate.path
+            )
+            switch store.materialize(
+                request: request,
+                storageRootDescriptor: storageRootDescriptor,
+                worktreeRootDescriptor: worktreeRootDescriptor
+            ) {
+            case .success(let materialization):
+                if materialization.didMaterialize {
+                    materializedCount += 1
+                }
+                if let residuePath = materialization.residuePath {
+                    residuePaths.append(residuePath)
+                }
+            case .failure(let failure):
+                missing.append(GitLargeFileFillMiss(path: candidate.path, reason: failure.reason))
+                if let residuePath = failure.residuePath {
+                    residuePaths.append(residuePath)
                 }
             }
         }
@@ -189,7 +203,7 @@ struct LibGit2LargeFileStoreFill: Sendable {
 
     private func lfsCandidates(
         repository: OpaquePointer,
-        eligiblePaths: Set<String>?
+        excludedPaths: Set<String>
     ) -> Result<[LargeFileFillCandidate], LargeFileCandidateScanError> {
         var headReference: OpaquePointer?
         let headResult = git_repository_head(&headReference, repository)
@@ -221,7 +235,7 @@ struct LibGit2LargeFileStoreFill: Sendable {
             pathPrefix: "",
             repository: repository,
             attributeOptions: &attributeOptions,
-            eligiblePaths: eligiblePaths,
+            excludedPaths: excludedPaths,
             candidates: &candidates
         )
         guard case .success = scanResult else {
@@ -235,7 +249,7 @@ struct LibGit2LargeFileStoreFill: Sendable {
         pathPrefix: String,
         repository: OpaquePointer,
         attributeOptions: inout git_attr_options,
-        eligiblePaths: Set<String>?,
+        excludedPaths: Set<String>,
         candidates: inout [LargeFileFillCandidate]
     ) -> Result<Void, LargeFileCandidateScanError> {
         let regularModes: Set<UInt32> = [
@@ -263,7 +277,7 @@ struct LibGit2LargeFileStoreFill: Sendable {
                     pathPrefix: path,
                     repository: repository,
                     attributeOptions: &attributeOptions,
-                    eligiblePaths: eligiblePaths,
+                    excludedPaths: excludedPaths,
                     candidates: &candidates
                 )
                 git_tree_free(childTree)
@@ -274,7 +288,7 @@ struct LibGit2LargeFileStoreFill: Sendable {
             }
 
             guard regularModes.contains(UInt32(git_tree_entry_filemode(entry).rawValue)),
-                eligiblePaths?.contains(path) ?? true
+                !excludedPaths.contains(where: { Self.pathsOverlap(path, $0) })
             else {
                 continue
             }
@@ -321,6 +335,10 @@ struct LibGit2LargeFileStoreFill: Sendable {
             )
         }
         return .success(())
+    }
+
+    private static func pathsOverlap(_ left: String, _ right: String) -> Bool {
+        left == right || left.hasPrefix(right + "/") || right.hasPrefix(left + "/")
     }
 
     private func pointerIdentity(
@@ -423,6 +441,11 @@ private struct LargeFileFillCandidate {
     let pointerData: Data
     let pointer: LargeFilePointer
     let headMode: UInt32
+}
+
+private struct ReadyLargeFileFillCandidate {
+    let candidate: LargeFileFillCandidate
+    let pointerIdentity: WorktreeForkEntryIdentity
 }
 
 private enum WorktreePointerState {

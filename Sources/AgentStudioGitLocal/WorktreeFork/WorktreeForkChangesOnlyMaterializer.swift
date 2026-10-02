@@ -85,7 +85,14 @@ struct WorktreeForkChangesOnlyMaterializer: Sendable {
                 destinationRootDescriptor: destinationRootDescriptor
             )
         }
-        let largeFiles = largeFileStoreFill.fill(worktreePath: destinationRootPath)
+        let fallbackExcludedPaths = Set(
+            plan.entries.filter(\.shouldOverlay).map(\.relativePath)
+                + plan.largeFileRestorations.map(\.relativePath)
+        )
+        let largeFiles = largeFileStoreFill.fill(
+            worktreePath: destinationRootPath,
+            excludedPaths: fallbackExcludedPaths
+        )
         for entry in overlayEntries.reversed() where entry.kind == .directory {
             try applyDirectoryMode(
                 entry,
