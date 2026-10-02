@@ -212,10 +212,11 @@ struct LibGit2WorktreeForkWriter: Sendable {
         try faults.reach(.afterHeadCheckedOut)
         try cancellation.throwIfCancelled()
 
-        try WorktreeForkChangesOnlyMaterializer(cancellation: cancellation, faults: faults).apply(
+        let largeFiles = try WorktreeForkChangesOnlyMaterializer(cancellation: cancellation, faults: faults).apply(
             changesOnly,
             sourceRootDescriptor: sourceRootDescriptor,
-            destinationRootDescriptor: destinationRootDescriptor
+            destinationRootDescriptor: destinationRootDescriptor,
+            destinationRootPath: plan.destinationRoot
         )
         try faults.reach(.afterChangesOnlyOverlay)
         try faults.reach(.afterMaterialization)
@@ -257,7 +258,8 @@ struct LibGit2WorktreeForkWriter: Sendable {
             materialization: .changesOnly(
                 GitChangesOnlyMaterializationReport(
                     trackedChanges: changesOnly.trackedChangeCount,
-                    untrackedFiles: changesOnly.untrackedFileCount
+                    untrackedFiles: changesOnly.untrackedFileCount,
+                    largeFiles: largeFiles
                 )
             )
         )

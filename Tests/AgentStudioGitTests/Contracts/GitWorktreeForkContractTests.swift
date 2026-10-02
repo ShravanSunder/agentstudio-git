@@ -100,7 +100,12 @@ struct GitWorktreeForkContractTests {
     @Test("changes-only reports and refusals use explicit tagged payloads")
     func changesOnlyContractsUseExplicitTags() throws {
         // Arrange
-        let report = GitChangesOnlyMaterializationReport(trackedChanges: 3, untrackedFiles: 2)
+        let largeFiles = GitLargeFileFill(materializedCount: 1, missing: [], indexUpdate: .updated)
+        let report = GitChangesOnlyMaterializationReport(
+            trackedChanges: 3,
+            untrackedFiles: 2,
+            largeFiles: largeFiles
+        )
         let refusal = GitWorktreeWorkingStateRefusal(reason: .customFilter, relativePath: "assets/icon.png")
         let result = GitWorktreeMaterializationResult.changesOnly(report)
         let error = GitWorktreeForkError.workingStateUnsupported(refusal)
@@ -114,15 +119,17 @@ struct GitWorktreeForkContractTests {
         #expect(try JSONDecoder().decode(GitWorktreeForkError.self, from: encodedError) == error)
         #expect(
             jsonText(encodedResult)
-                == #"{"ignoredExcluded":true,"kind":"changesOnly","trackedChanges":3,"untrackedFiles":2}"#)
+                == #"{"ignoredExcluded":true,"kind":"changesOnly","largeFiles":{"indexUpdate":{"kind":"updated"},"materializedCount":1,"missing":[]},"trackedChanges":3,"untrackedFiles":2}"#
+        )
         #expect(
             jsonText(encodedError)
                 == #"{"workingStateUnsupported":{"refusal":{"reason":"customFilter","relativePath":"assets/icon.png"}}}"#
         )
         for invalidPayload in [
-            #"{"kind":"changesOnly","trackedChanges":-1,"untrackedFiles":0,"ignoredExcluded":true}"#,
-            #"{"kind":"changesOnly","trackedChanges":1,"untrackedFiles":0,"ignoredExcluded":false}"#,
-            #"{"kind":"changesOnly","trackedChanges":1,"untrackedFiles":0,"ignoredExcluded":true,"clonedRegularFileCount":0}"#,
+            #"{"kind":"changesOnly","trackedChanges":-1,"untrackedFiles":0,"ignoredExcluded":true,"largeFiles":{"materializedCount":0,"missing":[],"indexUpdate":{"kind":"updated"}}}"#,
+            #"{"kind":"changesOnly","trackedChanges":1,"untrackedFiles":0,"ignoredExcluded":false,"largeFiles":{"materializedCount":0,"missing":[],"indexUpdate":{"kind":"updated"}}}"#,
+            #"{"kind":"changesOnly","trackedChanges":1,"untrackedFiles":0,"ignoredExcluded":true,"largeFiles":{"materializedCount":0,"missing":[],"indexUpdate":{"kind":"updated"}},"clonedRegularFileCount":0}"#,
+            #"{"kind":"changesOnly","trackedChanges":1,"untrackedFiles":0,"ignoredExcluded":true}"#,
         ] {
             #expect(throws: DecodingError.self) {
                 _ = try JSONDecoder().decode(GitWorktreeMaterializationResult.self, from: Data(invalidPayload.utf8))

@@ -32,6 +32,55 @@ struct GitWorktreeForkChangesOnlyFilterIntegrationTests {
         #expect(try Data(contentsOf: fixture.source.appending(path: "asset.bin")) == payload)
     }
 
+    @Test("a pointer-only source falls back to the local LFS object store")
+    func pointerOnlySourceUsesLocalLargeFileStoreFallback() async throws {
+        // Arrange
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-lfs-store-fallback")
+        defer { fixture.remove() }
+        let payload = Data("local fork LFS payload\n".utf8)
+        let objectID = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+        let pointer = "version https://git-lfs.github.com/spec/v1\noid sha256:\(objectID)\nsize \(payload.count)\n"
+        try fixture.write(".gitattributes", "asset.bin filter=lfs\n")
+        try fixture.write("asset.bin", pointer)
+        try fixture.git.run("add", ".")
+        try fixture.git.run("commit", "-m", "large file pointer with local object")
+        let objectPath = fixture.source.appending(
+            path: ".git/lfs/objects/\(objectID.prefix(2))/\(objectID.dropFirst(2).prefix(2))/\(objectID)"
+        )
+        try FileManager.default.createDirectory(
+            at: objectPath.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try payload.write(to: objectPath)
+        let destination = fixture.destination()
+
+        // Act
+        let result = try await LibGit2AgentStudioGitLocalClient().forkWorktree(
+            fixture.request(
+                destination: destination,
+                mode: .newBranch(name: "fork-lfs-store-fallback"),
+                materialization: .changesOnly
+            )
+        )
+
+        // Assert
+        guard case .changesOnly(let report) = result.materialization else {
+            Issue.record("expected changes-only materialization")
+            return
+        }
+        #expect(try Data(contentsOf: destination.appending(path: "asset.bin")) == payload)
+        #expect(try Data(contentsOf: fixture.source.appending(path: "asset.bin")) == Data(pointer.utf8))
+        #expect(report.largeFiles.materializedCount == 1)
+        #expect(report.largeFiles.missing.isEmpty)
+        #expect(report.largeFiles.indexUpdate == .updated)
+        #expect(try fixture.indexStat(at: destination)["asset.bin"]?.size == Int64(payload.count))
+        let status = try await LibGit2AgentStudioGitLocalClient()
+            .statusFacts(for: destination, options: GitStatusOptions())
+            .facts
+        #expect(status.summary.changedFileCount == 0)
+        #expect(status.entries.isEmpty)
+    }
+
     @Test("an executable-bit-only change on a smudged LFS path is counted and restored")
     func executableModeOnlyLFSChangeIsCountedAndPreserved() async throws {
         // Arrange
@@ -213,10 +262,20 @@ struct GitWorktreeForkChangesOnlyFilterIntegrationTests {
         )
 
         // Act
-        _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(request)
+        let result = try await LibGit2AgentStudioGitLocalClient().forkWorktree(request)
 
         // Assert
         #expect(try String(contentsOf: destination.appending(path: "asset.bin"), encoding: .utf8) == pointer)
+        guard case .changesOnly(let report) = result.materialization else {
+            Issue.record("expected changes-only materialization")
+            return
+        }
+        #expect(report.largeFiles.materializedCount == 0)
+        #expect(
+            report.largeFiles.missing == [
+                GitLargeFileFillMiss(path: "asset.bin", reason: .objectAbsent)
+            ]
+        )
     }
 
     @Test("a custom filter is refused before branch, administration, or destination mutation")

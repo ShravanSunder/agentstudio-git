@@ -119,6 +119,7 @@ extension GitWorktreeMaterializationResult: Codable {
         case trackedChanges
         case untrackedFiles
         case ignoredExcluded
+        case largeFiles
     }
 
     private enum Kind: String, Codable {
@@ -154,7 +155,9 @@ extension GitWorktreeMaterializationResult: Codable {
                 )
             )
         case .changesOnly:
-            let expectedKeys: Set<CodingKeys> = [.kind, .trackedChanges, .untrackedFiles, .ignoredExcluded]
+            let expectedKeys: Set<CodingKeys> = [
+                .kind, .trackedChanges, .untrackedFiles, .ignoredExcluded, .largeFiles,
+            ]
             guard Set(container.allKeys) == expectedKeys else {
                 throw Self.invalidPayload(decoder)
             }
@@ -168,7 +171,8 @@ extension GitWorktreeMaterializationResult: Codable {
             self = .changesOnly(
                 GitChangesOnlyMaterializationReport(
                     trackedChanges: trackedChanges,
-                    untrackedFiles: untrackedFiles
+                    untrackedFiles: untrackedFiles,
+                    largeFiles: try container.decode(GitLargeFileFill.self, forKey: .largeFiles)
                 )
             )
         }
@@ -193,6 +197,7 @@ extension GitWorktreeMaterializationResult: Codable {
             try container.encode(report.trackedChanges, forKey: .trackedChanges)
             try container.encode(report.untrackedFiles, forKey: .untrackedFiles)
             try container.encode(report.ignoredExcluded, forKey: .ignoredExcluded)
+            try container.encode(report.largeFiles, forKey: .largeFiles)
         }
     }
 
@@ -210,17 +215,20 @@ public struct GitChangesOnlyMaterializationReport: Codable, Equatable, Hashable,
     public let trackedChanges: Int
     public let untrackedFiles: Int
     public let ignoredExcluded: Bool
+    public let largeFiles: GitLargeFileFill
 
-    public init(trackedChanges: Int, untrackedFiles: Int) {
+    public init(trackedChanges: Int, untrackedFiles: Int, largeFiles: GitLargeFileFill) {
         self.trackedChanges = trackedChanges
         self.untrackedFiles = untrackedFiles
         ignoredExcluded = true
+        self.largeFiles = largeFiles
     }
 
     private enum CodingKeys: String, CodingKey {
         case trackedChanges
         case untrackedFiles
         case ignoredExcluded
+        case largeFiles
     }
 
     public init(from decoder: Decoder) throws {
@@ -239,6 +247,7 @@ public struct GitChangesOnlyMaterializationReport: Codable, Equatable, Hashable,
         self.trackedChanges = trackedChanges
         self.untrackedFiles = untrackedFiles
         ignoredExcluded = true
+        largeFiles = try container.decode(GitLargeFileFill.self, forKey: .largeFiles)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -255,6 +264,7 @@ public struct GitChangesOnlyMaterializationReport: Codable, Equatable, Hashable,
         try container.encode(trackedChanges, forKey: .trackedChanges)
         try container.encode(untrackedFiles, forKey: .untrackedFiles)
         try container.encode(true, forKey: .ignoredExcluded)
+        try container.encode(largeFiles, forKey: .largeFiles)
     }
 
 }

@@ -7,17 +7,30 @@ import Foundation
 struct WorktreeForkChangesOnlyMaterializer: Sendable {
     let cancellation: WorktreeForkCancellation
     let faults: WorktreeForkFaultInjector
+    let largeFileStoreFill: LibGit2LargeFileStoreFill
+
+    init(
+        cancellation: WorktreeForkCancellation,
+        faults: WorktreeForkFaultInjector,
+        largeFileStoreFill: LibGit2LargeFileStoreFill = LibGit2LargeFileStoreFill()
+    ) {
+        self.cancellation = cancellation
+        self.faults = faults
+        self.largeFileStoreFill = largeFileStoreFill
+    }
 
     func apply(
         _ plan: WorktreeForkChangesOnlyPlan,
         sourceRootDescriptor: Int32,
-        destinationRootDescriptor: Int32
-    ) throws(GitWorktreeForkError) {
+        destinationRootDescriptor: Int32,
+        destinationRootPath: URL
+    ) throws(GitWorktreeForkError) -> GitLargeFileFill {
         try WorktreeForkDatalessPolicy.withMaterializationDenied(reportPath: ".") { () throws(GitWorktreeForkError) in
             try applyWhileMaterializationDenied(
                 plan,
                 sourceRootDescriptor: sourceRootDescriptor,
-                destinationRootDescriptor: destinationRootDescriptor
+                destinationRootDescriptor: destinationRootDescriptor,
+                destinationRootPath: destinationRootPath
             )
         }
     }
@@ -25,8 +38,9 @@ struct WorktreeForkChangesOnlyMaterializer: Sendable {
     private func applyWhileMaterializationDenied(
         _ plan: WorktreeForkChangesOnlyPlan,
         sourceRootDescriptor: Int32,
-        destinationRootDescriptor: Int32
-    ) throws(GitWorktreeForkError) {
+        destinationRootDescriptor: Int32,
+        destinationRootPath: URL
+    ) throws(GitWorktreeForkError) -> GitLargeFileFill {
         let overlayEntries = plan.entries.filter(\.shouldOverlay)
         for entry in overlayEntries where entry.kind != .directory {
             try cancellation.throwIfCancelled()
@@ -71,12 +85,14 @@ struct WorktreeForkChangesOnlyMaterializer: Sendable {
                 destinationRootDescriptor: destinationRootDescriptor
             )
         }
+        let largeFiles = largeFileStoreFill.fill(worktreePath: destinationRootPath)
         for entry in overlayEntries.reversed() where entry.kind == .directory {
             try applyDirectoryMode(
                 entry,
                 sourceRootDescriptor: sourceRootDescriptor,
                 destinationRootDescriptor: destinationRootDescriptor)
         }
+        return largeFiles
     }
 
     private func copyRegularFile(
