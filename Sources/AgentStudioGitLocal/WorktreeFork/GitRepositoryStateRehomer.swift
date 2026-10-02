@@ -126,6 +126,7 @@ struct GitRepositoryStateRehomer: Sendable {
         try WorktreeForkConfigurationFile.apply(
             configurationEdits,
             to: administration.appending(path: "config"),
+            reportPath: reportPath,
             lockTracker: lockTracker
         )
         if case .submodule = node.kind {
@@ -135,7 +136,7 @@ struct GitRepositoryStateRehomer: Sendable {
         if let sparse = node.sparse {
             try writeSparseState(sparse, administration: administration, reportPath: reportPath)
         }
-        try sanitizeWorktreeConfiguration(in: administration)
+        try sanitizeWorktreeConfiguration(in: administration, reportPath: reportPath)
     }
 
     /// Destination link text for each classified administrative symlink: internal links point at the
@@ -181,19 +182,24 @@ struct GitRepositoryStateRehomer: Sendable {
         }
         let privateConfiguration = node.sourceGitDirectory.appending(path: "config.worktree")
         if let contents = try? Data(contentsOf: privateConfiguration) {
-            try writeData(contents, to: destinationConfiguration, reportPath: reportPath)
+            try writeData(
+                contents, to: destinationConfiguration, metadataFrom: privateConfiguration, reportPath: reportPath)
         }
     }
 
     /// A worktree-scoped `core.worktree` (Git moves the main worktree's there when worktree config is
     /// enabled) or `core.bare` would point the destination at the source; neither is ever carried over.
-    private func sanitizeWorktreeConfiguration(in administration: URL) throws(GitWorktreeForkError) {
+    private func sanitizeWorktreeConfiguration(
+        in administration: URL,
+        reportPath: String
+    ) throws(GitWorktreeForkError) {
         let configuration = administration.appending(path: "config.worktree")
         guard case .success = WorktreeForkDescriptors.lstatPath(configuration) else {
             return
         }
         try WorktreeForkConfigurationFile.apply(
-            [.delete("core.worktree"), .delete("core.bare")], to: configuration, lockTracker: lockTracker)
+            [.delete("core.worktree"), .delete("core.bare")], to: configuration, reportPath: reportPath,
+            lockTracker: lockTracker)
     }
 
     private func headContents(_ node: WorktreeForkGitNode) -> String {
@@ -260,16 +266,28 @@ struct GitRepositoryStateRehomer: Sendable {
         administration: URL,
         reportPath: String
     ) throws(GitWorktreeForkError) {
+        // The destination copy may be absent (fresh fork administration) or removed (a flattened node's
+        // overlay), so the source files are the metadata templates.
         try writeData(
-            sparse.patternFile, to: administration.appending(path: "info/sparse-checkout"), reportPath: reportPath)
+            sparse.patternFile,
+            to: administration.appending(path: "info/sparse-checkout"),
+            metadataFrom: sparse.sourceGitDirectory.appending(path: "info/sparse-checkout"),
+            reportPath: reportPath
+        )
         guard let worktreeConfiguration = sparse.worktreeConfiguration else {
             return
         }
         let destination = administration.appending(path: "config.worktree")
-        try writeData(worktreeConfiguration, to: destination, reportPath: reportPath)
+        try writeData(
+            worktreeConfiguration,
+            to: destination,
+            metadataFrom: sparse.sourceGitDirectory.appending(path: "config.worktree"),
+            reportPath: reportPath
+        )
         try WorktreeForkConfigurationFile.apply(
             [.setBool("index.sparse", false), .delete("core.worktree"), .delete("core.bare")],
             to: destination,
+            reportPath: reportPath,
             lockTracker: lockTracker
         )
     }
@@ -288,7 +306,14 @@ struct GitRepositoryStateRehomer: Sendable {
         try writeData(Data(text.utf8), to: url, reportPath: reportPath)
     }
 
-    private func writeData(_ data: Data, to url: URL, reportPath: String) throws(GitWorktreeForkError) {
+    /// Replaces `url` with `data` on a fresh same-directory inode renamed into place, carrying the metadata of
+    /// `template` or of the replaced file (see `WorktreeForkMetadataPreservingRewrite`).
+    private func writeData(
+        _ data: Data,
+        to url: URL,
+        metadataFrom template: URL? = nil,
+        reportPath: String
+    ) throws(GitWorktreeForkError) {
         let directory = url.deletingLastPathComponent()
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -296,80 +321,40 @@ struct GitRepositoryStateRehomer: Sendable {
             throw .entryFailed(
                 relativePath: reportPath, reason: .entryCreationFailed, errorNumber: Self.errorNumber(of: error))
         }
-        try replaceFilePreservingMetadata(url, with: data, reportPath: reportPath)
-    }
-
-    /// Replaces `url` with `data` on a fresh same-directory inode renamed into place. Cloned administration
-    /// keeps the source's metadata: SwiftPM makes `.git/HEAD` read-only, and a user-immutable or append-only
-    /// flag or a `deny delete` ACL entry forbids writing in place and renaming over the file alike. That
-    /// protection is lifted from our own clone, and the new inode receives the replaced file's mode, extended
-    /// attributes, ACL, and flags, the flags last. Every replaced file is a per-file clone made by this fork,
-    /// so lifting its protection never reaches another path.
-    private func replaceFilePreservingMetadata(
-        _ url: URL,
-        with data: Data,
-        reportPath: String
-    ) throws(GitWorktreeForkError) {
-        let replaced = try WorktreeForkReplacedFile.liftProtection(from: url, reportPath: reportPath)
-        let temporary = url.deletingLastPathComponent()
-            .appending(path: ".\(url.lastPathComponent).agentstudio-\(UUID().uuidString).tmp")
-        do throws(GitWorktreeForkError) {
-            try Self.writeReplacement(data, at: temporary, replacing: replaced, reportPath: reportPath)
+        try WorktreeForkMetadataPreservingRewrite.rewrite(url, metadataFrom: template, reportPath: reportPath) {
+            () throws(GitWorktreeForkError) in
+            let temporary = directory.appending(path: ".\(url.lastPathComponent).agentstudio-\(UUID().uuidString).tmp")
+            try Self.writeNewFile(data, at: temporary, reportPath: reportPath)
             guard rename(temporary.path, url.path) == 0 else {
                 let failure = errno
                 _ = unlink(temporary.path)
                 throw .entryFailed(relativePath: reportPath, reason: .entryCreationFailed, errorNumber: failure)
             }
-        } catch {
-            replaced?.restoreProtection(at: url)
-            throw error
         }
-        try replaced?.reapplyProtection(to: url, reportPath: reportPath)
     }
 
-    /// Creates `temporary` holding `data` with the replaced file's mode and extended attributes, or 0644 and
-    /// none when nothing is replaced. Removes it again on failure.
-    private static func writeReplacement(
-        _ data: Data,
-        at temporary: URL,
-        replacing replaced: WorktreeForkReplacedFile?,
-        reportPath: String
-    ) throws(GitWorktreeForkError) {
+    /// Creates `temporary` with mode 0644 holding `data`; removes it again on failure.
+    private static func writeNewFile(_ data: Data, at temporary: URL, reportPath: String) throws(GitWorktreeForkError) {
         let descriptor = temporary.path.withCString { open($0, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o600) }
         guard descriptor >= 0 else {
             throw .entryFailed(relativePath: reportPath, reason: .entryCreationFailed, errorNumber: errno)
         }
-        do throws(GitWorktreeForkError) {
-            var failure: Int32?
-            data.withUnsafeBytes { buffer in
-                guard let base = buffer.baseAddress else { return }
-                var offset = 0
-                while offset < buffer.count, failure == nil {
-                    let written = write(descriptor, base + offset, buffer.count - offset)
-                    if written < 0 {
-                        if errno != EINTR { failure = errno }
-                    } else {
-                        offset += written
-                    }
+        var failure: Int32?
+        data.withUnsafeBytes { buffer in
+            guard let base = buffer.baseAddress else { return }
+            var offset = 0
+            while offset < buffer.count, failure == nil {
+                let written = write(descriptor, base + offset, buffer.count - offset)
+                if written < 0 {
+                    if errno != EINTR { failure = errno }
+                } else {
+                    offset += written
                 }
             }
-            if let failure {
-                throw .entryFailed(relativePath: reportPath, reason: .entryCreationFailed, errorNumber: failure)
-            }
-            if let replaced {
-                try WorktreeForkEntryMetadata.copyExtendedAttributes(
-                    from: replaced.descriptor, to: descriptor, relativePath: reportPath)
-            }
-            guard fchmod(descriptor, replaced?.mode ?? 0o644) == 0 else {
-                throw .entryFailed(relativePath: reportPath, reason: .metadataNotReproducible, errorNumber: errno)
-            }
-        } catch {
-            _ = close(descriptor)
-            _ = unlink(temporary.path)
-            throw error
         }
-        guard close(descriptor) == 0 else {
-            let failure = errno
+        if failure == nil, fchmod(descriptor, 0o644) != 0 { failure = errno }
+        if close(descriptor) != 0, failure == nil { failure = errno }
+        if let failure {
             _ = unlink(temporary.path)
             throw .entryFailed(relativePath: reportPath, reason: .entryCreationFailed, errorNumber: failure)
         }
@@ -377,115 +362,6 @@ struct GitRepositoryStateRehomer: Sendable {
 
     private static func errorNumber(of error: Error) -> Int32? {
         ((error as NSError).userInfo[NSUnderlyingErrorKey] as? NSError).map { Int32($0.code) }
-    }
-}
-
-/// A cloned regular file about to be replaced, with the protection that would block replacing it lifted. It
-/// keeps what the replacement must reproduce: mode, flags, the extended ACL, and a descriptor through which
-/// the original's extended attributes are read.
-private final class WorktreeForkReplacedFile {
-    /// Flags the owner may clear that forbid renaming over a file. System flags need privilege and fail.
-    private static let userProtectionFlags = UInt32(UF_IMMUTABLE | UF_APPEND)
-    private static let systemProtectionFlags = UInt32(SF_IMMUTABLE | SF_APPEND)
-
-    let mode: mode_t
-    private(set) var descriptor: Int32 = -1
-    private let flags: UInt32
-    private var accessControlList: acl_t?
-
-    private init(_ info: Darwin.stat) {
-        mode = info.st_mode & 0o7777
-        flags = info.st_flags
-    }
-
-    deinit {
-        if descriptor >= 0 {
-            _ = close(descriptor)
-        }
-        if let accessControlList {
-            acl_free(UnsafeMutableRawPointer(accessControlList))
-        }
-    }
-
-    /// Nil when no regular file is at `url`; the replacement is then a new 0644 file with no inherited
-    /// metadata. On failure the original keeps its protection.
-    static func liftProtection(
-        from url: URL,
-        reportPath: String
-    ) throws(GitWorktreeForkError) -> WorktreeForkReplacedFile? {
-        var info = Darwin.stat()
-        guard url.path.withCString({ lstat($0, &info) }) == 0, info.st_mode & S_IFMT == S_IFREG else {
-            return nil
-        }
-        guard info.st_flags & systemProtectionFlags == 0 else {
-            throw .entryFailed(relativePath: reportPath, reason: .entryCreationFailed, errorNumber: EPERM)
-        }
-        let replaced = WorktreeForkReplacedFile(info)
-        do throws(GitWorktreeForkError) {
-            try replaced.lift(at: url, reportPath: reportPath)
-        } catch {
-            replaced.restoreProtection(at: url)
-            throw error
-        }
-        return replaced
-    }
-
-    private func lift(at url: URL, reportPath: String) throws(GitWorktreeForkError) {
-        if flags & Self.userProtectionFlags != 0, lchflags(url.path, flags & ~Self.userProtectionFlags) != 0 {
-            throw .entryFailed(relativePath: reportPath, reason: .entryCreationFailed, errorNumber: errno)
-        }
-        // The owner may always read and replace a file's ACL, even one that denies reading the file.
-        accessControlList = acl_get_link_np(url.path, ACL_TYPE_EXTENDED)
-        if accessControlList == nil, errno != ENOENT {
-            throw .entryFailed(relativePath: reportPath, reason: .metadataNotReproducible, errorNumber: errno)
-        }
-        if accessControlList != nil {
-            let failure = Self.removeAccessControlList(at: url)
-            guard failure == 0 else {
-                throw .entryFailed(relativePath: reportPath, reason: .entryCreationFailed, errorNumber: failure)
-            }
-        }
-        // Reading extended attributes needs a readable descriptor, which the original's mode may withhold.
-        descriptor = url.path.withCString { open($0, O_RDONLY | O_NOFOLLOW | O_CLOEXEC) }
-        if descriptor < 0, errno == EACCES, lchmod(url.path, mode | S_IRUSR) == 0 {
-            descriptor = url.path.withCString { open($0, O_RDONLY | O_NOFOLLOW | O_CLOEXEC) }
-        }
-        guard descriptor >= 0 else {
-            throw .entryFailed(relativePath: reportPath, reason: .metadataNotReproducible, errorNumber: errno)
-        }
-    }
-
-    /// Puts the lifted protection back on the original while it is still at `url`. Best effort: the caller is
-    /// already failing the fork.
-    func restoreProtection(at url: URL) {
-        _ = lchmod(url.path, mode)
-        if let accessControlList {
-            _ = acl_set_link_np(url.path, ACL_TYPE_EXTENDED, accessControlList)
-        }
-        _ = lchflags(url.path, flags)
-    }
-
-    /// Gives the replacement now at `url` the original's ACL and flags. Both are applied after the rename
-    /// because each can forbid it; flags go last because an immutable file accepts no further change.
-    func reapplyProtection(to url: URL, reportPath: String) throws(GitWorktreeForkError) {
-        let reproducibleFlags = flags & WorktreeForkEntryMetadata.reproducibleFlagMask
-        if let accessControlList, acl_set_link_np(url.path, ACL_TYPE_EXTENDED, accessControlList) != 0 {
-            let failure = errno
-            _ = lchflags(url.path, reproducibleFlags)
-            throw .entryFailed(relativePath: reportPath, reason: .metadataNotReproducible, errorNumber: failure)
-        }
-        if reproducibleFlags != 0, lchflags(url.path, reproducibleFlags) != 0 {
-            throw .entryFailed(relativePath: reportPath, reason: .metadataNotReproducible, errorNumber: errno)
-        }
-    }
-
-    /// Setting an empty extended ACL removes it. Returns the failing errno, or 0.
-    private static func removeAccessControlList(at url: URL) -> Int32 {
-        guard let empty = acl_init(0) else {
-            return errno
-        }
-        defer { acl_free(UnsafeMutableRawPointer(empty)) }
-        return acl_set_link_np(url.path, ACL_TYPE_EXTENDED, empty) == 0 ? 0 : errno
     }
 }
 
@@ -497,10 +373,24 @@ enum WorktreeForkConfigurationEdit: Sendable {
 
 /// Edits one Git configuration file through libgit2 so its syntax and locking stay Git's.
 enum WorktreeForkConfigurationFile {
+    /// libgit2 commits each edit by renaming a fresh lock file over `path`, so the edit runs as a
+    /// metadata-preserving rewrite of the configuration file.
     static func apply(
         _ edits: [WorktreeForkConfigurationEdit],
         to path: URL,
+        reportPath: String,
         lockTracker: WorktreeForkLockTracker? = nil
+    ) throws(GitWorktreeForkError) {
+        try WorktreeForkMetadataPreservingRewrite.rewrite(path, reportPath: reportPath) {
+            () throws(GitWorktreeForkError) in
+            try applyThroughLibGit2(edits, to: path, lockTracker: lockTracker)
+        }
+    }
+
+    private static func applyThroughLibGit2(
+        _ edits: [WorktreeForkConfigurationEdit],
+        to path: URL,
+        lockTracker: WorktreeForkLockTracker?
     ) throws(GitWorktreeForkError) {
         var configuration: OpaquePointer?
         let openResult = path.path.withCString { git_config_open_ondisk(&configuration, $0) }

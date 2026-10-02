@@ -48,6 +48,8 @@ struct WorktreeForkGitNode: Sendable {
 
 /// Sparse intent for one Git node, captured from its source administration.
 struct WorktreeForkSparsePlan: Equatable, Sendable {
+    /// Where the pattern file and worktree configuration were read; their metadata templates.
+    let sourceGitDirectory: URL
     let patternFile: Data
     /// The node's `config.worktree`, reproduced with sparse-index compression disabled.
     let worktreeConfiguration: Data?
