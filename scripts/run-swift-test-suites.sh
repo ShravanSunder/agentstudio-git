@@ -42,6 +42,7 @@ suites=(
   GitIgnoreIntegrationTests
   GitTrackedPathIntegrationTests
   GitWorktreeIntegrationTests
+  GitWorktreeLargeFileFillIntegrationTests
   GitWorktreeRemovalIntegrationTests
   GitFetchIntegrationTests
   GitLockIntegrationTests

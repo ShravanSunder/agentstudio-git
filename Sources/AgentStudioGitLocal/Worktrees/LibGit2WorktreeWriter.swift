@@ -29,6 +29,7 @@ struct LibGit2WorktreeWriter: Sendable {
             repositoryPath: request.repositoryPath,
             worktreeName: worktreeName
         )
+        let snapshot: GitWorktreeSnapshot
         do {
             var createdWorktree: OpaquePointer?
             try withRepository(at: request.repositoryPath) { repository in
@@ -87,18 +88,18 @@ struct LibGit2WorktreeWriter: Sendable {
 
             let validation = try reader.validateWorktree(
                 GitValidateWorktreeRequest(worktreePath: request.destinationPath))
-            guard let snapshot = validation.snapshot, validation.isValid else {
+            guard let createdSnapshot = validation.snapshot, validation.isValid else {
                 throw GitDataPlaneError.repositoryNotFound(path: request.destinationPath)
             }
             rollback.disarm()
-            return GitWorktreeCreation(
-                worktree: snapshot,
-                largeFiles: GitLargeFileFill(materializedCount: 0, missing: [], indexUpdate: .updated)
-            )
+            snapshot = createdSnapshot
         } catch {
             rollback.rollback(runtime: runtime)
             throw error
         }
+
+        let largeFiles = LibGit2LargeFileStoreFill().fill(worktreePath: snapshot.canonicalPath)
+        return GitWorktreeCreation(worktree: snapshot, largeFiles: largeFiles)
     }
 
     func pruneStaleWorktree(_ request: GitPruneStaleWorktreeRequest) throws
