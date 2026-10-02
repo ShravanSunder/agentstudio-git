@@ -288,14 +288,57 @@ struct GitRepositoryStateRehomer: Sendable {
         try writeData(Data(text.utf8), to: url, reportPath: reportPath)
     }
 
+    /// Replaces `url` atomically. Cloned administration keeps the source's file modes, and tools such as
+    /// SwiftPM make files like `.git/HEAD` read-only, so writing in place fails with EACCES. A same-directory
+    /// temporary file renamed over the target needs only directory write permission, and it keeps the
+    /// replaced file's mode.
     private func writeData(_ data: Data, to url: URL, reportPath: String) throws(GitWorktreeForkError) {
+        let directory = url.deletingLastPathComponent()
         do {
-            try FileManager.default.createDirectory(
-                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try data.write(to: url)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         } catch {
-            throw .entryFailed(relativePath: reportPath, reason: .entryCreationFailed, errorNumber: nil)
+            throw .entryFailed(
+                relativePath: reportPath, reason: .entryCreationFailed, errorNumber: Self.errorNumber(of: error))
         }
+        let mode = Self.replacementMode(for: url)
+        let temporary = directory.appending(path: ".\(url.lastPathComponent).agentstudio-\(UUID().uuidString).tmp")
+        let descriptor = temporary.path.withCString { open($0, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o600) }
+        guard descriptor >= 0 else {
+            throw .entryFailed(relativePath: reportPath, reason: .entryCreationFailed, errorNumber: errno)
+        }
+        var failure: Int32?
+        data.withUnsafeBytes { buffer in
+            guard let base = buffer.baseAddress else { return }
+            var offset = 0
+            while offset < buffer.count, failure == nil {
+                let written = write(descriptor, base + offset, buffer.count - offset)
+                if written < 0 {
+                    if errno != EINTR { failure = errno }
+                } else {
+                    offset += written
+                }
+            }
+        }
+        if failure == nil, fchmod(descriptor, mode) != 0 { failure = errno }
+        if close(descriptor) != 0, failure == nil { failure = errno }
+        if failure == nil, rename(temporary.path, url.path) != 0 { failure = errno }
+        if let failure {
+            _ = unlink(temporary.path)
+            throw .entryFailed(relativePath: reportPath, reason: .entryCreationFailed, errorNumber: failure)
+        }
+    }
+
+    /// The replaced file's permission bits when it exists as a regular file, otherwise 0644.
+    private static func replacementMode(for url: URL) -> mode_t {
+        var status = stat()
+        guard url.path.withCString({ lstat($0, &status) }) == 0, status.st_mode & S_IFMT == S_IFREG else {
+            return 0o644
+        }
+        return status.st_mode & 0o7777
+    }
+
+    private static func errorNumber(of error: Error) -> Int32? {
+        ((error as NSError).userInfo[NSUnderlyingErrorKey] as? NSError).map { Int32($0.code) }
     }
 }
 
