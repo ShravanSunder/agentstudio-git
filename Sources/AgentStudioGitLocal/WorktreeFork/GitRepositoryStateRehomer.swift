@@ -288,10 +288,6 @@ struct GitRepositoryStateRehomer: Sendable {
         try writeData(Data(text.utf8), to: url, reportPath: reportPath)
     }
 
-    /// Replaces `url` atomically. Cloned administration keeps the source's file modes, and tools such as
-    /// SwiftPM make files like `.git/HEAD` read-only, so writing in place fails with EACCES. A same-directory
-    /// temporary file renamed over the target needs only directory write permission, and it keeps the
-    /// replaced file's mode.
     private func writeData(_ data: Data, to url: URL, reportPath: String) throws(GitWorktreeForkError) {
         let directory = url.deletingLastPathComponent()
         do {
@@ -300,45 +296,196 @@ struct GitRepositoryStateRehomer: Sendable {
             throw .entryFailed(
                 relativePath: reportPath, reason: .entryCreationFailed, errorNumber: Self.errorNumber(of: error))
         }
-        let mode = Self.replacementMode(for: url)
-        let temporary = directory.appending(path: ".\(url.lastPathComponent).agentstudio-\(UUID().uuidString).tmp")
+        try replaceFilePreservingMetadata(url, with: data, reportPath: reportPath)
+    }
+
+    /// Replaces `url` with `data` on a fresh same-directory inode renamed into place. Cloned administration
+    /// keeps the source's metadata: SwiftPM makes `.git/HEAD` read-only, and a user-immutable or append-only
+    /// flag or a `deny delete` ACL entry forbids writing in place and renaming over the file alike. That
+    /// protection is lifted from our own clone, and the new inode receives the replaced file's mode, extended
+    /// attributes, ACL, and flags, the flags last. Every replaced file is a per-file clone made by this fork,
+    /// so lifting its protection never reaches another path.
+    private func replaceFilePreservingMetadata(
+        _ url: URL,
+        with data: Data,
+        reportPath: String
+    ) throws(GitWorktreeForkError) {
+        let replaced = try WorktreeForkReplacedFile.liftProtection(from: url, reportPath: reportPath)
+        let temporary = url.deletingLastPathComponent()
+            .appending(path: ".\(url.lastPathComponent).agentstudio-\(UUID().uuidString).tmp")
+        do throws(GitWorktreeForkError) {
+            try Self.writeReplacement(data, at: temporary, replacing: replaced, reportPath: reportPath)
+            guard rename(temporary.path, url.path) == 0 else {
+                let failure = errno
+                _ = unlink(temporary.path)
+                throw .entryFailed(relativePath: reportPath, reason: .entryCreationFailed, errorNumber: failure)
+            }
+        } catch {
+            replaced?.restoreProtection(at: url)
+            throw error
+        }
+        try replaced?.reapplyProtection(to: url, reportPath: reportPath)
+    }
+
+    /// Creates `temporary` holding `data` with the replaced file's mode and extended attributes, or 0644 and
+    /// none when nothing is replaced. Removes it again on failure.
+    private static func writeReplacement(
+        _ data: Data,
+        at temporary: URL,
+        replacing replaced: WorktreeForkReplacedFile?,
+        reportPath: String
+    ) throws(GitWorktreeForkError) {
         let descriptor = temporary.path.withCString { open($0, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o600) }
         guard descriptor >= 0 else {
             throw .entryFailed(relativePath: reportPath, reason: .entryCreationFailed, errorNumber: errno)
         }
-        var failure: Int32?
-        data.withUnsafeBytes { buffer in
-            guard let base = buffer.baseAddress else { return }
-            var offset = 0
-            while offset < buffer.count, failure == nil {
-                let written = write(descriptor, base + offset, buffer.count - offset)
-                if written < 0 {
-                    if errno != EINTR { failure = errno }
-                } else {
-                    offset += written
+        do throws(GitWorktreeForkError) {
+            var failure: Int32?
+            data.withUnsafeBytes { buffer in
+                guard let base = buffer.baseAddress else { return }
+                var offset = 0
+                while offset < buffer.count, failure == nil {
+                    let written = write(descriptor, base + offset, buffer.count - offset)
+                    if written < 0 {
+                        if errno != EINTR { failure = errno }
+                    } else {
+                        offset += written
+                    }
                 }
             }
+            if let failure {
+                throw .entryFailed(relativePath: reportPath, reason: .entryCreationFailed, errorNumber: failure)
+            }
+            if let replaced {
+                try WorktreeForkEntryMetadata.copyExtendedAttributes(
+                    from: replaced.descriptor, to: descriptor, relativePath: reportPath)
+            }
+            guard fchmod(descriptor, replaced?.mode ?? 0o644) == 0 else {
+                throw .entryFailed(relativePath: reportPath, reason: .metadataNotReproducible, errorNumber: errno)
+            }
+        } catch {
+            _ = close(descriptor)
+            _ = unlink(temporary.path)
+            throw error
         }
-        if failure == nil, fchmod(descriptor, mode) != 0 { failure = errno }
-        if close(descriptor) != 0, failure == nil { failure = errno }
-        if failure == nil, rename(temporary.path, url.path) != 0 { failure = errno }
-        if let failure {
+        guard close(descriptor) == 0 else {
+            let failure = errno
             _ = unlink(temporary.path)
             throw .entryFailed(relativePath: reportPath, reason: .entryCreationFailed, errorNumber: failure)
         }
     }
 
-    /// The replaced file's permission bits when it exists as a regular file, otherwise 0644.
-    private static func replacementMode(for url: URL) -> mode_t {
-        var status = stat()
-        guard url.path.withCString({ lstat($0, &status) }) == 0, status.st_mode & S_IFMT == S_IFREG else {
-            return 0o644
-        }
-        return status.st_mode & 0o7777
-    }
-
     private static func errorNumber(of error: Error) -> Int32? {
         ((error as NSError).userInfo[NSUnderlyingErrorKey] as? NSError).map { Int32($0.code) }
+    }
+}
+
+/// A cloned regular file about to be replaced, with the protection that would block replacing it lifted. It
+/// keeps what the replacement must reproduce: mode, flags, the extended ACL, and a descriptor through which
+/// the original's extended attributes are read.
+private final class WorktreeForkReplacedFile {
+    /// Flags the owner may clear that forbid renaming over a file. System flags need privilege and fail.
+    private static let userProtectionFlags = UInt32(UF_IMMUTABLE | UF_APPEND)
+    private static let systemProtectionFlags = UInt32(SF_IMMUTABLE | SF_APPEND)
+
+    let mode: mode_t
+    private(set) var descriptor: Int32 = -1
+    private let flags: UInt32
+    private var accessControlList: acl_t?
+
+    private init(_ info: Darwin.stat) {
+        mode = info.st_mode & 0o7777
+        flags = info.st_flags
+    }
+
+    deinit {
+        if descriptor >= 0 {
+            _ = close(descriptor)
+        }
+        if let accessControlList {
+            acl_free(UnsafeMutableRawPointer(accessControlList))
+        }
+    }
+
+    /// Nil when no regular file is at `url`; the replacement is then a new 0644 file with no inherited
+    /// metadata. On failure the original keeps its protection.
+    static func liftProtection(
+        from url: URL,
+        reportPath: String
+    ) throws(GitWorktreeForkError) -> WorktreeForkReplacedFile? {
+        var info = Darwin.stat()
+        guard url.path.withCString({ lstat($0, &info) }) == 0, info.st_mode & S_IFMT == S_IFREG else {
+            return nil
+        }
+        guard info.st_flags & systemProtectionFlags == 0 else {
+            throw .entryFailed(relativePath: reportPath, reason: .entryCreationFailed, errorNumber: EPERM)
+        }
+        let replaced = WorktreeForkReplacedFile(info)
+        do throws(GitWorktreeForkError) {
+            try replaced.lift(at: url, reportPath: reportPath)
+        } catch {
+            replaced.restoreProtection(at: url)
+            throw error
+        }
+        return replaced
+    }
+
+    private func lift(at url: URL, reportPath: String) throws(GitWorktreeForkError) {
+        if flags & Self.userProtectionFlags != 0, lchflags(url.path, flags & ~Self.userProtectionFlags) != 0 {
+            throw .entryFailed(relativePath: reportPath, reason: .entryCreationFailed, errorNumber: errno)
+        }
+        // The owner may always read and replace a file's ACL, even one that denies reading the file.
+        accessControlList = acl_get_link_np(url.path, ACL_TYPE_EXTENDED)
+        if accessControlList == nil, errno != ENOENT {
+            throw .entryFailed(relativePath: reportPath, reason: .metadataNotReproducible, errorNumber: errno)
+        }
+        if accessControlList != nil {
+            let failure = Self.removeAccessControlList(at: url)
+            guard failure == 0 else {
+                throw .entryFailed(relativePath: reportPath, reason: .entryCreationFailed, errorNumber: failure)
+            }
+        }
+        // Reading extended attributes needs a readable descriptor, which the original's mode may withhold.
+        descriptor = url.path.withCString { open($0, O_RDONLY | O_NOFOLLOW | O_CLOEXEC) }
+        if descriptor < 0, errno == EACCES, lchmod(url.path, mode | S_IRUSR) == 0 {
+            descriptor = url.path.withCString { open($0, O_RDONLY | O_NOFOLLOW | O_CLOEXEC) }
+        }
+        guard descriptor >= 0 else {
+            throw .entryFailed(relativePath: reportPath, reason: .metadataNotReproducible, errorNumber: errno)
+        }
+    }
+
+    /// Puts the lifted protection back on the original while it is still at `url`. Best effort: the caller is
+    /// already failing the fork.
+    func restoreProtection(at url: URL) {
+        _ = lchmod(url.path, mode)
+        if let accessControlList {
+            _ = acl_set_link_np(url.path, ACL_TYPE_EXTENDED, accessControlList)
+        }
+        _ = lchflags(url.path, flags)
+    }
+
+    /// Gives the replacement now at `url` the original's ACL and flags. Both are applied after the rename
+    /// because each can forbid it; flags go last because an immutable file accepts no further change.
+    func reapplyProtection(to url: URL, reportPath: String) throws(GitWorktreeForkError) {
+        let reproducibleFlags = flags & WorktreeForkEntryMetadata.reproducibleFlagMask
+        if let accessControlList, acl_set_link_np(url.path, ACL_TYPE_EXTENDED, accessControlList) != 0 {
+            let failure = errno
+            _ = lchflags(url.path, reproducibleFlags)
+            throw .entryFailed(relativePath: reportPath, reason: .metadataNotReproducible, errorNumber: failure)
+        }
+        if reproducibleFlags != 0, lchflags(url.path, reproducibleFlags) != 0 {
+            throw .entryFailed(relativePath: reportPath, reason: .metadataNotReproducible, errorNumber: errno)
+        }
+    }
+
+    /// Setting an empty extended ACL removes it. Returns the failing errno, or 0.
+    private static func removeAccessControlList(at url: URL) -> Int32 {
+        guard let empty = acl_init(0) else {
+            return errno
+        }
+        defer { acl_free(UnsafeMutableRawPointer(empty)) }
+        return acl_set_link_np(url.path, ACL_TYPE_EXTENDED, empty) == 0 ? 0 : errno
     }
 }
 
