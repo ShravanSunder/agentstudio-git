@@ -257,21 +257,21 @@ struct GitWorktreeIntegrationTests {
         try fixture.git.run("branch", "feature/existing")
         let client = LibGit2AgentStudioGitLocalClient()
 
-        let existingSnapshot = try await client.createWorktree(
+        let existingCreation = try await client.createWorktree(
             GitCreateWorktreeRequest(
                 repositoryPath: fixture.repositoryPath,
                 destinationPath: fixture.linkedWorktreePath("existing"),
                 mode: .existingBranch(name: "feature/existing")
             )
         )
-        let newSnapshot = try await client.createWorktree(
+        let newCreation = try await client.createWorktree(
             GitCreateWorktreeRequest(
                 repositoryPath: fixture.repositoryPath,
                 destinationPath: fixture.linkedWorktreePath("new-branch"),
                 mode: .newBranch(name: "feature/new", startPoint: .named("HEAD"))
             )
         )
-        let detachedSnapshot = try await client.createWorktree(
+        let detachedCreation = try await client.createWorktree(
             GitCreateWorktreeRequest(
                 repositoryPath: fixture.repositoryPath,
                 destinationPath: fixture.linkedWorktreePath("detached"),
@@ -279,9 +279,18 @@ struct GitWorktreeIntegrationTests {
             )
         )
 
-        #expect(existingSnapshot.head?.shortName == "feature/existing")
-        #expect(newSnapshot.head?.shortName == "feature/new")
-        #expect(detachedSnapshot.head?.kind == .detached)
+        #expect(existingCreation.worktree.head?.shortName == "feature/existing")
+        #expect(newCreation.worktree.head?.shortName == "feature/new")
+        #expect(detachedCreation.worktree.head?.kind == .detached)
+        #expect(existingCreation.largeFiles.materializedCount == 0)
+        #expect(existingCreation.largeFiles.missing.isEmpty)
+        #expect(existingCreation.largeFiles.indexUpdate == .updated)
+        #expect(newCreation.largeFiles.materializedCount == 0)
+        #expect(newCreation.largeFiles.missing.isEmpty)
+        #expect(newCreation.largeFiles.indexUpdate == .updated)
+        #expect(detachedCreation.largeFiles.materializedCount == 0)
+        #expect(detachedCreation.largeFiles.missing.isEmpty)
+        #expect(detachedCreation.largeFiles.indexUpdate == .updated)
         #expect(
             try fixture.git.run("rev-parse", "--verify", "feature/new").trimmingCharacters(in: .whitespacesAndNewlines)
                 .count == 40)

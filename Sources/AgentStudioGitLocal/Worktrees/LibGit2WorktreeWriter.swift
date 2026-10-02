@@ -18,7 +18,7 @@ struct LibGit2WorktreeWriter: Sendable {
     }
 
     func createWorktree(_ request: GitCreateWorktreeRequest) throws
-        -> GitWorktreeSnapshot
+        -> GitWorktreeCreation
     {
         let worktreeName = request.destinationPath.lastPathComponent
         guard !worktreeName.isEmpty else {
@@ -91,7 +91,10 @@ struct LibGit2WorktreeWriter: Sendable {
                 throw GitDataPlaneError.repositoryNotFound(path: request.destinationPath)
             }
             rollback.disarm()
-            return snapshot
+            return GitWorktreeCreation(
+                worktree: snapshot,
+                largeFiles: GitLargeFileFill(materializedCount: 0, missing: [], indexUpdate: .updated)
+            )
         } catch {
             rollback.rollback(runtime: runtime)
             throw error

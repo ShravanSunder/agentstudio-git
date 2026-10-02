@@ -17,7 +17,7 @@ struct LegacyLocalClientDouble: AgentStudioGitLocalClient {
         throw unavailable
     }
 
-    func createWorktree(_ request: GitCreateWorktreeRequest) async throws(GitDataPlaneError) -> GitWorktreeSnapshot {
+    func createWorktree(_ request: GitCreateWorktreeRequest) async throws(GitDataPlaneError) -> GitWorktreeCreation {
         throw unavailable
     }
 
