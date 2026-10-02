@@ -21,25 +21,25 @@ struct WorktreeForkChangesOnlyMaterializer: Sendable {
 
     func apply(
         _ plan: WorktreeForkChangesOnlyPlan,
+        repository: OpaquePointer,
         sourceRootDescriptor: Int32,
-        destinationRootDescriptor: Int32,
-        destinationRootPath: URL
+        destinationRootDescriptor: Int32
     ) throws(GitWorktreeForkError) -> GitLargeFileFill {
         try WorktreeForkDatalessPolicy.withMaterializationDenied(reportPath: ".") { () throws(GitWorktreeForkError) in
             try applyWhileMaterializationDenied(
                 plan,
+                repository: repository,
                 sourceRootDescriptor: sourceRootDescriptor,
-                destinationRootDescriptor: destinationRootDescriptor,
-                destinationRootPath: destinationRootPath
+                destinationRootDescriptor: destinationRootDescriptor
             )
         }
     }
 
     private func applyWhileMaterializationDenied(
         _ plan: WorktreeForkChangesOnlyPlan,
+        repository: OpaquePointer,
         sourceRootDescriptor: Int32,
-        destinationRootDescriptor: Int32,
-        destinationRootPath: URL
+        destinationRootDescriptor: Int32
     ) throws(GitWorktreeForkError) -> GitLargeFileFill {
         let overlayEntries = plan.entries.filter(\.shouldOverlay)
         for entry in overlayEntries where entry.kind != .directory {
@@ -90,7 +90,8 @@ struct WorktreeForkChangesOnlyMaterializer: Sendable {
                 + plan.largeFileRestorations.map(\.relativePath)
         )
         let largeFiles = largeFileStoreFill.fill(
-            worktreePath: destinationRootPath,
+            repository: repository,
+            worktreeRootDescriptor: destinationRootDescriptor,
             excludedPaths: fallbackExcludedPaths
         )
         for entry in overlayEntries.reversed() where entry.kind == .directory {

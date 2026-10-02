@@ -13,19 +13,22 @@ struct LibGit2WorktreeForkWriter: Sendable {
     private let hostFacts: WorktreeForkHostFactsProvider
     private let faults: WorktreeForkFaultInjector
     private let indexObserver: WorktreeForkIndexObserver
+    private let largeFileStoreFill: LibGit2LargeFileStoreFill
 
     init(
         runtime: LibGit2Runtime = .shared,
         reader: LibGit2WorktreeReader = LibGit2WorktreeReader(),
         hostFacts: WorktreeForkHostFactsProvider = .live,
         faults: WorktreeForkFaultInjector = .production,
-        indexObserver: WorktreeForkIndexObserver = .production
+        indexObserver: WorktreeForkIndexObserver = .production,
+        largeFileStoreFill: LibGit2LargeFileStoreFill = LibGit2LargeFileStoreFill()
     ) {
         self.runtime = runtime
         self.reader = reader
         self.hostFacts = hostFacts
         self.faults = faults
         self.indexObserver = indexObserver
+        self.largeFileStoreFill = largeFileStoreFill
     }
 
     /// Read-only availability from host, volume, and File Provider facts; never the writer lane.
@@ -212,11 +215,15 @@ struct LibGit2WorktreeForkWriter: Sendable {
         try faults.reach(.afterHeadCheckedOut)
         try cancellation.throwIfCancelled()
 
-        let largeFiles = try WorktreeForkChangesOnlyMaterializer(cancellation: cancellation, faults: faults).apply(
+        let largeFiles = try WorktreeForkChangesOnlyMaterializer(
+            cancellation: cancellation,
+            faults: faults,
+            largeFileStoreFill: largeFileStoreFill
+        ).apply(
             changesOnly,
+            repository: repository,
             sourceRootDescriptor: sourceRootDescriptor,
-            destinationRootDescriptor: destinationRootDescriptor,
-            destinationRootPath: plan.destinationRoot
+            destinationRootDescriptor: destinationRootDescriptor
         )
         try faults.reach(.afterChangesOnlyOverlay)
         try faults.reach(.afterMaterialization)

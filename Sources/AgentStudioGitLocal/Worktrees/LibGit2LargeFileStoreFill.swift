@@ -66,6 +66,7 @@ struct LibGit2LargeFileStoreFill: Sendable {
         if let scanFailure = faults.scanFailureIfRequested() {
             return emptyFill(scan: .incomplete(scanFailure))
         }
+        faults.beforeScanning(worktreeRootDescriptor)
 
         let candidates: [LargeFileFillCandidate]
         switch lfsCandidates(repository: repository, excludedPaths: excludedPaths) {
@@ -413,18 +414,25 @@ struct LibGit2LargeFileStoreFill: Sendable {
 
 struct LibGit2LargeFileStoreFillFaultInjector: Sendable {
     private let scanFailure: GitLargeFileScanFailure?
+    private let beforeScanningHandler: @Sendable (Int32) -> Void
     private let beforeReturningHandler: @Sendable () -> Void
 
     init(
         scanFailure: GitLargeFileScanFailure? = nil,
+        beforeScanning: @escaping @Sendable (Int32) -> Void = { _ in },
         beforeReturning: @escaping @Sendable () -> Void = {}
     ) {
         self.scanFailure = scanFailure
+        beforeScanningHandler = beforeScanning
         beforeReturningHandler = beforeReturning
     }
 
     func scanFailureIfRequested() -> GitLargeFileScanFailure? {
         scanFailure
+    }
+
+    func beforeScanning(_ worktreeRootDescriptor: Int32) {
+        beforeScanningHandler(worktreeRootDescriptor)
     }
 
     func beforeReturning() {

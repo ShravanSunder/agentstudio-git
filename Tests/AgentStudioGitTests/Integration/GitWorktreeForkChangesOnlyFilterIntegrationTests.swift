@@ -111,9 +111,23 @@ struct GitWorktreeForkChangesOnlyFilterIntegrationTests {
         let sourceAsset = fixture.source.appending(path: "asset.bin")
         #expect(sourceAsset.path.withCString { chmod($0, 0o755) } == 0)
         let destination = fixture.destination()
+        let destinationRootIdentity = OSAllocatedUnfairLock(initialState: Optional<WorktreeForkEntryIdentity>.none)
+        let fill = LibGit2LargeFileStoreFill(
+            faults: LibGit2LargeFileStoreFillFaultInjector(beforeScanning: { descriptor in
+                var info = Darwin.stat()
+                guard fstat(descriptor, &info) == 0 else {
+                    return
+                }
+                let observedIdentity = WorktreeForkEntryIdentity(info)
+                destinationRootIdentity.withLock { $0 = observedIdentity }
+            })
+        )
+        let client = LibGit2AgentStudioGitLocalClient(
+            worktreeForkWriter: LibGit2WorktreeForkWriter(largeFileStoreFill: fill)
+        )
 
         // Act
-        let result = try await LibGit2AgentStudioGitLocalClient().forkWorktree(
+        let result = try await client.forkWorktree(
             fixture.request(
                 destination: destination,
                 mode: .newBranch(name: "fork-lfs-carried-pointer-mode"),
@@ -127,7 +141,9 @@ struct GitWorktreeForkChangesOnlyFilterIntegrationTests {
             return
         }
         let destinationAsset = destination.appending(path: "asset.bin")
+        let destinationRootInfo = try #require(GitWorktreeForkFileProbe.info(destination))
         let destinationInfo = try #require(GitWorktreeForkFileProbe.info(destinationAsset))
+        #expect(destinationRootIdentity.withLock { $0 } == WorktreeForkEntryIdentity(destinationRootInfo))
         #expect(try Data(contentsOf: destinationAsset) == Data(pointer.utf8))
         #expect(destinationInfo.st_mode & S_IXUSR != 0)
         #expect(report.trackedChanges == 1)
