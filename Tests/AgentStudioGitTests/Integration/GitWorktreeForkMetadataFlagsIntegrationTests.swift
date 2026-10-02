@@ -9,7 +9,9 @@ import Testing
 /// copy-on-write fork exactly, in the order that lets every child and hard link be created first.
 @Suite("Git worktree fork metadata flags integration", .serialized)
 struct GitWorktreeForkMetadataFlagsIntegrationTests {
-    @Test("a hard-linked file with a protecting flag keeps one inode, its payload, and its flag", arguments: ProtectingFlag.allCases)
+    @Test(
+        "a hard-linked file with a protecting flag keeps one inode, its payload, and its flag",
+        arguments: ProtectingFlag.allCases)
     func protectedHardLinksKeepOneInode(flag: ProtectingFlag) async throws {
         // Arrange
         let fixture = try makeIgnoredBuildFixture(prefix: "agentstudio-git-fork-flagged-hardlink")
@@ -21,7 +23,9 @@ struct GitWorktreeForkMetadataFlagsIntegrationTests {
         try fixture.write(".build/out/first.bin", payload)
         let source = fixture.source
         #expect(
-            link(source.appending(path: ".build/out/first.bin").path, source.appending(path: ".build/out/second.bin").path)
+            link(
+                source.appending(path: ".build/out/first.bin").path,
+                source.appending(path: ".build/out/second.bin").path)
                 == 0)
         #expect(chflags(source.appending(path: ".build/out/first.bin").path, flag.value) == 0)
         let destination = fixture.destination()
@@ -38,7 +42,8 @@ struct GitWorktreeForkMetadataFlagsIntegrationTests {
         #expect(first.st_ino != sourceFirst.st_ino)
         #expect(first.st_flags & flag.value == flag.value)
         #expect(first.st_mode & 0o7777 == sourceFirst.st_mode & 0o7777)
-        #expect(try String(contentsOf: destination.appending(path: ".build/out/second.bin"), encoding: .utf8) == payload)
+        #expect(
+            try String(contentsOf: destination.appending(path: ".build/out/second.bin"), encoding: .utf8) == payload)
         #expect(report.preservedHardLinkCount == 1)
         #expect(report.normalizedEntries.isEmpty)
     }
@@ -61,7 +66,8 @@ struct GitWorktreeForkMetadataFlagsIntegrationTests {
 
         // Assert
         let report = try copyOnWriteReport(result)
-        let destinationSealed = try #require(GitWorktreeForkFileProbe.info(destination.appending(path: ".build/sealed")))
+        let destinationSealed = try #require(
+            GitWorktreeForkFileProbe.info(destination.appending(path: ".build/sealed")))
         #expect(destinationSealed.st_flags & UInt32(UF_IMMUTABLE) != 0)
         #expect(
             try String(contentsOf: destination.appending(path: ".build/sealed/inner.bin"), encoding: .utf8)
@@ -97,18 +103,21 @@ struct GitWorktreeForkMetadataFlagsIntegrationTests {
         #expect(report.normalizedEntries.isEmpty)
     }
 
-    @Test("read-only nested Git administration directories keep their mode after re-homing")
-    func readOnlyNestedAdministrationDirectoriesKeepTheirMode() async throws {
-        // Arrange: a SwiftPM-style checkout whose whole .git tree, directories included, is read-only.
+    @Test(
+        "read-only nested Git administration directories keep their mode after re-homing writes into them",
+        arguments: NestedRepositoryShape.allCases
+    )
+    func readOnlyNestedAdministrationDirectoriesKeepTheirMode(shape: NestedRepositoryShape) async throws {
+        // Arrange: a SwiftPM-style checkout whose whole .git tree, directories included, is read-only. The
+        // re-homer writes HEAD into .git, sparse state into .git/info, and alternates into .git/objects/info.
         let fixture = try makeIgnoredBuildFixture(prefix: "agentstudio-git-fork-readonly-nested-dirs")
         defer {
             releaseProtections(under: fixture.repository.root)
             fixture.remove()
         }
         let nestedPath = ".build/checkouts/dependency"
-        let checkout = try makeRepository(at: fixture.source.appending(path: nestedPath), fixture: fixture)
+        let checkout = try makeNestedRepository(shape, at: fixture.source.appending(path: nestedPath), fixture: fixture)
         try clearWriteBits(under: checkout.appending(path: ".git"))
-        let administrationDirectories = [".git", ".git/objects", ".git/refs", ".git/refs/heads", ".git/info"]
         let destination = fixture.destination()
 
         // Act
@@ -117,15 +126,48 @@ struct GitWorktreeForkMetadataFlagsIntegrationTests {
         // Assert
         let report = try copyOnWriteReport(result)
         let nestedDestination = destination.appending(path: nestedPath)
-        for relativePath in administrationDirectories {
+        for relativePath in shape.administrationDirectories {
             let sourceInfo = try #require(GitWorktreeForkFileProbe.info(checkout.appending(path: relativePath)))
             let info = try #require(GitWorktreeForkFileProbe.info(nestedDestination.appending(path: relativePath)))
             #expect(sourceInfo.st_mode & 0o7777 == 0o555, "\(relativePath) source")
             #expect(info.st_mode & 0o7777 == 0o555, "\(relativePath) destination")
         }
         #expect(try fixture.blobID("HEAD", at: nestedDestination) == fixture.blobID("HEAD", at: checkout))
-        #expect(try fixture.statusLines(at: nestedDestination).isEmpty)
+        #expect(try fixture.statusLines(at: nestedDestination) == fixture.statusLines(at: checkout))
+        switch shape {
+        case .plain:
+            break
+        case .sparse:
+            #expect(
+                try fixture.git.run(["sparse-checkout", "list"], currentDirectory: nestedDestination)
+                    == fixture.git.run(["sparse-checkout", "list"], currentDirectory: checkout))
+        case .sharedObjects:
+            #expect(
+                try fixture.git.succeeds("cat-file", "-e", "HEAD:Package.swift", currentDirectory: nestedDestination))
+        }
         #expect(report.preservedGitRepositoryCount == 1)
+        #expect(report.normalizedEntries.isEmpty)
+    }
+
+    @Test("a read-only worktree root keeps its mode")
+    func readOnlyWorktreeRootKeepsItsMode() async throws {
+        // Arrange
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-readonly-root")
+        defer {
+            releaseProtections(under: fixture.repository.root)
+            fixture.remove()
+        }
+        #expect(chmod(fixture.source.path, 0o555) == 0)
+        let destination = fixture.destination()
+
+        // Act
+        let result = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+
+        // Assert
+        let report = try copyOnWriteReport(result)
+        let info = try #require(GitWorktreeForkFileProbe.info(destination))
+        #expect(info.st_mode & 0o7777 == 0o555)
+        #expect(try fixture.statusLines(at: destination) == fixture.statusLines(at: fixture.source))
         #expect(report.normalizedEntries.isEmpty)
     }
 
@@ -154,7 +196,8 @@ struct GitWorktreeForkMetadataFlagsIntegrationTests {
         #expect(info.st_flags & UInt32(UF_IMMUTABLE) != 0)
         #expect(getxattr(destinationAdministration.path, "com.agentstudio.probe", nil, 0, 0, 0) == 5)
         #expect(
-            try fixture.blobID("HEAD", at: destination.appending(path: nestedPath)) == fixture.blobID("HEAD", at: checkout))
+            try fixture.blobID("HEAD", at: destination.appending(path: nestedPath))
+                == fixture.blobID("HEAD", at: checkout))
         #expect(report.normalizedEntries.isEmpty)
     }
 
@@ -175,6 +218,31 @@ struct GitWorktreeForkMetadataFlagsIntegrationTests {
         try fixture.git.run(["add", "."], currentDirectory: path)
         try fixture.git.run(["commit", "-qm", "initial"], currentDirectory: path)
         return path
+    }
+
+    private func makeNestedRepository(
+        _ shape: NestedRepositoryShape,
+        at path: URL,
+        fixture: GitWorktreeForkFixture
+    ) throws -> URL {
+        switch shape {
+        case .plain:
+            return try makeRepository(at: path, fixture: fixture)
+        case .sparse:
+            let repository = try makeRepository(at: path, fixture: fixture)
+            try fixture.write("kept/one.txt", "kept\n", in: repository)
+            try fixture.write("dropped/two.txt", "dropped\n", in: repository)
+            try fixture.git.run(["add", "."], currentDirectory: repository)
+            try fixture.git.run(["commit", "-qm", "sparse tree"], currentDirectory: repository)
+            try fixture.git.run(["sparse-checkout", "set", "--cone", "kept"], currentDirectory: repository)
+            return repository
+        case .sharedObjects:
+            let upstream = try makeRepository(at: fixture.repository.root.appending(path: "upstream"), fixture: fixture)
+            try FileManager.default.createDirectory(
+                at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try fixture.git.run(["clone", "-q", "--shared", upstream.path, path.path])
+            return path
+        }
     }
 
     private func copyOnWriteReport(_ result: GitForkWorktreeResult) throws -> GitWorktreeMaterializationReport {
@@ -227,6 +295,20 @@ enum ProtectingFlag: String, CaseIterable, Sendable {
         switch self {
         case .immutable: UInt32(UF_IMMUTABLE)
         case .appendOnly: UInt32(UF_APPEND)
+        }
+    }
+}
+
+enum NestedRepositoryShape: String, CaseIterable, Sendable {
+    case plain
+    case sparse
+    case sharedObjects
+
+    var administrationDirectories: [String] {
+        switch self {
+        case .plain: [".git", ".git/objects", ".git/refs", ".git/refs/heads", ".git/info"]
+        case .sparse: [".git", ".git/info", ".git/objects"]
+        case .sharedObjects: [".git", ".git/objects", ".git/objects/info"]
         }
     }
 }
