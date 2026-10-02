@@ -8,6 +8,11 @@ struct LibGit2LargeFileStore: Sendable {
     private static let objectOpenFlags = O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC
     private static let cloneFlags = UInt32(CLONE_NOFOLLOW | CLONE_ACL)
     private static let hashBufferByteCount = 1_048_576
+    private let faults: LibGit2LargeFileStoreFaultInjector
+
+    init(faults: LibGit2LargeFileStoreFaultInjector = LibGit2LargeFileStoreFaultInjector()) {
+        self.faults = faults
+    }
 
     func storageRoot(repository: OpaquePointer, commonDirectory: URL) -> Result<URL, LargeFileStoreFailure> {
         var configuration: OpaquePointer?
@@ -107,7 +112,7 @@ struct LibGit2LargeFileStore: Sendable {
         request: LargeFileStoreMaterializationRequest,
         storageRootDescriptor: Int32,
         worktreeRootDescriptor: Int32
-    ) -> Result<Bool, LargeFileStoreFailure> {
+    ) -> Result<LargeFileStoreMaterialization, LargeFileStoreFailure> {
         let objectDescriptor: Int32
         switch openObject(for: request.pointer, storageRootDescriptor: storageRootDescriptor) {
         case .success(let descriptor):
@@ -130,22 +135,28 @@ struct LibGit2LargeFileStore: Sendable {
         }
         defer { close(destinationParentDescriptor) }
 
-        let temporaryName = ".agentstudio-lfs-fill-\(UUID().uuidString)"
+        let temporaryName = faults.temporaryName() ?? ".agentstudio-lfs-fill-\(UUID().uuidString)"
+        let (temporaryParentPath, _) = WorktreeForkDescriptors.splitParent(request.path)
+        let residuePath = temporaryParentPath.isEmpty ? temporaryName : "\(temporaryParentPath)/\(temporaryName)"
         var temporaryExists = false
-        defer {
-            if temporaryExists {
-                _ = temporaryName.withCString { unlinkat(destinationParentDescriptor, $0, 0) }
-            }
-        }
+        var temporaryIdentity: WorktreeForkEntryIdentity?
 
-        let cloneResult = temporaryName.withCString {
-            fclonefileat(objectDescriptor, destinationParentDescriptor, $0, Self.cloneFlags)
+        faults.beforeClone(parentDescriptor: destinationParentDescriptor, name: temporaryName)
+        let cloneResult: Int32
+        if let injectedCloneError = faults.cloneError() {
+            errno = injectedCloneError
+            cloneResult = -1
+        } else {
+            cloneResult = temporaryName.withCString {
+                fclonefileat(objectDescriptor, destinationParentDescriptor, $0, Self.cloneFlags)
+            }
         }
         if cloneResult == 0 {
             temporaryExists = true
+            temporaryIdentity = temporaryEntryIdentity(named: temporaryName, in: destinationParentDescriptor)
+            faults.afterTemporaryAcquired(parentDescriptor: destinationParentDescriptor, name: temporaryName)
         } else {
             let cloneErrorNumber = errno
-            _ = temporaryName.withCString { unlinkat(destinationParentDescriptor, $0, 0) }
             if cloneErrorNumber != ENOTSUP, cloneErrorNumber != EXDEV {
                 return .failure(LargeFileStoreFailure(reason: .writeFailed(errno: cloneErrorNumber)))
             }
@@ -154,12 +165,56 @@ struct LibGit2LargeFileStore: Sendable {
                 to: temporaryName,
                 in: destinationParentDescriptor,
                 expectedSize: request.pointer.payloadByteCount,
-                temporaryExists: &temporaryExists
+                temporaryExists: &temporaryExists,
+                temporaryIdentity: &temporaryIdentity
             ) {
-                return .failure(failure)
+                let residue = cleanupTemporary(
+                    named: temporaryName,
+                    in: destinationParentDescriptor,
+                    wasCreated: temporaryExists,
+                    identity: temporaryIdentity
+                ) ? nil : residuePath
+                return .failure(LargeFileStoreFailure(reason: failure.reason, residuePath: residue))
             }
+            faults.afterTemporaryAcquired(parentDescriptor: destinationParentDescriptor, name: temporaryName)
         }
 
+        let materialization = verifyTemporaryAndReplace(
+            request: request,
+            temporaryName: temporaryName,
+            destinationName: destinationName,
+            destinationParentDescriptor: destinationParentDescriptor,
+            temporaryIdentity: &temporaryIdentity
+        )
+        switch materialization {
+        case .success(true):
+            return .success(LargeFileStoreMaterialization(didMaterialize: true, residuePath: nil))
+        case .success(false):
+            let residue = cleanupTemporary(
+                named: temporaryName,
+                in: destinationParentDescriptor,
+                wasCreated: temporaryExists,
+                identity: temporaryIdentity
+            ) ? nil : residuePath
+            return .success(LargeFileStoreMaterialization(didMaterialize: false, residuePath: residue))
+        case .failure(let failure):
+            let residue = cleanupTemporary(
+                named: temporaryName,
+                in: destinationParentDescriptor,
+                wasCreated: temporaryExists,
+                identity: temporaryIdentity
+            ) ? nil : residuePath
+            return .failure(LargeFileStoreFailure(reason: failure.reason, residuePath: residue))
+        }
+    }
+
+    private func verifyTemporaryAndReplace(
+        request: LargeFileStoreMaterializationRequest,
+        temporaryName: String,
+        destinationName: String,
+        destinationParentDescriptor: Int32,
+        temporaryIdentity: inout WorktreeForkEntryIdentity?
+    ) -> Result<Bool, LargeFileStoreFailure> {
         let temporaryDescriptor = temporaryName.withCString {
             openat(destinationParentDescriptor, $0, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         }
@@ -171,6 +226,7 @@ struct LibGit2LargeFileStore: Sendable {
         guard case .success(let temporaryInfo) = WorktreeForkDescriptors.statDescriptor(temporaryDescriptor) else {
             return .failure(LargeFileStoreFailure(reason: .readFailed(errno: Self.readErrorNumber())))
         }
+        temporaryIdentity = WorktreeForkEntryIdentity(temporaryInfo)
         guard WorktreeForkEntryKind(mode: temporaryInfo.st_mode) == .regularFile,
             temporaryInfo.st_size == off_t(request.pointer.payloadByteCount)
         else {
@@ -207,8 +263,45 @@ struct LibGit2LargeFileStore: Sendable {
         guard renameResult == 0 else {
             return .failure(LargeFileStoreFailure(reason: .writeFailed(errno: errno)))
         }
-        temporaryExists = false
         return .success(true)
+    }
+
+    private func temporaryEntryIdentity(named name: String, in parentDescriptor: Int32) -> WorktreeForkEntryIdentity? {
+        let descriptor = name.withCString { openat(parentDescriptor, $0, Self.objectOpenFlags) }
+        guard descriptor >= 0 else {
+            return nil
+        }
+        defer { close(descriptor) }
+        guard case .success(let info) = WorktreeForkDescriptors.statDescriptor(descriptor) else {
+            return nil
+        }
+        return WorktreeForkEntryIdentity(info)
+    }
+
+    private func cleanupTemporary(
+        named name: String,
+        in parentDescriptor: Int32,
+        wasCreated: Bool,
+        identity expectedIdentity: WorktreeForkEntryIdentity?
+    ) -> Bool {
+        guard wasCreated else {
+            return true
+        }
+        let descriptor = name.withCString { openat(parentDescriptor, $0, Self.objectOpenFlags) }
+        guard descriptor >= 0 else {
+            return errno == ENOENT || errno == ENOTDIR || errno == ELOOP
+        }
+        defer { close(descriptor) }
+        guard let expectedIdentity,
+            case .success(let info) = WorktreeForkDescriptors.statDescriptor(descriptor)
+        else {
+            return false
+        }
+        guard WorktreeForkEntryIdentity(info) == expectedIdentity else {
+            return true
+        }
+        let unlinkResult = name.withCString { unlinkat(parentDescriptor, $0, 0) }
+        return unlinkResult == 0 || errno == ENOENT
     }
 
     private func copyObject(
@@ -216,7 +309,8 @@ struct LibGit2LargeFileStore: Sendable {
         to temporaryName: String,
         in destinationParentDescriptor: Int32,
         expectedSize: Int,
-        temporaryExists: inout Bool
+        temporaryExists: inout Bool,
+        temporaryIdentity: inout WorktreeForkEntryIdentity?
     ) -> LargeFileStoreFailure? {
         let destinationDescriptor = temporaryName.withCString {
             openat(
@@ -231,6 +325,12 @@ struct LibGit2LargeFileStore: Sendable {
         }
         temporaryExists = true
         defer { close(destinationDescriptor) }
+
+        var destinationInfo = Darwin.stat()
+        guard fstat(destinationDescriptor, &destinationInfo) == 0 else {
+            return LargeFileStoreFailure(reason: .readFailed(errno: Self.readErrorNumber()))
+        }
+        temporaryIdentity = WorktreeForkEntryIdentity(destinationInfo)
 
         var copiedByteCount = 0
         var buffer = [UInt8](repeating: 0, count: Self.hashBufferByteCount)
@@ -372,4 +472,50 @@ struct LargeFileStoreMaterializationRequest: Sendable {
 
 struct LargeFileStoreFailure: Error, Sendable {
     let reason: GitLargeFileFillMissReason
+    let residuePath: String?
+
+    init(reason: GitLargeFileFillMissReason, residuePath: String? = nil) {
+        self.reason = reason
+        self.residuePath = residuePath
+    }
+}
+
+struct LargeFileStoreMaterialization: Sendable {
+    let didMaterialize: Bool
+    let residuePath: String?
+}
+
+struct LibGit2LargeFileStoreFaultInjector: Sendable {
+    private let temporaryNameValue: String?
+    private let cloneErrorValue: Int32?
+    private let beforeCloneHandler: @Sendable (Int32, String) -> Void
+    private let afterTemporaryAcquiredHandler: @Sendable (Int32, String) -> Void
+
+    init(
+        temporaryName: String? = nil,
+        cloneError: Int32? = nil,
+        beforeClone: @escaping @Sendable (Int32, String) -> Void = { _, _ in },
+        afterTemporaryAcquired: @escaping @Sendable (Int32, String) -> Void = { _, _ in }
+    ) {
+        temporaryNameValue = temporaryName
+        cloneErrorValue = cloneError
+        beforeCloneHandler = beforeClone
+        afterTemporaryAcquiredHandler = afterTemporaryAcquired
+    }
+
+    func temporaryName() -> String? {
+        temporaryNameValue
+    }
+
+    func cloneError() -> Int32? {
+        cloneErrorValue
+    }
+
+    func beforeClone(parentDescriptor: Int32, name: String) {
+        beforeCloneHandler(parentDescriptor, name)
+    }
+
+    func afterTemporaryAcquired(parentDescriptor: Int32, name: String) {
+        afterTemporaryAcquiredHandler(parentDescriptor, name)
+    }
 }

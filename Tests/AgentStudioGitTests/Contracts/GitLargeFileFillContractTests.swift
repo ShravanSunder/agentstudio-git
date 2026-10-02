@@ -17,16 +17,19 @@ struct GitLargeFileFillContractTests {
                     GitLargeFileFillMiss(path: "unreadable.bin", reason: .readFailed(errno: 13)),
                     GitLargeFileFillMiss(path: "unwritable.bin", reason: .writeFailed(errno: 28)),
                 ],
+                residuePaths: [".agentstudio-lfs-fill-orphan"],
                 scan: .complete
             ),
             GitLargeFileFill(
                 materializedCount: 0,
                 missing: [],
+                residuePaths: [],
                 scan: .incomplete(.readFailed(errno: 13))
             ),
             GitLargeFileFill(
                 materializedCount: 0,
                 missing: [],
+                residuePaths: [],
                 scan: .incomplete(.gitFailure(kind: .headUnavailable))
             ),
         ]
@@ -56,11 +59,13 @@ struct GitLargeFileFillContractTests {
     func fillResultsRejectInvalidPayloads() throws {
         // Arrange
         let invalidPayloads = [
-            #"{"materializedCount":-1,"missing":[],"scan":"complete"}"#,
-            #"{"materializedCount":0,"missing":[{"path":"asset.bin","reason":{"kind":"objectAbsent"}},{"path":"asset.bin","reason":{"kind":"objectMismatch"}}],"scan":"complete"}"#,
-            #"{"materializedCount":0,"missing":[{"path":"asset.bin","reason":{"kind":"readFailed","errno":0}}],"scan":"complete"}"#,
-            #"{"materializedCount":0,"missing":[],"scan":{"incomplete":{"readFailed":{"errno":0}}}}"#,
-            #"{"materializedCount":0,"missing":[],"scan":"unknown"}"#,
+            #"{"materializedCount":-1,"missing":[],"residuePaths":[],"scan":"complete"}"#,
+            #"{"materializedCount":0,"missing":[{"path":"asset.bin","reason":{"kind":"objectAbsent"}},{"path":"asset.bin","reason":{"kind":"objectMismatch"}}],"residuePaths":[],"scan":"complete"}"#,
+            #"{"materializedCount":0,"missing":[{"path":"asset.bin","reason":{"kind":"readFailed","errno":0}}],"residuePaths":[],"scan":"complete"}"#,
+            #"{"materializedCount":0,"missing":[],"residuePaths":[],"scan":{"incomplete":{"readFailed":{"errno":0}}}}"#,
+            #"{"materializedCount":0,"missing":[],"residuePaths":[],"scan":"unknown"}"#,
+            #"{"materializedCount":0,"missing":[],"residuePaths":["",""],"scan":"complete"}"#,
+            #"{"materializedCount":0,"missing":[],"residuePaths":["same","same"],"scan":"complete"}"#,
         ]
 
         // Act / Assert

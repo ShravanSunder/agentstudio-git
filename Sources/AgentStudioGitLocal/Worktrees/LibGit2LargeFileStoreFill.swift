@@ -130,6 +130,7 @@ struct LibGit2LargeFileStoreFill: Sendable {
         GitLargeFileFill(
             materializedCount: 0,
             missing: [],
+            residuePaths: [],
             scan: scan
         )
     }
@@ -141,6 +142,7 @@ struct LibGit2LargeFileStoreFill: Sendable {
         worktreeRootDescriptor: Int32
     ) -> GitLargeFileFill {
         var missing = initialMissing
+        var residuePaths: [String] = []
         var materializedCount = 0
         for candidate in candidates {
             switch pointerIdentity(for: candidate, worktreeRootDescriptor: worktreeRootDescriptor) {
@@ -162,18 +164,25 @@ struct LibGit2LargeFileStoreFill: Sendable {
                     storageRootDescriptor: storageRootDescriptor,
                     worktreeRootDescriptor: worktreeRootDescriptor
                 ) {
-                case .success(true):
-                    materializedCount += 1
-                case .success(false):
-                    continue
+                case .success(let materialization):
+                    if materialization.didMaterialize {
+                        materializedCount += 1
+                    }
+                    if let residuePath = materialization.residuePath {
+                        residuePaths.append(residuePath)
+                    }
                 case .failure(let failure):
                     missing.append(GitLargeFileFillMiss(path: candidate.path, reason: failure.reason))
+                    if let residuePath = failure.residuePath {
+                        residuePaths.append(residuePath)
+                    }
                 }
             }
         }
         return fillResult(
             materializedCount: materializedCount,
             missing: missing,
+            residuePaths: residuePaths,
             scan: .complete
         )
     }
@@ -367,11 +376,13 @@ struct LibGit2LargeFileStoreFill: Sendable {
     private func fillResult(
         materializedCount: Int,
         missing: [GitLargeFileFillMiss],
+        residuePaths: [String] = [],
         scan: GitLargeFileScan
     ) -> GitLargeFileFill {
         GitLargeFileFill(
             materializedCount: materializedCount,
             missing: missing.sorted { $0.path < $1.path },
+            residuePaths: Array(Set(residuePaths)).sorted(),
             scan: scan
         )
     }

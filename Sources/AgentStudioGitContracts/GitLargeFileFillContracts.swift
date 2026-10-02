@@ -13,21 +13,25 @@ public struct GitWorktreeCreation: Codable, Equatable, Hashable, Sendable {
 public struct GitLargeFileFill: Codable, Equatable, Hashable, Sendable {
     public let materializedCount: Int
     public let missing: [GitLargeFileFillMiss]
+    public let residuePaths: [String]
     public let scan: GitLargeFileScan
 
     public init(
         materializedCount: Int,
         missing: [GitLargeFileFillMiss],
+        residuePaths: [String],
         scan: GitLargeFileScan
     ) {
         self.materializedCount = materializedCount
         self.missing = missing
+        self.residuePaths = residuePaths
         self.scan = scan
     }
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case materializedCount
         case missing
+        case residuePaths
         case scan
     }
 
@@ -38,34 +42,41 @@ public struct GitLargeFileFill: Codable, Equatable, Hashable, Sendable {
         }
         let materializedCount = try container.decode(Int.self, forKey: .materializedCount)
         let missing = try container.decode([GitLargeFileFillMiss].self, forKey: .missing)
+        let residuePaths = try container.decode([String].self, forKey: .residuePaths)
         let scan = try container.decode(GitLargeFileScan.self, forKey: .scan)
         guard materializedCount >= 0,
             missing.allSatisfy({ !$0.path.isEmpty }),
-            Set(missing.map(\.path)).count == missing.count
+            Set(missing.map(\.path)).count == missing.count,
+            residuePaths.allSatisfy({ !$0.isEmpty }),
+            Set(residuePaths).count == residuePaths.count
         else {
             throw Self.invalidPayload(decoder)
         }
         self.materializedCount = materializedCount
         self.missing = missing
+        self.residuePaths = residuePaths
         self.scan = scan
     }
 
     public func encode(to encoder: Encoder) throws {
         guard materializedCount >= 0,
             missing.allSatisfy({ !$0.path.isEmpty }),
-            Set(missing.map(\.path)).count == missing.count
+            Set(missing.map(\.path)).count == missing.count,
+            residuePaths.allSatisfy({ !$0.isEmpty }),
+            Set(residuePaths).count == residuePaths.count
         else {
             throw EncodingError.invalidValue(
                 self,
                 EncodingError.Context(
                     codingPath: encoder.codingPath,
-                    debugDescription: "large-file fill counts must be nonnegative with nonempty unique paths"
+                    debugDescription: "large-file fill counts and paths must be valid"
                 )
             )
         }
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(materializedCount, forKey: .materializedCount)
         try container.encode(missing, forKey: .missing)
+        try container.encode(residuePaths, forKey: .residuePaths)
         try container.encode(scan, forKey: .scan)
     }
 

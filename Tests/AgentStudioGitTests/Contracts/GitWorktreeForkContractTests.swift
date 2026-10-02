@@ -100,7 +100,7 @@ struct GitWorktreeForkContractTests {
     @Test("changes-only reports and refusals use explicit tagged payloads")
     func changesOnlyContractsUseExplicitTags() throws {
         // Arrange
-        let largeFiles = GitLargeFileFill(materializedCount: 1, missing: [], scan: .complete)
+        let largeFiles = GitLargeFileFill(materializedCount: 1, missing: [], residuePaths: [], scan: .complete)
         let report = GitChangesOnlyMaterializationReport(
             trackedChanges: 3,
             untrackedFiles: 2,
@@ -119,16 +119,16 @@ struct GitWorktreeForkContractTests {
         #expect(try JSONDecoder().decode(GitWorktreeForkError.self, from: encodedError) == error)
         #expect(
             jsonText(encodedResult)
-                == #"{"ignoredExcluded":true,"kind":"changesOnly","largeFiles":{"materializedCount":1,"missing":[],"scan":"complete"},"trackedChanges":3,"untrackedFiles":2}"#
+                == #"{"ignoredExcluded":true,"kind":"changesOnly","largeFiles":{"materializedCount":1,"missing":[],"residuePaths":[],"scan":"complete"},"trackedChanges":3,"untrackedFiles":2}"#
         )
         #expect(
             jsonText(encodedError)
                 == #"{"workingStateUnsupported":{"refusal":{"reason":"customFilter","relativePath":"assets/icon.png"}}}"#
         )
         for invalidPayload in [
-            #"{"kind":"changesOnly","trackedChanges":-1,"untrackedFiles":0,"ignoredExcluded":true,"largeFiles":{"materializedCount":0,"missing":[],"scan":"complete"}}"#,
-            #"{"kind":"changesOnly","trackedChanges":1,"untrackedFiles":0,"ignoredExcluded":false,"largeFiles":{"materializedCount":0,"missing":[],"scan":"complete"}}"#,
-            #"{"kind":"changesOnly","trackedChanges":1,"untrackedFiles":0,"ignoredExcluded":true,"largeFiles":{"materializedCount":0,"missing":[],"scan":"complete"},"clonedRegularFileCount":0}"#,
+            #"{"kind":"changesOnly","trackedChanges":-1,"untrackedFiles":0,"ignoredExcluded":true,"largeFiles":{"materializedCount":0,"missing":[],"residuePaths":[],"scan":"complete"}}"#,
+            #"{"kind":"changesOnly","trackedChanges":1,"untrackedFiles":0,"ignoredExcluded":false,"largeFiles":{"materializedCount":0,"missing":[],"residuePaths":[],"scan":"complete"}}"#,
+            #"{"kind":"changesOnly","trackedChanges":1,"untrackedFiles":0,"ignoredExcluded":true,"largeFiles":{"materializedCount":0,"missing":[],"residuePaths":[],"scan":"complete"},"clonedRegularFileCount":0}"#,
             #"{"kind":"changesOnly","trackedChanges":1,"untrackedFiles":0,"ignoredExcluded":true}"#,
         ] {
             #expect(throws: DecodingError.self) {

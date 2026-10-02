@@ -143,6 +143,138 @@ struct GitWorktreeLargeFileFillIntegrationTests {
         #expect(!destinationNames.contains(where: { $0.hasPrefix(".agentstudio-lfs-fill-") }))
     }
 
+    @Test("a clone EEXIST collision preserves the foreign temp and the pointer")
+    func cloneCollisionPreservesForeignTemporaryAndPointer() async throws {
+        // Arrange
+        let fixture = try Self.makeFixture(prefix: "agentstudio-git-lfs-temp-collision")
+        defer { fixture.repository.remove() }
+        try fixture.writeObject(fixture.payload)
+        let destination = fixture.repository.linkedWorktreePath("lfs-temp-collision")
+        let temporaryName = ".agentstudio-lfs-fill-collision"
+        let foreignContents = Data("foreign temporary file\n".utf8)
+        let setupError = OSAllocatedUnfairLock(initialState: Optional<Int32>.none)
+        let faults = LibGit2LargeFileStoreFaultInjector(
+            temporaryName: temporaryName,
+            cloneError: EEXIST,
+            beforeClone: { parentDescriptor, name in
+                let descriptor = name.withCString {
+                    openat(parentDescriptor, $0, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+                }
+                guard descriptor >= 0 else {
+                    setupError.withLock { $0 = errno }
+                    return
+                }
+                defer { close(descriptor) }
+                let writtenByteCount = foreignContents.withUnsafeBytes { bytes in
+                    write(descriptor, bytes.baseAddress, bytes.count)
+                }
+                if writtenByteCount != foreignContents.count {
+                    setupError.withLock { $0 = writtenByteCount < 0 ? errno : EIO }
+                }
+            }
+        )
+        let store = LibGit2LargeFileStore(faults: faults)
+        let writer = LibGit2WorktreeWriter(largeFileStoreFill: LibGit2LargeFileStoreFill(store: store))
+        let client = LibGit2AgentStudioGitLocalClient(worktreeWriter: writer)
+
+        // Act
+        let creation = try await client.createWorktree(
+            GitCreateWorktreeRequest(
+                repositoryPath: fixture.repository.repositoryPath,
+                destinationPath: destination,
+                mode: .newBranch(name: "lfs-temp-collision", startPoint: .named("HEAD"))
+            )
+        )
+
+        // Assert
+        #expect(setupError.withLock { $0 } == nil)
+        #expect(try Data(contentsOf: destination.appending(path: "asset.bin")) == Data(fixture.pointer.utf8))
+        #expect(
+            creation.largeFiles.missing == [
+                GitLargeFileFillMiss(path: "asset.bin", reason: .writeFailed(errno: EEXIST))
+            ]
+        )
+        let foreignTemporary = destination.appending(path: temporaryName)
+        #expect(FileManager.default.fileExists(atPath: foreignTemporary.path))
+        #expect(try Data(contentsOf: foreignTemporary) == foreignContents)
+        #expect(creation.largeFiles.residuePaths.isEmpty)
+    }
+
+    @Test("clone unsupported errors copy the verified object exclusively")
+    func unsupportedCloneErrorsFallBackToExclusiveCopy() async throws {
+        // Arrange / Act / Assert
+        for (index, cloneError) in [ENOTSUP, EXDEV].enumerated() {
+            let fixture = try Self.makeFixture(prefix: "agentstudio-git-lfs-copy-fallback-\(index)")
+            defer { fixture.repository.remove() }
+            try fixture.writeObject(fixture.payload)
+            let destination = fixture.repository.linkedWorktreePath("lfs-copy-fallback-\(index)")
+            let store = LibGit2LargeFileStore(faults: LibGit2LargeFileStoreFaultInjector(cloneError: cloneError))
+            let writer = LibGit2WorktreeWriter(largeFileStoreFill: LibGit2LargeFileStoreFill(store: store))
+            let client = LibGit2AgentStudioGitLocalClient(worktreeWriter: writer)
+
+            let creation = try await client.createWorktree(
+                GitCreateWorktreeRequest(
+                    repositoryPath: fixture.repository.repositoryPath,
+                    destinationPath: destination,
+                    mode: .newBranch(name: "lfs-copy-fallback-\(index)", startPoint: .named("HEAD"))
+                )
+            )
+
+            #expect(try Data(contentsOf: destination.appending(path: "asset.bin")) == fixture.payload)
+            #expect(creation.largeFiles.materializedCount == 1)
+            #expect(creation.largeFiles.missing.isEmpty)
+            #expect(creation.largeFiles.residuePaths.isEmpty)
+        }
+    }
+
+    @Test("failed cleanup of an owned temporary is reported as residue")
+    func failedOwnedTemporaryCleanupAppearsInResiduePaths() async throws {
+        // Arrange
+        let fixture = try Self.makeFixture(prefix: "agentstudio-git-lfs-temp-residue")
+        defer { fixture.repository.remove() }
+        try fixture.writeObject(fixture.payload)
+        let destination = fixture.repository.linkedWorktreePath("lfs-temp-residue")
+        let temporaryName = ".agentstudio-lfs-fill-owned"
+        let permissionError = OSAllocatedUnfairLock(initialState: Optional<Int32>.none)
+        let faults = LibGit2LargeFileStoreFaultInjector(
+            temporaryName: temporaryName,
+            cloneError: ENOTSUP,
+            afterTemporaryAcquired: { parentDescriptor, _ in
+                if fchmod(parentDescriptor, 0o555) != 0 {
+                    permissionError.withLock { $0 = errno }
+                }
+            }
+        )
+        let store = LibGit2LargeFileStore(faults: faults)
+        let writer = LibGit2WorktreeWriter(largeFileStoreFill: LibGit2LargeFileStoreFill(store: store))
+        let client = LibGit2AgentStudioGitLocalClient(worktreeWriter: writer)
+
+        // Act
+        let creation = try await client.createWorktree(
+            GitCreateWorktreeRequest(
+                repositoryPath: fixture.repository.repositoryPath,
+                destinationPath: destination,
+                mode: .newBranch(name: "lfs-temp-residue", startPoint: .named("HEAD"))
+            )
+        )
+        let restorePermissionsResult = destination.path.withCString { chmod($0, 0o755) }
+
+        // Assert
+        #expect(permissionError.withLock { $0 } == nil)
+        #expect(restorePermissionsResult == 0)
+        #expect(try Data(contentsOf: destination.appending(path: "asset.bin")) == Data(fixture.pointer.utf8))
+        #expect(
+            creation.largeFiles.missing == [
+                GitLargeFileFillMiss(path: "asset.bin", reason: .writeFailed(errno: EACCES))
+            ]
+        )
+        #expect(creation.largeFiles.residuePaths == [temporaryName])
+        let residualTemporary = destination.appending(path: temporaryName)
+        #expect(FileManager.default.fileExists(atPath: residualTemporary.path))
+        #expect(try Data(contentsOf: residualTemporary) == fixture.payload)
+        try FileManager.default.removeItem(at: residualTemporary)
+    }
+
     @Test("create honors relative lfs.storage from the common Git directory")
     func createUsesConfiguredLocalStore() async throws {
         // Arrange
