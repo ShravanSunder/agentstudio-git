@@ -297,6 +297,31 @@ struct GitWorktreeLargeFileFillIntegrationTests {
         #expect(creation.largeFiles.scan == .complete)
     }
 
+    @Test("create treats an empty lfs.storage value as the default local object store")
+    func createUsesDefaultLocalStoreForEmptyConfiguredStorage() async throws {
+        // Arrange
+        let fixture = try Self.makeFixture(
+            prefix: "agentstudio-git-lfs-empty-configured-store",
+            configuredStorage: ""
+        )
+        defer { fixture.repository.remove() }
+        try fixture.writeObject(fixture.payload)
+        let destination = fixture.repository.linkedWorktreePath("lfs-empty-configured-store")
+
+        // Act
+        let creation = try await createWorktree(
+            fixture,
+            destination: destination,
+            branch: "lfs-empty-configured-store"
+        )
+
+        // Assert
+        #expect(try Data(contentsOf: destination.appending(path: "asset.bin")) == fixture.payload)
+        #expect(creation.largeFiles.materializedCount == 1)
+        #expect(creation.largeFiles.missing.isEmpty)
+        #expect(creation.largeFiles.scan == .complete)
+    }
+
     @Test("a newly filled LFS payload reads clean and removes without force")
     func filledLargeFileIsCleanForStatusAndRemoval() async throws {
         // Arrange
@@ -502,7 +527,8 @@ struct GitWorktreeLargeFileFillIntegrationTests {
             objectID: objectID,
             pointerBlobOID: pointerBlobOID,
             objectStorageRoot: repository.repositoryPath.appending(
-                path: configuredStorage.map { ".git/\($0)/objects" } ?? ".git/lfs/objects"
+                path: configuredStorage.flatMap { $0.isEmpty ? nil : ".git/\($0)/objects" }
+                    ?? ".git/lfs/objects"
             )
         )
     }

@@ -36,7 +36,7 @@ struct LibGit2LargeFileStore: Sendable {
 
         let configuredPath = String(cString: storagePathPointer)
         guard !configuredPath.isEmpty else {
-            return .success(commonDirectory.standardizedFileURL)
+            return .success(commonDirectory.appending(path: "lfs/objects").standardizedFileURL)
         }
         let configuredRoot =
             configuredPath.hasPrefix("/")
