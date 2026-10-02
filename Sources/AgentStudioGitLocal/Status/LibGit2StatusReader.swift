@@ -7,6 +7,7 @@ struct LibGit2StatusReader: Sendable {
     private let branchReader: LibGit2BranchReader
     private let indexPathResolver: GitIndexPathResolver
     private let observationIdentityReader: LibGit2StatusObservationIdentityReader
+    private let largeFilePointerCleanliness = LibGit2LargeFilePointerCleanliness()
 
     init(
         runtime: LibGit2Runtime = .shared,
@@ -151,7 +152,7 @@ struct LibGit2StatusReader: Sendable {
                 guard let entryPointer = git_status_byindex(statusList, index) else {
                     return nil
                 }
-                return try statusEntry(entryPointer.pointee)
+                return try statusEntry(entryPointer.pointee, repository: repository)
             }
             .sorted { $0.path < $1.path }
         }
@@ -182,13 +183,21 @@ struct LibGit2StatusReader: Sendable {
         }
     }
 
-    private func statusEntry(_ entry: git_status_entry) throws -> GitStatusEntry {
+    private func statusEntry(_ entry: git_status_entry, repository: OpaquePointer) throws -> GitStatusEntry? {
         let flags = entry.status
         let indexState = indexState(flags)
-        let worktreeState = worktreeState(flags)
         let ignored = statusContains(flags, GIT_STATUS_IGNORED)
         let untracked = statusContains(flags, GIT_STATUS_WT_NEW)
         let path = try entryPath(entry)
+        let worktreeState = try worktreeState(
+            flags,
+            indexToWorkdir: entry.index_to_workdir,
+            repository: repository,
+            path: path.currentPath
+        )
+        guard indexState != nil || worktreeState != nil || ignored || untracked else {
+            return nil
+        }
         return GitStatusEntry(
             path: path.currentPath,
             previousPath: path.previousPath,
@@ -209,13 +218,36 @@ struct LibGit2StatusReader: Sendable {
         return nil
     }
 
-    private func worktreeState(_ flags: git_status_t) -> GitStatusState? {
-        if statusContains(flags, GIT_STATUS_CONFLICTED) { return .unmerged }
-        if statusContains(flags, GIT_STATUS_WT_RENAMED) { return .renamed }
-        if statusContains(flags, GIT_STATUS_WT_MODIFIED) { return .modified }
-        if statusContains(flags, GIT_STATUS_WT_DELETED) { return .deleted }
-        if statusContains(flags, GIT_STATUS_WT_TYPECHANGE) { return .typeChanged }
-        if statusContains(flags, GIT_STATUS_WT_UNREADABLE) { return .typeChanged }
+    private func worktreeState(
+        _ flags: git_status_t,
+        indexToWorkdir: UnsafePointer<git_diff_delta>?,
+        repository: OpaquePointer,
+        path: String
+    ) throws -> GitStatusState? {
+        let state: GitStatusState?
+        if statusContains(flags, GIT_STATUS_CONFLICTED) {
+            state = .unmerged
+        } else if statusContains(flags, GIT_STATUS_WT_RENAMED) {
+            state = .renamed
+        } else if statusContains(flags, GIT_STATUS_WT_MODIFIED) {
+            state = .modified
+        } else if statusContains(flags, GIT_STATUS_WT_DELETED) {
+            state = .deleted
+        } else if statusContains(flags, GIT_STATUS_WT_TYPECHANGE) || statusContains(flags, GIT_STATUS_WT_UNREADABLE) {
+            state = .typeChanged
+        } else {
+            state = nil
+        }
+
+        guard state == .modified, let indexToWorkdir,
+            try largeFilePointerCleanliness.isCleanSmudgedFile(
+                delta: indexToWorkdir.pointee,
+                repository: repository,
+                worktreePath: path
+            )
+        else {
+            return state
+        }
         return nil
     }
 

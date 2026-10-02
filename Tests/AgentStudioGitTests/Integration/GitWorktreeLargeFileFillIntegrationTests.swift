@@ -39,6 +39,41 @@ struct GitWorktreeLargeFileFillIntegrationTests {
         #expect(status.entries.isEmpty)
     }
 
+    @Test("status treats LFS pointers and matching content as clean but changed payload as modified")
+    func statusSuppressesCleanLargeFilePointerAndMatchingPayload() async throws {
+        // Arrange
+        let fixture = try Self.makeFixture(prefix: "agentstudio-git-lfs-status")
+        defer { fixture.repository.remove() }
+        let fileURL = fixture.repository.repositoryPath.appending(path: "asset.bin")
+        let changedPayload = Data(repeating: 0x78, count: fixture.payload.count)
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        // Act
+        try fixture.payload.write(to: fileURL)
+        let matchingContentStatus = try await client.statusFacts(
+            for: fixture.repository.repositoryPath,
+            options: GitStatusOptions()
+        ).facts
+        try changedPayload.write(to: fileURL)
+        let changedContentStatus = try await client.statusFacts(
+            for: fixture.repository.repositoryPath,
+            options: GitStatusOptions()
+        ).facts
+        try Data(fixture.pointer.utf8).write(to: fileURL)
+        let pointerStatus = try await client.statusFacts(
+            for: fixture.repository.repositoryPath,
+            options: GitStatusOptions()
+        ).facts
+
+        // Assert
+        #expect(matchingContentStatus.summary.changedFileCount == 0)
+        #expect(matchingContentStatus.entries.isEmpty)
+        #expect(changedContentStatus.summary.changedFileCount == 1)
+        #expect(changedContentStatus.entries.first?.worktreeState == .modified)
+        #expect(pointerStatus.summary.changedFileCount == 0)
+        #expect(pointerStatus.entries.isEmpty)
+    }
+
     @Test("create preserves the executable index mode when filling an LFS pointer")
     func createFillsExecutableLargeFileWithIndexMode() async throws {
         // Arrange
