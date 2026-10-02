@@ -12,6 +12,7 @@ public struct SystemGitRemoteClient: AgentStudioGitRemoteClient, Sendable {
         public let operationTimeoutSeconds: Double
         public let capturedOutputLimitBytes: Int64
         public let additionalEnvironment: [String: String]
+        package let inheritedEnvironment: [String: String]?
 
         public init(
             executableURL: URL? = nil,
@@ -22,6 +23,28 @@ public struct SystemGitRemoteClient: AgentStudioGitRemoteClient, Sendable {
             capturedOutputLimitBytes: Int64 = 1_048_576,
             additionalEnvironment: [String: String] = [:]
         ) {
+            self.init(
+                executableURL: executableURL,
+                inheritEnvironment: inheritEnvironment,
+                promptPolicy: promptPolicy,
+                allowedProtocols: allowedProtocols,
+                operationTimeoutSeconds: operationTimeoutSeconds,
+                capturedOutputLimitBytes: capturedOutputLimitBytes,
+                additionalEnvironment: additionalEnvironment,
+                inheritedEnvironment: nil
+            )
+        }
+
+        package init(
+            executableURL: URL? = nil,
+            inheritEnvironment: Bool = true,
+            promptPolicy: GitRemotePromptPolicy = .noninteractive,
+            allowedProtocols: [GitRemoteProtocol] = [.https, .ssh],
+            operationTimeoutSeconds: Double = 120,
+            capturedOutputLimitBytes: Int64 = 1_048_576,
+            additionalEnvironment: [String: String] = [:],
+            inheritedEnvironment: [String: String]?
+        ) {
             self.executableURL = executableURL
             self.inheritEnvironment = inheritEnvironment
             self.promptPolicy = promptPolicy
@@ -29,6 +52,7 @@ public struct SystemGitRemoteClient: AgentStudioGitRemoteClient, Sendable {
             self.operationTimeoutSeconds = max(operationTimeoutSeconds, 0.001)
             self.capturedOutputLimitBytes = max(capturedOutputLimitBytes, 1)
             self.additionalEnvironment = additionalEnvironment
+            self.inheritedEnvironment = inheritedEnvironment
         }
 
         func protocolConfigArguments() -> [String] {
@@ -46,7 +70,10 @@ public struct SystemGitRemoteClient: AgentStudioGitRemoteClient, Sendable {
         }
 
         func processEnvironment() -> [String: String] {
-            var environment = inheritEnvironment ? ProcessInfo.processInfo.environment : [:]
+            var environment =
+                inheritEnvironment
+                ? (inheritedEnvironment ?? ProcessInfo.processInfo.environment)
+                : [:]
             if inheritEnvironment {
                 Self.removeUnsafeInheritedGitEnvironmentOverrides(from: &environment)
             }
