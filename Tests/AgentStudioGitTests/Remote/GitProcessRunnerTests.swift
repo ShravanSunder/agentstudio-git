@@ -14,6 +14,19 @@ struct GitProcessRunnerTests {
         #expect(invocation.displayName == "/usr/bin/git")
     }
 
+    @Test("runner reads the process environment when no inherited environment is injected")
+    func runnerReadsProcessEnvironmentWhenNoInheritedEnvironmentIsInjected() async throws {
+        let processHome = try #require(ProcessInfo.processInfo.environment["HOME"])
+        let fakeGit = try FakeGitExecutable()
+        let configuration = fakeGit.configuration(inheritEnvironment: true)
+        let runner = GitProcessRunner(configuration: configuration)
+
+        _ = try await runner.run(arguments: ["status"])
+
+        let environment = try fakeGit.recordedEnvironment()
+        #expect(environment["HOME"] == processHome)
+    }
+
     @Test("runner applies scrubbed prompt environment and captures output")
     func runnerAppliesScrubbedPromptEnvironmentAndCapturesOutput() async throws {
         let fakeGit = try FakeGitExecutable()
@@ -50,10 +63,14 @@ struct GitProcessRunnerTests {
 
     @Test("runner preserves ambient SSH command while forcing batch mode")
     func runnerPreservesAmbientSSHCommandWhileForcingBatchMode() async throws {
-        setenv("GIT_SSH_COMMAND", "ssh -F /tmp/ambient-agentstudio-ssh-config -oBatchMode=no", 1)
-        defer { unsetenv("GIT_SSH_COMMAND") }
+        let inheritedEnvironment = ProcessInfo.processInfo.environment.merging([
+            "GIT_SSH_COMMAND": "ssh -F /tmp/ambient-agentstudio-ssh-config -oBatchMode=no"
+        ]) { _, override in override }
         let fakeGit = try FakeGitExecutable()
-        let configuration = fakeGit.configuration(inheritEnvironment: true)
+        let configuration = fakeGit.configuration(
+            inheritEnvironment: true,
+            inheritedEnvironment: inheritedEnvironment
+        )
         let runner = GitProcessRunner(configuration: configuration)
 
         _ = try await runner.run(arguments: ["status"])
@@ -100,16 +117,14 @@ struct GitProcessRunnerTests {
             "GIT_SSL_NO_VERIFY": "true",
             "GIT_WORK_TREE": "/tmp/ambient-agentstudio-work-tree",
         ]
-        for (key, value) in ambientOverrides {
-            setenv(key, value, 1)
-        }
-        defer {
-            for key in ambientOverrides.keys {
-                unsetenv(key)
-            }
+        let inheritedEnvironment = ProcessInfo.processInfo.environment.merging(ambientOverrides) { _, override in
+            override
         }
         let fakeGit = try FakeGitExecutable()
-        let configuration = fakeGit.configuration(inheritEnvironment: true)
+        let configuration = fakeGit.configuration(
+            inheritEnvironment: true,
+            inheritedEnvironment: inheritedEnvironment
+        )
         let runner = GitProcessRunner(configuration: configuration)
 
         _ = try await runner.run(arguments: ["status"])
@@ -130,16 +145,14 @@ struct GitProcessRunnerTests {
             "GIT_SSL_CERT": "/tmp/agentstudio-client-cert.pem",
             "GIT_SSL_KEY": "/tmp/agentstudio-client-key.pem",
         ]
-        for (key, value) in ambientAuthEnvironment {
-            setenv(key, value, 1)
-        }
-        defer {
-            for key in ambientAuthEnvironment.keys {
-                unsetenv(key)
-            }
+        let inheritedEnvironment = ProcessInfo.processInfo.environment.merging(ambientAuthEnvironment) { _, override in
+            override
         }
         let fakeGit = try FakeGitExecutable()
-        let configuration = fakeGit.configuration(inheritEnvironment: true)
+        let configuration = fakeGit.configuration(
+            inheritEnvironment: true,
+            inheritedEnvironment: inheritedEnvironment
+        )
         let runner = GitProcessRunner(configuration: configuration)
 
         _ = try await runner.run(arguments: ["status"])
@@ -410,7 +423,8 @@ struct FakeGitExecutable {
         allowedProtocols: [GitRemoteProtocol] = [.https, .ssh],
         operationTimeoutSeconds: Double = 10,
         capturedOutputLimitBytes: Int64 = 1_048_576,
-        additionalEnvironment: [String: String] = [:]
+        additionalEnvironment: [String: String] = [:],
+        inheritedEnvironment: [String: String]? = nil
     ) -> SystemGitRemoteClient.Configuration {
         var environment = additionalEnvironment
         environment["AGENTSTUDIO_FAKE_GIT_ARGUMENTS"] = argumentsURL.path
@@ -422,7 +436,8 @@ struct FakeGitExecutable {
             allowedProtocols: allowedProtocols,
             operationTimeoutSeconds: operationTimeoutSeconds,
             capturedOutputLimitBytes: capturedOutputLimitBytes,
-            additionalEnvironment: environment
+            additionalEnvironment: environment,
+            inheritedEnvironment: inheritedEnvironment
         )
     }
 
