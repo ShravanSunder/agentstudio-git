@@ -4,14 +4,10 @@ import Testing
 
 @Suite("Git large-file fill contracts")
 struct GitLargeFileFillContractTests {
-    @Test("creation results round-trip every typed miss and index-update cause")
+    @Test("creation results round-trip typed misses and scan outcomes")
     func creationResultsRoundTripTypedFillOutcomes() throws {
         // Arrange
         let worktreePath = URL(fileURLWithPath: "/tmp/large-file-worktree", isDirectory: true)
-        let lockFact = GitLockFact(
-            path: URL(fileURLWithPath: "/tmp/large-file-worktree/.git/index.lock"),
-            resource: .index(worktreePath: worktreePath)
-        )
         let fillResults = [
             GitLargeFileFill(
                 materializedCount: 2,
@@ -21,21 +17,17 @@ struct GitLargeFileFillContractTests {
                     GitLargeFileFillMiss(path: "unreadable.bin", reason: .readFailed(errno: 13)),
                     GitLargeFileFillMiss(path: "unwritable.bin", reason: .writeFailed(errno: 28)),
                 ],
-                indexUpdate: .updated
+                scan: .complete
             ),
-            GitLargeFileFill(materializedCount: 1, missing: [], indexUpdate: .skipped(.lockHeld(lockFact))),
             GitLargeFileFill(
                 materializedCount: 0,
                 missing: [],
-                indexUpdate: .skipped(.lockUnidentified(.index(worktreePath: worktreePath)))
+                scan: .incomplete(.readFailed(errno: 13))
             ),
-            GitLargeFileFill(materializedCount: 0, missing: [], indexUpdate: .skipped(.permissionDenied(path: nil))),
             GitLargeFileFill(
                 materializedCount: 0,
                 missing: [],
-                indexUpdate: .skipped(
-                    .gitFailure(.indexWriteFailed)
-                )
+                scan: .incomplete(.gitFailure(kind: .headUnavailable))
             ),
         ]
         let encoder = JSONEncoder()
@@ -55,18 +47,20 @@ struct GitLargeFileFillContractTests {
         #expect(decodedResults == fillResults)
         #expect(decodedCreation == result)
         #expect(String(data: encodedResults[0], encoding: .utf8)?.contains("\"kind\":\"objectAbsent\"") == true)
-        #expect(String(data: encodedResults[1], encoding: .utf8)?.contains("\"lockHeld\"") == true)
+        #expect(String(data: encodedResults[0], encoding: .utf8)?.contains("\"scan\":\"complete\"") == true)
+        #expect(String(data: encodedResults[1], encoding: .utf8)?.contains("\"incomplete\"") == true)
         #expect(String(data: encodedCreation, encoding: .utf8)?.contains("\"largeFiles\"") == true)
     }
 
-    @Test("fill result decoding rejects invalid counts, duplicate paths, and incomplete index outcomes")
+    @Test("fill result decoding rejects invalid counts, paths, and scan outcomes")
     func fillResultsRejectInvalidPayloads() throws {
         // Arrange
         let invalidPayloads = [
-            #"{"materializedCount":-1,"missing":[],"indexUpdate":{"kind":"updated"}}"#,
-            #"{"materializedCount":0,"missing":[{"path":"asset.bin","reason":{"kind":"objectAbsent"}},{"path":"asset.bin","reason":{"kind":"objectMismatch"}}],"indexUpdate":{"kind":"updated"}}"#,
-            #"{"materializedCount":0,"missing":[],"indexUpdate":{"kind":"skipped"}}"#,
-            #"{"materializedCount":0,"missing":[{"path":"asset.bin","reason":{"kind":"readFailed","errno":0}}],"indexUpdate":{"kind":"updated"}}"#,
+            #"{"materializedCount":-1,"missing":[],"scan":"complete"}"#,
+            #"{"materializedCount":0,"missing":[{"path":"asset.bin","reason":{"kind":"objectAbsent"}},{"path":"asset.bin","reason":{"kind":"objectMismatch"}}],"scan":"complete"}"#,
+            #"{"materializedCount":0,"missing":[{"path":"asset.bin","reason":{"kind":"readFailed","errno":0}}],"scan":"complete"}"#,
+            #"{"materializedCount":0,"missing":[],"scan":{"incomplete":{"readFailed":{"errno":0}}}}"#,
+            #"{"materializedCount":0,"missing":[],"scan":"unknown"}"#,
         ]
 
         // Act / Assert

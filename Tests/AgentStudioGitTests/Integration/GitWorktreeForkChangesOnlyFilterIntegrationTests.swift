@@ -72,7 +72,7 @@ struct GitWorktreeForkChangesOnlyFilterIntegrationTests {
         #expect(try Data(contentsOf: fixture.source.appending(path: "asset.bin")) == Data(pointer.utf8))
         #expect(report.largeFiles.materializedCount == 1)
         #expect(report.largeFiles.missing.isEmpty)
-        #expect(report.largeFiles.indexUpdate == .updated)
+        #expect(report.largeFiles.scan == .complete)
         #expect(try fixture.indexStat(at: destination)["asset.bin"]?.size == Int64(payload.count))
         let status = try await LibGit2AgentStudioGitLocalClient()
             .statusFacts(for: destination, options: GitStatusOptions())
@@ -276,6 +276,7 @@ struct GitWorktreeForkChangesOnlyFilterIntegrationTests {
                 GitLargeFileFillMiss(path: "asset.bin", reason: .objectAbsent)
             ]
         )
+        #expect(report.largeFiles.scan == .complete)
     }
 
     @Test("a custom filter is refused before branch, administration, or destination mutation")

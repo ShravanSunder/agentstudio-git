@@ -25,13 +25,13 @@ struct GitWorktreeLargeFileFillIntegrationTests {
         #expect(try Data(contentsOf: destination.appending(path: "asset.bin")) == fixture.payload)
         #expect(creation.largeFiles.materializedCount == 1)
         #expect(creation.largeFiles.missing.isEmpty)
-        #expect(creation.largeFiles.indexUpdate == .updated)
+        #expect(creation.largeFiles.scan == .complete)
         let indexEntry = try indexEntry(for: "asset.bin", worktree: destination)
         #expect(indexEntry.contains("100644"))
         #expect(indexEntry.contains(fixture.pointerBlobOID))
         #expect(try fileMode(destination.appending(path: "asset.bin")) & 0o111 == 0)
         let indexDebug = try GitProcess(repositoryPath: destination).run("ls-files", "--debug", "--", "asset.bin")
-        #expect(indexDebug.contains("size: \(fixture.payload.count)"))
+        #expect(indexDebug.contains("size: \(fixture.pointer.utf8.count)"))
         let status = try await LibGit2AgentStudioGitLocalClient()
             .statusFacts(for: destination, options: GitStatusOptions())
             .facts
@@ -89,6 +89,7 @@ struct GitWorktreeLargeFileFillIntegrationTests {
         // Assert
         #expect(try Data(contentsOf: destination.appending(path: "asset.bin")) == fixture.payload)
         #expect(creation.largeFiles.materializedCount == 1)
+        #expect(creation.largeFiles.scan == .complete)
         let indexEntry = try indexEntry(for: "asset.bin", worktree: destination)
         #expect(indexEntry.contains("100755"))
         #expect(indexEntry.contains(fixture.pointerBlobOID))
@@ -113,6 +114,7 @@ struct GitWorktreeLargeFileFillIntegrationTests {
             ]
         )
         #expect(creation.largeFiles.materializedCount == 0)
+        #expect(creation.largeFiles.scan == .complete)
     }
 
     @Test("a mismatched object leaves the pointer and removes its temporary file")
@@ -134,6 +136,7 @@ struct GitWorktreeLargeFileFillIntegrationTests {
                 GitLargeFileFillMiss(path: "asset.bin", reason: .objectMismatch)
             ]
         )
+        #expect(creation.largeFiles.scan == .complete)
         let destinationNames = try FileManager.default.contentsOfDirectory(
             atPath: destination.path
         )
@@ -159,27 +162,16 @@ struct GitWorktreeLargeFileFillIntegrationTests {
         #expect(try Data(contentsOf: destination.appending(path: "asset.bin")) == fixture.payload)
         #expect(creation.largeFiles.materializedCount == 1)
         #expect(creation.largeFiles.missing.isEmpty)
+        #expect(creation.largeFiles.scan == .complete)
     }
 
-    @Test("a foreign index lock skips the stat update without rolling back the filled worktree")
-    func indexLockSkipsUpdateAndKeepsMaterializedFile() async throws {
+    @Test("an early scan failure is reported without failing worktree creation")
+    func earlyScanFailureKeepsWorktreeAndReportsIncompleteScan() async throws {
         // Arrange
-        let fixture = try Self.makeFixture(prefix: "agentstudio-git-lfs-index-lock")
+        let fixture = try Self.makeFixture(prefix: "agentstudio-git-lfs-scan-failure")
         defer { fixture.repository.remove() }
-        try fixture.writeObject(fixture.payload)
-        let destination = fixture.repository.linkedWorktreePath("lfs-index-lock")
-        let lockCreationErrorNumber = OSAllocatedUnfairLock(initialState: Int32(-1))
-        let injectedLockFact = OSAllocatedUnfairLock(initialState: Optional<GitLockFact>.none)
-        let faults = LibGit2LargeFileStoreFillFaultInjector(beforeIndexWrite: { lockFact in
-            let descriptor = lockFact.path.path.withCString {
-                open($0, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
-            }
-            lockCreationErrorNumber.withLock { $0 = descriptor >= 0 ? 0 : errno }
-            if descriptor >= 0 {
-                close(descriptor)
-                injectedLockFact.withLock { $0 = lockFact }
-            }
-        })
+        let destination = fixture.repository.linkedWorktreePath("lfs-scan-failure")
+        let faults = LibGit2LargeFileStoreFillFaultInjector(scanFailure: .readFailed(errno: EIO))
         let storeFill = LibGit2LargeFileStoreFill(faults: faults)
         let writer = LibGit2WorktreeWriter(largeFileStoreFill: storeFill)
         let client = LibGit2AgentStudioGitLocalClient(worktreeWriter: writer)
@@ -194,13 +186,55 @@ struct GitWorktreeLargeFileFillIntegrationTests {
         )
 
         // Assert
-        let expectedLockFact = try #require(injectedLockFact.withLock { $0 })
-        #expect(lockCreationErrorNumber.withLock { $0 } == 0)
-        #expect(creation.largeFiles.materializedCount == 1)
-        #expect(try Data(contentsOf: destination.appending(path: "asset.bin")) == fixture.payload)
-        #expect(creation.largeFiles.indexUpdate == .skipped(.lockHeld(expectedLockFact)))
-        #expect(FileManager.default.fileExists(atPath: expectedLockFact.path.path))
+        #expect(creation.largeFiles.materializedCount == 0)
+        #expect(creation.largeFiles.missing.isEmpty)
+        #expect(creation.largeFiles.scan == .incomplete(.readFailed(errno: EIO)))
+        #expect(try Data(contentsOf: destination.appending(path: "asset.bin")) == Data(fixture.pointer.utf8))
         #expect(try GitProcess(repositoryPath: destination).succeeds("rev-parse", "--verify", "HEAD"))
+    }
+
+    @Test("a staged edit made during fill survives without a fill index write")
+    func stagedEditDuringFillSurvivesWithoutFillIndexWrite() async throws {
+        // Arrange
+        let fixture = try Self.makeFixture(prefix: "agentstudio-git-lfs-stage-during-fill")
+        defer { fixture.repository.remove() }
+        try fixture.writeObject(fixture.payload)
+        let destination = fixture.repository.linkedWorktreePath("lfs-stage-during-fill")
+        let stagedFile = destination.appending(path: "staged.txt")
+        let stagingError = OSAllocatedUnfairLock(initialState: Optional<String>.none)
+        let stagedBlobOID = OSAllocatedUnfairLock(initialState: Optional<String>.none)
+        let faults = LibGit2LargeFileStoreFillFaultInjector(beforeReturning: {
+            do {
+                try Data("staged during LFS fill\n".utf8).write(to: stagedFile)
+                let git = GitProcess(repositoryPath: destination)
+                try git.run("add", "staged.txt")
+                let blobOID = try git.run("rev-parse", ":staged.txt")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                stagedBlobOID.withLock { $0 = blobOID }
+            } catch {
+                stagingError.withLock { $0 = String(describing: error) }
+            }
+        })
+        let writer = LibGit2WorktreeWriter(largeFileStoreFill: LibGit2LargeFileStoreFill(faults: faults))
+        let client = LibGit2AgentStudioGitLocalClient(worktreeWriter: writer)
+
+        // Act
+        let creation = try await client.createWorktree(
+            GitCreateWorktreeRequest(
+                repositoryPath: fixture.repository.repositoryPath,
+                destinationPath: destination,
+                mode: .newBranch(name: "lfs-stage-during-fill", startPoint: .named("HEAD"))
+            )
+        )
+
+        // Assert
+        let expectedBlobOID = try #require(stagedBlobOID.withLock { $0 })
+        #expect(stagingError.withLock { $0 } == nil)
+        #expect(creation.largeFiles.materializedCount == 1)
+        #expect(creation.largeFiles.scan == .complete)
+        #expect(try GitProcess(repositoryPath: destination).run("ls-files", "--stage", "--", "staged.txt")
+            .contains(expectedBlobOID))
+        #expect(try Data(contentsOf: stagedFile) == Data("staged during LFS fill\n".utf8))
     }
 
     private func createWorktree(

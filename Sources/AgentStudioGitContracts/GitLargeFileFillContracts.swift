@@ -13,22 +13,22 @@ public struct GitWorktreeCreation: Codable, Equatable, Hashable, Sendable {
 public struct GitLargeFileFill: Codable, Equatable, Hashable, Sendable {
     public let materializedCount: Int
     public let missing: [GitLargeFileFillMiss]
-    public let indexUpdate: GitLargeFileIndexUpdate
+    public let scan: GitLargeFileScan
 
     public init(
         materializedCount: Int,
         missing: [GitLargeFileFillMiss],
-        indexUpdate: GitLargeFileIndexUpdate
+        scan: GitLargeFileScan
     ) {
         self.materializedCount = materializedCount
         self.missing = missing
-        self.indexUpdate = indexUpdate
+        self.scan = scan
     }
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case materializedCount
         case missing
-        case indexUpdate
+        case scan
     }
 
     public init(from decoder: Decoder) throws {
@@ -38,6 +38,7 @@ public struct GitLargeFileFill: Codable, Equatable, Hashable, Sendable {
         }
         let materializedCount = try container.decode(Int.self, forKey: .materializedCount)
         let missing = try container.decode([GitLargeFileFillMiss].self, forKey: .missing)
+        let scan = try container.decode(GitLargeFileScan.self, forKey: .scan)
         guard materializedCount >= 0,
             missing.allSatisfy({ !$0.path.isEmpty }),
             Set(missing.map(\.path)).count == missing.count
@@ -46,7 +47,7 @@ public struct GitLargeFileFill: Codable, Equatable, Hashable, Sendable {
         }
         self.materializedCount = materializedCount
         self.missing = missing
-        self.indexUpdate = try container.decode(GitLargeFileIndexUpdate.self, forKey: .indexUpdate)
+        self.scan = scan
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -65,7 +66,7 @@ public struct GitLargeFileFill: Codable, Equatable, Hashable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(materializedCount, forKey: .materializedCount)
         try container.encode(missing, forKey: .missing)
-        try container.encode(indexUpdate, forKey: .indexUpdate)
+        try container.encode(scan, forKey: .scan)
     }
 
     private static func invalidPayload(_ decoder: Decoder) -> DecodingError {
@@ -76,6 +77,139 @@ public struct GitLargeFileFill: Codable, Equatable, Hashable, Sendable {
             )
         )
     }
+}
+
+/// Whether the fill identified every eligible HEAD LFS path.
+public enum GitLargeFileScan: Equatable, Hashable, Sendable {
+    case complete
+    case incomplete(GitLargeFileScanFailure)
+}
+
+extension GitLargeFileScan: Codable {
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case incomplete
+    }
+
+    public init(from decoder: Decoder) throws {
+        if let container = try? decoder.singleValueContainer(),
+            let value = try? container.decode(String.self)
+        {
+            guard value == "complete" else {
+                throw Self.invalidPayload(decoder)
+            }
+            self = .complete
+            return
+        }
+
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        guard Set(container.allKeys) == [.incomplete] else {
+            throw Self.invalidPayload(decoder)
+        }
+        self = .incomplete(try container.decode(GitLargeFileScanFailure.self, forKey: .incomplete))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        switch self {
+        case .complete:
+            var container = encoder.singleValueContainer()
+            try container.encode("complete")
+        case .incomplete(let failure):
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(failure, forKey: .incomplete)
+        }
+    }
+
+    private static func invalidPayload(_ decoder: Decoder) -> DecodingError {
+        .dataCorrupted(
+            DecodingError.Context(
+                codingPath: decoder.codingPath,
+                debugDescription: "large-file scan status is invalid"
+            )
+        )
+    }
+}
+
+public enum GitLargeFileScanFailure: Equatable, Hashable, Sendable {
+    case readFailed(errno: Int32)
+    case gitFailure(kind: GitLargeFileScanFailureKind)
+}
+
+extension GitLargeFileScanFailure: Codable {
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case readFailed
+        case gitFailure
+    }
+
+    private enum PayloadKeys: String, CodingKey {
+        case errno
+        case kind
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let decodedCases = CodingKeys.allCases.filter { container.contains($0) }
+        guard decodedCases.count == 1 else {
+            throw Self.invalidPayload(decoder)
+        }
+        if container.contains(.readFailed) {
+            let payload = try container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .readFailed)
+            guard Set(payload.allKeys) == [.errno] else {
+                throw Self.invalidPayload(decoder)
+            }
+            let errorNumber = try payload.decode(Int32.self, forKey: .errno)
+            guard errorNumber > 0 else {
+                throw Self.invalidPayload(decoder)
+            }
+            self = .readFailed(errno: errorNumber)
+        } else {
+            let payload = try container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .gitFailure)
+            guard Set(payload.allKeys) == [.kind] else {
+                throw Self.invalidPayload(decoder)
+            }
+            self = .gitFailure(kind: try payload.decode(GitLargeFileScanFailureKind.self, forKey: .kind))
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .readFailed(let errorNumber):
+            guard errorNumber > 0 else {
+                throw Self.invalidValue(self, encoder: encoder)
+            }
+            var payload = container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .readFailed)
+            try payload.encode(errorNumber, forKey: .errno)
+        case .gitFailure(let kind):
+            var payload = container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .gitFailure)
+            try payload.encode(kind, forKey: .kind)
+        }
+    }
+
+    private static func invalidValue(_ value: Self, encoder: Encoder) -> EncodingError {
+        .invalidValue(
+            value,
+            EncodingError.Context(
+                codingPath: encoder.codingPath,
+                debugDescription: "large-file scan errno must be positive"
+            )
+        )
+    }
+
+    private static func invalidPayload(_ decoder: Decoder) -> DecodingError {
+        .dataCorrupted(
+            DecodingError.Context(
+                codingPath: decoder.codingPath,
+                debugDescription: "large-file scan failure is invalid"
+            )
+        )
+    }
+}
+
+public enum GitLargeFileScanFailureKind: String, Codable, CaseIterable, Equatable, Hashable, Sendable {
+    case repositoryUnavailable
+    case headUnavailable
+    case treeReadFailed
+    case attributeReadFailed
 }
 
 public struct GitLargeFileFillMiss: Codable, Equatable, Hashable, Sendable {
@@ -179,154 +313,6 @@ extension GitLargeFileFillMissReason: Codable {
             DecodingError.Context(
                 codingPath: decoder.codingPath,
                 debugDescription: "large-file fill miss reason is invalid"
-            )
-        )
-    }
-}
-
-public enum GitLargeFileIndexUpdate: Equatable, Hashable, Sendable {
-    case updated
-    case skipped(GitLargeFileIndexSkip)
-}
-
-public enum GitLargeFileIndexFailureKind: String, Codable, CaseIterable, Equatable, Hashable, Sendable {
-    case repositoryIndexUnavailable
-    case indexReadFailed
-    case indexPathUnavailable
-    case entryStatFailed
-    case indexEntryUnavailable
-    case indexEntryUpdateFailed
-    case indexWriteFailed
-}
-
-extension GitLargeFileIndexUpdate: Codable {
-    private enum CodingKeys: String, CodingKey, CaseIterable {
-        case kind
-        case cause
-    }
-
-    private enum Kind: String, Codable {
-        case updated
-        case skipped
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        switch try container.decode(Kind.self, forKey: .kind) {
-        case .updated:
-            guard Set(container.allKeys) == [.kind] else {
-                throw Self.invalidPayload(decoder)
-            }
-            self = .updated
-        case .skipped:
-            guard Set(container.allKeys) == [.kind, .cause] else {
-                throw Self.invalidPayload(decoder)
-            }
-            self = .skipped(try container.decode(GitLargeFileIndexSkip.self, forKey: .cause))
-        }
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        switch self {
-        case .updated:
-            try container.encode(Kind.updated, forKey: .kind)
-        case .skipped(let cause):
-            try container.encode(Kind.skipped, forKey: .kind)
-            try container.encode(cause, forKey: .cause)
-        }
-    }
-
-    private static func invalidPayload(_ decoder: Decoder) -> DecodingError {
-        .dataCorrupted(
-            DecodingError.Context(
-                codingPath: decoder.codingPath,
-                debugDescription: "large-file index update payload is invalid"
-            )
-        )
-    }
-}
-
-public enum GitLargeFileIndexSkip: Equatable, Hashable, Sendable {
-    case lockHeld(GitLockFact)
-    case lockUnidentified(GitLockResource)
-    case permissionDenied(path: URL?)
-    case gitFailure(GitLargeFileIndexFailureKind)
-}
-
-extension GitLargeFileIndexSkip: Codable {
-    private enum CodingKeys: String, CodingKey, CaseIterable {
-        case lockHeld
-        case lockUnidentified
-        case permissionDenied
-        case gitFailure
-    }
-
-    private enum PayloadKeys: String, CodingKey {
-        case fact
-        case resource
-        case path
-        case kind
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        let decodedCases = CodingKeys.allCases.filter { container.contains($0) }
-        guard decodedCases.count == 1 else {
-            throw Self.invalidPayload(decoder)
-        }
-        if container.contains(.lockHeld) {
-            let payload = try container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .lockHeld)
-            guard Set(payload.allKeys) == [.fact] else {
-                throw Self.invalidPayload(decoder)
-            }
-            self = try .lockHeld(payload.decode(GitLockFact.self, forKey: .fact))
-        } else if container.contains(.lockUnidentified) {
-            let payload = try container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .lockUnidentified)
-            guard Set(payload.allKeys) == [.resource] else {
-                throw Self.invalidPayload(decoder)
-            }
-            self = try .lockUnidentified(payload.decode(GitLockResource.self, forKey: .resource))
-        } else if container.contains(.permissionDenied) {
-            let payload = try container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .permissionDenied)
-            guard Set(payload.allKeys).isSubset(of: [.path]) else {
-                throw Self.invalidPayload(decoder)
-            }
-            self = try .permissionDenied(path: payload.decodeIfPresent(URL.self, forKey: .path))
-        } else if container.contains(.gitFailure) {
-            let payload = try container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .gitFailure)
-            guard Set(payload.allKeys) == [.kind] else {
-                throw Self.invalidPayload(decoder)
-            }
-            self = try .gitFailure(payload.decode(GitLargeFileIndexFailureKind.self, forKey: .kind))
-        } else {
-            throw Self.invalidPayload(decoder)
-        }
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        switch self {
-        case .lockHeld(let fact):
-            var payload = container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .lockHeld)
-            try payload.encode(fact, forKey: .fact)
-        case .lockUnidentified(let resource):
-            var payload = container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .lockUnidentified)
-            try payload.encode(resource, forKey: .resource)
-        case .permissionDenied(let path):
-            var payload = container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .permissionDenied)
-            try payload.encodeIfPresent(path, forKey: .path)
-        case .gitFailure(let error):
-            var payload = container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .gitFailure)
-            try payload.encode(error, forKey: .kind)
-        }
-    }
-
-    private static func invalidPayload(_ decoder: Decoder) -> DecodingError {
-        .dataCorrupted(
-            DecodingError.Context(
-                codingPath: decoder.codingPath,
-                debugDescription: "large-file index skip payload must contain exactly one valid cause"
             )
         )
     }
