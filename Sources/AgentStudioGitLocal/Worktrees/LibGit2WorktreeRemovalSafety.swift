@@ -96,6 +96,7 @@ struct WorktreeDirtiness: Sendable {
 
 func worktreeDirtiness(at path: URL) throws -> WorktreeDirtiness {
     var dirtiness = WorktreeDirtiness()
+    let largeFilePointerCleanliness = LibGit2LargeFilePointerCleanliness()
     try LibGit2Runtime.shared.ensureInitialized()
     var repository: OpaquePointer?
     let openResult = path.path.withCString { pathPointer in
@@ -129,7 +130,13 @@ func worktreeDirtiness(at path: URL) throws -> WorktreeDirtiness {
         if flags.containsAny(indexStatusFlags) || flags.containsAny([GIT_STATUS_CONFLICTED]) {
             dirtiness.hasStagedChanges = true
         }
-        if flags.containsAny(dirtyWorktreeStatusFlags) {
+        if flags.containsAny(dirtyWorktreeStatusFlags),
+            !isCleanLargeFileWorktreeModification(
+                entry: entry.pointee,
+                repository: repository,
+                cleanliness: largeFilePointerCleanliness
+            )
+        {
             dirtiness.hasDirtyTrackedChanges = true
         }
         if flags.containsAny([GIT_STATUS_WT_NEW]) {
@@ -138,6 +145,33 @@ func worktreeDirtiness(at path: URL) throws -> WorktreeDirtiness {
     }
 
     return dirtiness
+}
+
+private func isCleanLargeFileWorktreeModification(
+    entry: git_status_entry,
+    repository: OpaquePointer,
+    cleanliness: LibGit2LargeFilePointerCleanliness
+) -> Bool {
+    let flags = entry.status
+    guard flags.containsAny([GIT_STATUS_WT_MODIFIED]),
+        !flags.containsAny([
+            GIT_STATUS_CONFLICTED,
+            GIT_STATUS_WT_DELETED,
+            GIT_STATUS_WT_TYPECHANGE,
+            GIT_STATUS_WT_RENAMED,
+            GIT_STATUS_WT_UNREADABLE,
+        ]),
+        let delta = entry.index_to_workdir,
+        let pathPointer = delta.pointee.new_file.path ?? delta.pointee.old_file.path
+    else {
+        return false
+    }
+
+    return (try? cleanliness.isCleanSmudgedFile(
+        delta: delta.pointee,
+        repository: repository,
+        worktreePath: String(cString: pathPointer)
+    )) == true
 }
 
 extension Optional where Wrapped == String {

@@ -17,6 +17,7 @@ suites=(
   GitInvalidDecodeTests
   GitRedactionTests
   GitWorktreeForkContractTests
+  GitLargeFileFillContractTests
   LibGit2BlockingReadExecutorTests
   LibGit2RuntimeTests
   LibGit2RepositorySessionTests
@@ -41,6 +42,7 @@ suites=(
   GitIgnoreIntegrationTests
   GitTrackedPathIntegrationTests
   GitWorktreeIntegrationTests
+  GitWorktreeLargeFileFillIntegrationTests
   GitWorktreeRemovalIntegrationTests
   GitFetchIntegrationTests
   GitLockIntegrationTests

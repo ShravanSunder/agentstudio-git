@@ -6,19 +6,22 @@ struct LibGit2WorktreeWriter: Sendable {
     private let runtime: LibGit2Runtime
     private let reader: LibGit2WorktreeReader
     private let removalPathObserver: GitWorktreeRemovalPathObserver
+    private let largeFileStoreFill: LibGit2LargeFileStoreFill
 
     init(
         runtime: LibGit2Runtime = .shared,
         reader: LibGit2WorktreeReader = LibGit2WorktreeReader(),
-        removalPathObserver: GitWorktreeRemovalPathObserver = .live
+        removalPathObserver: GitWorktreeRemovalPathObserver = .live,
+        largeFileStoreFill: LibGit2LargeFileStoreFill = LibGit2LargeFileStoreFill()
     ) {
         self.runtime = runtime
         self.reader = reader
         self.removalPathObserver = removalPathObserver
+        self.largeFileStoreFill = largeFileStoreFill
     }
 
     func createWorktree(_ request: GitCreateWorktreeRequest) throws
-        -> GitWorktreeSnapshot
+        -> GitWorktreeCreation
     {
         let worktreeName = request.destinationPath.lastPathComponent
         guard !worktreeName.isEmpty else {
@@ -29,6 +32,7 @@ struct LibGit2WorktreeWriter: Sendable {
             repositoryPath: request.repositoryPath,
             worktreeName: worktreeName
         )
+        let snapshot: GitWorktreeSnapshot
         do {
             var createdWorktree: OpaquePointer?
             try withRepository(at: request.repositoryPath) { repository in
@@ -87,15 +91,18 @@ struct LibGit2WorktreeWriter: Sendable {
 
             let validation = try reader.validateWorktree(
                 GitValidateWorktreeRequest(worktreePath: request.destinationPath))
-            guard let snapshot = validation.snapshot, validation.isValid else {
+            guard let createdSnapshot = validation.snapshot, validation.isValid else {
                 throw GitDataPlaneError.repositoryNotFound(path: request.destinationPath)
             }
             rollback.disarm()
-            return snapshot
+            snapshot = createdSnapshot
         } catch {
             rollback.rollback(runtime: runtime)
             throw error
         }
+
+        let largeFiles = largeFileStoreFill.fill(worktreePath: snapshot.canonicalPath)
+        return GitWorktreeCreation(worktree: snapshot, largeFiles: largeFiles)
     }
 
     func pruneStaleWorktree(_ request: GitPruneStaleWorktreeRequest) throws

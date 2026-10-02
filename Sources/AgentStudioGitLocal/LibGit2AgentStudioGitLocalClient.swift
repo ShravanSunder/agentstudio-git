@@ -64,7 +64,7 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
     }
 
     public func createWorktree(_ request: GitCreateWorktreeRequest) async throws(GitDataPlaneError)
-        -> GitWorktreeSnapshot
+        -> GitWorktreeCreation
     {
         let writer = try await writer(for: request.repositoryPath)
         return try await mapAsyncGitDataPlaneError {

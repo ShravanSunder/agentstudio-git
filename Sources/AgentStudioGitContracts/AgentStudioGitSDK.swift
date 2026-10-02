@@ -5,7 +5,7 @@ public protocol AgentStudioGitLocalClient: Sendable {
     func worktrees(for repositoryPath: URL) async throws(GitDataPlaneError) -> [GitWorktreeSnapshot]
     func validateWorktree(_ request: GitValidateWorktreeRequest) async throws(GitDataPlaneError)
         -> GitWorktreeValidation
-    func createWorktree(_ request: GitCreateWorktreeRequest) async throws(GitDataPlaneError) -> GitWorktreeSnapshot
+    func createWorktree(_ request: GitCreateWorktreeRequest) async throws(GitDataPlaneError) -> GitWorktreeCreation
     /// Forks an existing worktree's current filesystem into a new linked worktree with APFS copy-on-write
     /// storage. Normal `createWorktree` is unaffected by whether this capability is available.
     func forkWorktree(_ request: GitForkWorktreeRequest) async throws(GitWorktreeForkError) -> GitForkWorktreeResult
