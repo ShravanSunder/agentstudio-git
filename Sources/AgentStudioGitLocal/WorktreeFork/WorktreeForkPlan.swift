@@ -125,9 +125,13 @@ struct WorktreeForkFilesystemPlan: Sendable {
     /// Relative paths of `.git` entries below the root. They are never copied as ordinary entries;
     /// Git-topology classification decides how each is realized.
     let nestedGitEntryPaths: [String]
+    /// Directories shaped like a Git directory but not named `.git`. They are copied as ordinary entries;
+    /// Git-topology classification decides which are repositories whose copied pointers need re-homing.
+    let gitDirectoryCandidatePaths: [String]
 
     static let empty = Self(
-        directories: [], leafBatches: [], hardLinkGroups: [], skippedEntries: [], nestedGitEntryPaths: [])
+        directories: [], leafBatches: [], hardLinkGroups: [], skippedEntries: [], nestedGitEntryPaths: [],
+        gitDirectoryCandidatePaths: [])
 
     var createdDirectoryCount: Int {
         max(0, directories.count - 1)

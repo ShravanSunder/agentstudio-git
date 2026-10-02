@@ -13,7 +13,8 @@ struct WorktreeForkRehomedNode: Sendable {
 /// Gives every initialized nested Git node destination-owned administration: submodules beneath the fork's
 /// own `$GIT_DIR/modules/...` (as Git lays out a linked worktree's submodules), independent repositories as
 /// embedded `.git` directories, and every object alternate a destination-owned CoW mirror. No administrative
-/// pointer is copied as final; each is rewritten for the destination.
+/// pointer is copied as final; each is rewritten for the destination. Git directories copied with ordinary
+/// content keep their own copy, with every pointer into the source re-aimed at the destination.
 struct GitRepositoryStateRehomer: Sendable {
     let plan: WorktreeForkPlan
     let cancellation: WorktreeForkCancellation
@@ -64,7 +65,104 @@ struct GitRepositoryStateRehomer: Sendable {
                 WorktreeForkRehomedNode(
                     node: node, destinationWorktree: destinationWorktree, destinationAdministration: administration))
         }
+        for copied in topology.copiedGitDirectories {
+            try cancellation.throwIfCancelled()
+            try rehomeCopiedPointers(copied, administrationByNode: administrationByNode)
+        }
         return rehomed
+    }
+
+    /// Rewrites each pointer in a copied Git directory's alternates and linked-worktree registrations that
+    /// does not already lead, from the copy, to its destination counterpart. A pointer that already does
+    /// (a relative path inside the tree, an absolute path outside it) keeps its bytes, so tracked fixtures
+    /// stay clean.
+    private func rehomeCopiedPointers(
+        _ copied: WorktreeForkCopiedGitDirectory,
+        administrationByNode: [String: URL]
+    ) throws(GitWorktreeForkError) {
+        let gitDirectory = plan.destinationRoot.appending(path: copied.relativePath)
+        let alternatesPath = WorktreeForkAdministrationCloner.alternatesRelativePath
+        let objects = gitDirectory.appending(path: "objects")
+        let alternatesReportPath = "\(copied.relativePath)/\(alternatesPath)"
+        var alternateLines: [String] = []
+        for pointer in copied.alternates {
+            alternateLines.append(
+                try destinationLine(
+                    for: pointer, resolvingFrom: objects, administrationByNode: administrationByNode,
+                    reportPath: alternatesReportPath))
+        }
+        if alternateLines != copied.alternates.map(\.line) {
+            try writeText(
+                alternateLines.joined(separator: "\n") + "\n",
+                to: gitDirectory.appending(path: alternatesPath),
+                reportPath: alternatesReportPath
+            )
+        }
+        for (registrationPath, pointer) in copied.worktreeRegistrations.sorted(by: { $0.key < $1.key }) {
+            let registrationDirectory = WorktreeForkDescriptors.splitParent(registrationPath).parent
+            let registration = gitDirectory.appending(path: registrationDirectory)
+            let reportPath = "\(copied.relativePath)/\(registrationPath)"
+            let line = try destinationLine(
+                for: pointer, resolvingFrom: registration, administrationByNode: administrationByNode,
+                reportPath: reportPath)
+            if line != pointer.line {
+                try writeText(line + "\n", to: gitDirectory.appending(path: registrationPath), reportPath: reportPath)
+            }
+        }
+    }
+
+    /// The text that leads from the copy to the pointer's destination counterpart, or to its unchanged
+    /// target when it has none. The recorded text is kept when it already resolves there from the copy; a
+    /// counterpart that does not exist would leave the copy dangling, so it fails the transaction.
+    private func destinationLine(
+        for pointer: WorktreeForkCopiedPointer,
+        resolvingFrom base: URL,
+        administrationByNode: [String: URL],
+        reportPath: String
+    ) throws(GitWorktreeForkError) -> String {
+        guard let target = pointer.target else {
+            return pointer.line
+        }
+        let wanted = destinationCounterpart(of: target, administrationByNode: administrationByNode) ?? target
+        let recorded =
+            pointer.line.hasPrefix("/") ? URL(fileURLWithPath: pointer.line) : base.appending(path: pointer.line)
+        if case .success(let resolved) = WorktreeForkDescriptors.realpathURL(recorded), resolved.path == wanted.path {
+            return pointer.line
+        }
+        guard case .success = WorktreeForkDescriptors.realpathURL(wanted) else {
+            throw .entryFailed(relativePath: reportPath, reason: .unresolvableGitAdministration, errorNumber: nil)
+        }
+        return wanted.path
+    }
+
+    /// Copied content maps to its destination copy. A path beneath a nested `.git` entry or the source
+    /// repository's administration is not copied; it maps to the re-homed node administration that owns it.
+    /// Anything outside the source tree and the source administration has no counterpart and keeps its target.
+    private func destinationCounterpart(of target: URL, administrationByNode: [String: URL]) -> URL? {
+        let inSourceTree = WorktreeForkAdministrativeSymlinks.relativeComponents(of: target, beneath: plan.sourceRoot)
+        if let inSourceTree, !inSourceTree.split(separator: "/").dropLast().contains(".git") {
+            return inSourceTree.isEmpty ? plan.destinationRoot : plan.destinationRoot.appending(path: inSourceTree)
+        }
+        let inSourceAdministration =
+            WorktreeForkAdministrativeSymlinks.relativeComponents(of: target, beneath: plan.commonDirectory) != nil
+        guard inSourceTree != nil || inSourceAdministration else {
+            return nil
+        }
+        let owner = plan.gitTopology.nodes
+            .compactMap { node -> (administration: URL, remainder: String, depth: Int)? in
+                guard let administration = administrationByNode[node.relativePath],
+                    let remainder = WorktreeForkAdministrativeSymlinks.relativeComponents(
+                        of: target, beneath: node.sourceCommonDirectory)
+                else {
+                    return nil
+                }
+                return (administration, remainder, node.sourceCommonDirectory.pathComponents.count)
+            }
+            .max { $0.depth < $1.depth }
+        guard let owner else {
+            return nil
+        }
+        return owner.remainder.isEmpty ? owner.administration : owner.administration.appending(path: owner.remainder)
     }
 
     /// Defense in depth behind the planner's name rule: destination administration must sit beneath the

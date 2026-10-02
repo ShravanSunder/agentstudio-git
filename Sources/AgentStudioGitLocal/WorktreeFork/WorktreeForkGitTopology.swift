@@ -13,6 +13,27 @@ struct WorktreeForkGitTopology: Sendable {
     let mirroredObjectStores: [URL]
     /// Mirror link text for store-internal symlinks, keyed by store then store-relative path.
     let mirroredStoreSymlinks: [URL: [String: String]]
+    /// Git directories copied with the ordinary content, whose pointers the re-homer rewrites in the copy.
+    let copiedGitDirectories: [WorktreeForkCopiedGitDirectory]
+}
+
+/// A Git directory inside ordinary content, such as a bare cache under `.build/repositories` or a separate
+/// Git directory. The materializer copies it byte for byte, so each pointer it holds into the source tree
+/// would keep the copy dependent on the source until the re-homer points it at the destination instead.
+struct WorktreeForkCopiedGitDirectory: Sendable {
+    /// Source-root-relative path of the Git directory.
+    let relativePath: String
+    /// `objects/info/alternates` lines, in order.
+    let alternates: [WorktreeForkCopiedPointer]
+    /// The `gitdir` file of each linked-worktree registration, keyed by Git-directory-relative path.
+    let worktreeRegistrations: [String: WorktreeForkCopiedPointer]
+}
+
+/// One path a copied Git directory records, as written and as Git resolves it.
+struct WorktreeForkCopiedPointer: Equatable, Sendable {
+    let line: String
+    /// Canonical target; nil when the recorded path does not resolve (a stale registration, a broken cache).
+    let target: URL?
 }
 
 enum WorktreeForkGitNodeKind: Equatable, Sendable {
