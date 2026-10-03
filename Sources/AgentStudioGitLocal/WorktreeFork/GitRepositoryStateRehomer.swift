@@ -15,6 +15,11 @@ struct WorktreeForkRehomedNode: Sendable {
 struct WorktreeForkRehomeOutcome: Sendable {
     var nodes: [WorktreeForkRehomedNode] = []
     var administrationTrees: [WorktreeForkClonedAdministrationTree] = []
+    /// Destination-root-relative paths of ordinary worktree files whose bytes re-homing replaced (copied Git
+    /// directories and configuration include files). Their clone no longer matches captured `HEAD`, so clean
+    /// adoption must hash them instead of trusting the clone's stat. A re-homed node's own administration and
+    /// gitfile are omitted: Git never tracks a `.git` path, so no index holds them.
+    var rewrittenWorktreePaths: Set<String> = []
 
     /// Child trees (nested submodule administration, created later) are finalized before their parents.
     func finalizeAdministrationDirectories() throws(GitWorktreeForkError) -> [GitWorktreeMaterializationNormalizedEntry]
@@ -85,13 +90,20 @@ struct GitRepositoryStateRehomer: Sendable {
                     node: node, destinationWorktree: destinationWorktree, destinationAdministration: administration))
         }
         let relocation = WorktreeForkSourcePathRelocation(plan: plan, administrationByNode: administrationByNode)
+        var rewrittenFiles: [URL] = []
         for copied in topology.copiedGitDirectories {
             try cancellation.throwIfCancelled()
-            try rehomeCopiedPointers(copied, relocation: relocation, mirrorByStore: mirrorByStore)
+            rewrittenFiles += try rehomeCopiedPointers(copied, relocation: relocation, mirrorByStore: mirrorByStore)
         }
         try cancellation.throwIfCancelled()
-        try WorktreeForkConfigurationPathRehomer(plan: plan, relocation: relocation, lockTracker: lockTracker)
-            .rehome(Self.configurationRoots(plan: plan, nodes: outcome.nodes))
+        rewrittenFiles += try WorktreeForkConfigurationPathRehomer(
+            plan: plan, relocation: relocation, lockTracker: lockTracker
+        )
+        .rehome(Self.configurationRoots(plan: plan, nodes: outcome.nodes))
+        outcome.rewrittenWorktreePaths = Set(
+            rewrittenFiles.compactMap {
+                WorktreeForkAdministrativeSymlinks.relativeComponents(of: $0, beneath: plan.destinationRoot)
+            })
         return outcome
     }
 
@@ -122,12 +134,13 @@ struct GitRepositoryStateRehomer: Sendable {
     /// does not already lead, from the copy, to its destination counterpart. An alternate outside every
     /// relocated location leads to its destination-owned mirror; a registration outside keeps its target. A
     /// pointer that already leads where it should (a relative path inside the tree) keeps its bytes, so
-    /// tracked fixtures stay clean.
+    /// tracked fixtures stay clean. Returns the files it rewrote.
     private func rehomeCopiedPointers(
         _ copied: WorktreeForkCopiedGitDirectory,
         relocation: WorktreeForkSourcePathRelocation,
         mirrorByStore: [URL: URL]
-    ) throws(GitWorktreeForkError) {
+    ) throws(GitWorktreeForkError) -> [URL] {
+        var rewritten: [URL] = []
         let gitDirectory = plan.destinationRoot.appending(path: copied.relativePath)
         let alternatesPath = WorktreeForkAdministrationCloner.alternatesRelativePath
         let objects = gitDirectory.appending(path: "objects")
@@ -141,12 +154,14 @@ struct GitRepositoryStateRehomer: Sendable {
         }
         let sourceGitDirectory = plan.sourceRoot.appending(path: copied.relativePath)
         if alternateLines != copied.alternates.map(\.line) {
+            let alternatesFile = gitDirectory.appending(path: alternatesPath)
             try writeText(
                 alternateLines.joined(separator: "\n") + "\n",
-                to: gitDirectory.appending(path: alternatesPath),
+                to: alternatesFile,
                 metadataFrom: sourceGitDirectory.appending(path: alternatesPath),
                 reportPath: alternatesReportPath
             )
+            rewritten.append(alternatesFile)
         }
         for (registrationPath, pointer) in copied.worktreeRegistrations.sorted(by: { $0.key < $1.key }) {
             let registrationDirectory = WorktreeForkDescriptors.splitParent(registrationPath).parent
@@ -156,14 +171,17 @@ struct GitRepositoryStateRehomer: Sendable {
                 for: pointer, resolvingFrom: registration, relocation: relocation, outsideMirrors: nil,
                 reportPath: reportPath)
             if line != pointer.line {
+                let registrationFile = gitDirectory.appending(path: registrationPath)
                 try writeText(
                     line + "\n",
-                    to: gitDirectory.appending(path: registrationPath),
+                    to: registrationFile,
                     metadataFrom: sourceGitDirectory.appending(path: registrationPath),
                     reportPath: reportPath
                 )
+                rewritten.append(registrationFile)
             }
         }
+        return rewritten
     }
 
     /// The text that leads from the copy to the pointer's destination counterpart. A target outside every

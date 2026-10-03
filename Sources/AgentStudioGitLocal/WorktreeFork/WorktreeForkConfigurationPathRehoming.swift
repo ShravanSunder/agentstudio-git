@@ -67,7 +67,9 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
     let relocation: WorktreeForkSourcePathRelocation
     let lockTracker: WorktreeForkLockTracker
 
-    func rehome(_ roots: [WorktreeForkConfigurationCopy]) throws(GitWorktreeForkError) {
+    /// Returns the destination files it edited.
+    func rehome(_ roots: [WorktreeForkConfigurationCopy]) throws(GitWorktreeForkError) -> [URL] {
+        var edited: [URL] = []
         var visited = Set<String>()
         var pending = roots.map { (copy: $0, depth: 0) }
         while let (copy, depth) = pending.popLast() {
@@ -106,8 +108,10 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
             if !edits.isEmpty {
                 try WorktreeForkConfigurationFile.apply(
                     edits, to: copy.destination, reportPath: copy.reportPath, lockTracker: lockTracker)
+                edited.append(copy.destination)
             }
         }
+        return edited
     }
 
     /// An absolute value is re-aimed at its relocated counterpart. A relative include is re-aimed only when,
