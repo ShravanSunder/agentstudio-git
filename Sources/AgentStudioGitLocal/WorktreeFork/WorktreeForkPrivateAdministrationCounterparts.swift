@@ -24,6 +24,14 @@ struct WorktreeForkPrivateAdministrationCounterparts: Sendable {
     /// already has its counterpart and its bytes legitimately differ from the source.
     static let filesWrittenByRehoming: Set<String> = ["HEAD", "config.worktree", "info/sparse-checkout", "index"]
 
+    /// Points in one realization a caller can observe, in order, for each remainder component.
+    enum RealizationCheckpoint: Equatable, Sendable {
+        /// Both parent descriptors for the entry are open; nothing about the entry has been examined.
+        case parentsOpened(entryPath: String)
+        /// An existing target was stat'ed through its parent; it has not been opened yet.
+        case targetExamined(entryPath: String)
+    }
+
     /// What one realization produced.
     enum Realization: Sendable {
         case unchanged
@@ -124,12 +132,12 @@ struct WorktreeForkPrivateAdministrationCounterparts: Sendable {
     /// destination entry that is missing is cloned from its source; an existing regular-file target that is
     /// not equivalent to its source is replaced. `reportPath` maps a remainder prefix to its report location.
     /// Every destination operation goes through the parent descriptor opened for that entry, never a path, so
-    /// a destination ancestor replaced after it was opened cannot redirect a write. `afterParentsOpened` runs
-    /// once both parent descriptors for an entry are open and before that entry is realized.
+    /// a destination ancestor replaced after it was opened cannot redirect a write. `atCheckpoint` observes the
+    /// points `RealizationCheckpoint` names.
     static func realize(
         _ match: WorktreeForkSourcePathRelocation.AdministrationMatch,
         reportPath: (String) -> String,
-        afterParentsOpened: (_ entryPath: String) -> Void = { _ in }
+        atCheckpoint: (RealizationCheckpoint) -> Void = { _ in }
     ) throws(GitWorktreeForkError) -> Realization {
         let sourceRoot = try openRoot(match.sourceAdministration, reportPath: reportPath(""))
         defer { close(sourceRoot) }
@@ -144,7 +152,7 @@ struct WorktreeForkPrivateAdministrationCounterparts: Sendable {
             defer { close(sourceParent) }
             let destinationParent = try openContainedDirectory(destinationRoot, parentPath, report, isSource: false)
             defer { close(destinationParent) }
-            afterParentsOpened(entryPath)
+            atCheckpoint(.parentsOpened(entryPath: entryPath))
             guard let sourceInfo = try entryInfo(in: sourceParent, name: name, report: report) else {
                 return .unchanged
             }
@@ -173,7 +181,8 @@ struct WorktreeForkPrivateAdministrationCounterparts: Sendable {
                     try cloneFile(name, from: sourceParent, into: destinationParent, report: report))
             case (.regularFile, .regularFile) where isTarget:
                 return try replaceIfDifferent(
-                    name, sourceParent: sourceParent, destinationParent: destinationParent, report: report)
+                    name, sourceParent: sourceParent, destinationParent: destinationParent, report: report
+                ) { atCheckpoint(.targetExamined(entryPath: entryPath)) }
             case (.regularFile, _) where !isTarget:
                 return .unchanged
             case (.fifo, _), (.unixSocket, _), (.characterDevice, _), (.blockDevice, _), (.unknown, _):
@@ -195,7 +204,8 @@ struct WorktreeForkPrivateAdministrationCounterparts: Sendable {
         _ name: String,
         sourceParent: Int32,
         destinationParent: Int32,
-        report: String
+        report: String,
+        targetExamined: () -> Void
     ) throws(GitWorktreeForkError) -> Realization {
         let source = try openSourceFile(name, in: sourceParent, report: report)
         defer { close(source) }
@@ -207,13 +217,14 @@ struct WorktreeForkPrivateAdministrationCounterparts: Sendable {
         guard targetInfo.st_nlink == 1 else {
             throw .entryFailed(relativePath: report, reason: .metadataNotReproducible, errorNumber: nil)
         }
+        targetExamined()
         let target = try openTarget(name, in: destinationParent, info: targetInfo, report: report)
         defer { close(target) }
         if try WorktreeForkFileEquivalence.isEquivalent(source, target, reportPath: report) {
             return .unchanged
         }
         let protection = try WorktreeForkReplacementProtection.lift(
-            .descriptor(target), originalInfo: targetInfo, reportPath: report)
+            descriptor: target, originalInfo: targetInfo, reportPath: report)
         let temporary = ".\(name).agentstudio-\(UUID().uuidString).tmp"
         var renamed = false
         do throws(GitWorktreeForkError) {
@@ -232,35 +243,29 @@ struct WorktreeForkPrivateAdministrationCounterparts: Sendable {
         } catch {
             if !renamed {
                 _ = temporary.withCString { unlinkat(destinationParent, $0, 0) }
-                try? protection.restore(on: .descriptor(target), reportPath: report)
+                try? protection.restore(reportPath: report)
             }
             throw error
         }
         return .clonedFile(try normalization(source: source, name: name, in: destinationParent, report: report))
     }
 
-    /// Opens the existing target beneath `destinationParent` without following it. A target whose mode withholds
-    /// owner read is granted it first, relative to the parent; it is replaced either way.
+    /// Opens the existing target beneath `destinationParent` without following it and proves the open inode is
+    /// the one examined, still with no other link. Nothing about the target changes before that proof: the name
+    /// may by now be a hard link to a source file, so a target its owner cannot read fails instead of being
+    /// granted read by name.
     private static func openTarget(
         _ name: String,
         in destinationParent: Int32,
         info: Darwin.stat,
         report: String
     ) throws(GitWorktreeForkError) -> Int32 {
-        let flags = O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC
-        var target = name.withCString { openat(destinationParent, $0, flags) }
-        if target < 0, errno == EACCES,
-            name.withCString({ fchmodat(destinationParent, $0, (info.st_mode & 0o7777) | S_IRUSR, AT_SYMLINK_NOFOLLOW) }
-            )
-                == 0
-        {
-            target = name.withCString { openat(destinationParent, $0, flags) }
-        }
+        let target = name.withCString { openat(destinationParent, $0, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC) }
         guard target >= 0 else {
-            throw .entryFailed(relativePath: report, reason: .unresolvableGitAdministration, errorNumber: errno)
+            throw .entryFailed(relativePath: report, reason: .unreadableEntry, errorNumber: errno)
         }
         guard case .success(let opened) = WorktreeForkDescriptors.statDescriptor(target),
-            WorktreeForkEntryIdentity(opened) == WorktreeForkEntryIdentity(info)
+            WorktreeForkEntryIdentity(opened) == WorktreeForkEntryIdentity(info), opened.st_nlink == 1
         else {
             close(target)
             throw .entryFailed(relativePath: report, reason: .unresolvableGitAdministration, errorNumber: nil)
@@ -294,7 +299,7 @@ struct WorktreeForkPrivateAdministrationCounterparts: Sendable {
         let clone = temporary.withCString { openat(destinationParent, $0, O_RDONLY | O_NOFOLLOW | O_CLOEXEC) }
         var failure: Int32 = clone < 0 ? errno : 0
         if failure == 0, fchflags(clone, 0) != 0 { failure = errno }
-        if failure == 0 { failure = WorktreeForkMetadataTarget.descriptor(clone).removeAccessControlList() }
+        if failure == 0 { failure = WorktreeForkDescriptorMetadata.removeAccessControlList(clone) }
         if failure == 0, fchmod(clone, 0o600) != 0 { failure = errno }
         guard failure == 0 else {
             if clone >= 0 {

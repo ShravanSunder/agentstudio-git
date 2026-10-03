@@ -107,7 +107,12 @@ struct WorktreeForkPrivateCounterpartTests {
 
         // Act
         let realization = try WorktreeForkPrivateAdministrationCounterparts.realize(
-            match, reportPath: { $0 }, afterParentsOpened: swapAncestor)
+            match, reportPath: { $0 },
+            atCheckpoint: { checkpoint in
+                if case .parentsOpened(let entryPath) = checkpoint {
+                    swapAncestor(entryPath)
+                }
+            })
 
         // Assert
         #expect(try FileManager.default.contentsOfDirectory(atPath: outside.path) == ["allowed_signers"])
@@ -122,6 +127,105 @@ struct WorktreeForkPrivateCounterpartTests {
         default:
             Issue.record("unexpected realization for \(swap)")
         }
+    }
+
+    @Test(
+        "an unreadable destination target fails typed before any permission changes, even when it is a source alias",
+        arguments: UnreadableTarget.allCases)
+    func unreadableTargetFailsBeforeAnyPermissionChange(target: UnreadableTarget) throws {
+        // Arrange: the private source differs from the destination's existing file, so the target is replaced.
+        let root = try temporaryRoot()
+        let sourceWorktreeFile = root.appending(path: "source-worktree/secret.txt")
+        let destinationAdministration = root.appending(path: "destination-admin")
+        let destinationTarget = destinationAdministration.appending(path: "keys/allowed_signers")
+        defer {
+            _ = chmod(sourceWorktreeFile.path, 0o644)
+            _ = chmod(destinationTarget.path, 0o644)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let sourceAdministration = root.appending(path: "source-admin")
+        for directory in [
+            sourceAdministration.appending(path: "keys"), destinationAdministration.appending(path: "keys"),
+            sourceWorktreeFile.deletingLastPathComponent(),
+        ] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        try Data("private\n".utf8).write(to: sourceAdministration.appending(path: "keys/allowed_signers"))
+        try Data("common\n".utf8).write(to: destinationTarget)
+        try Data("source worktree\n".utf8).write(to: sourceWorktreeFile)
+        try #require(chmod(sourceWorktreeFile.path, 0o000) == 0)
+        if target == .modeZero {
+            try #require(chmod(destinationTarget.path, 0o000) == 0)
+        }
+        let sourceBefore = try #require(GitWorktreeForkFileProbe.info(sourceWorktreeFile))
+        let match = WorktreeForkSourcePathRelocation.AdministrationMatch(
+            sourceAdministration: sourceAdministration, destinationAdministration: destinationAdministration,
+            remainder: "keys/allowed_signers")
+        typealias Checkpoint = WorktreeForkPrivateAdministrationCounterparts.RealizationCheckpoint
+        let replaceWithSourceAlias: (Checkpoint) -> Void = { checkpoint in
+            guard target == .hardLinkToSourceSwappedAfterStat,
+                checkpoint == .targetExamined(entryPath: "keys/allowed_signers")
+            else {
+                return
+            }
+            _ = unlink(destinationTarget.path)
+            _ = link(sourceWorktreeFile.path, destinationTarget.path)
+        }
+
+        // Act
+        let failure: GitWorktreeForkError?
+        do {
+            _ = try WorktreeForkPrivateAdministrationCounterparts.realize(
+                match, reportPath: { $0 }, atCheckpoint: replaceWithSourceAlias)
+            failure = nil
+        } catch {
+            failure = error
+        }
+
+        // Assert
+        #expect(
+            failure == .entryFailed(relativePath: "keys/allowed_signers", reason: .unreadableEntry, errorNumber: EACCES)
+        )
+        let sourceAfter = try #require(GitWorktreeForkFileProbe.info(sourceWorktreeFile))
+        #expect(sourceAfter.st_mode & 0o7777 == 0o000, "the source file's mode never changes")
+        #expect(sourceAfter.st_mode == sourceBefore.st_mode && sourceAfter.st_flags == sourceBefore.st_flags)
+        #expect(acl_get_link_np(sourceWorktreeFile.path, ACL_TYPE_EXTENDED) == nil)
+        let destinationInfo = try #require(GitWorktreeForkFileProbe.info(destinationTarget))
+        #expect(destinationInfo.st_mode & 0o7777 == 0o000, "the target's mode is never changed either")
+        #expect(
+            try FileManager.default.contentsOfDirectory(atPath: destinationAdministration.appending(path: "keys").path)
+                == ["allowed_signers"])
+    }
+
+    @Test("a metadata-preserving rewrite of a file its owner cannot read fails typed without changing its mode")
+    func rewriteOfUnreadableFileFailsWithoutChangingItsMode() throws {
+        // Arrange
+        let root = try temporaryRoot()
+        let target = root.appending(path: "HEAD")
+        defer {
+            _ = chmod(target.path, 0o644)
+            try? FileManager.default.removeItem(at: root)
+        }
+        try Data("ref: refs/heads/main\n".utf8).write(to: target)
+        try #require(chmod(target.path, 0o000) == 0)
+        var swapped = false
+
+        // Act
+        let failure: GitWorktreeForkError?
+        do {
+            try WorktreeForkMetadataPreservingRewrite.rewrite(target, metadataFrom: .editedFile, reportPath: "HEAD") {
+                () throws(GitWorktreeForkError) in
+                swapped = true
+            }
+            failure = nil
+        } catch {
+            failure = error
+        }
+
+        // Assert
+        #expect(failure == .entryFailed(relativePath: "HEAD", reason: .unreadableEntry, errorNumber: EACCES))
+        #expect(!swapped)
+        #expect(try #require(GitWorktreeForkFileProbe.info(target)).st_mode & 0o7777 == 0o000)
     }
 
     @Test("an equivalence read under an ambient materializing policy denies materialization and restores it")
@@ -232,4 +336,12 @@ private struct ConfigurationReadObservation: Sendable {
     let before: Int32
     let values: [String]?
     let after: Int32
+}
+
+/// Why a destination target cannot be opened for reading when its replacement starts.
+enum UnreadableTarget: String, CaseIterable, Sendable {
+    /// The cloned target itself is mode 000.
+    case modeZero
+    /// After its one-link stat, the target name is replaced by a hard link to a mode-000 source file.
+    case hardLinkToSourceSwappedAfterStat
 }

@@ -45,57 +45,38 @@ enum WorktreeForkMetadataPreservingRewrite {
             case .sourceCounterpart(let template):
                 metadata = try WorktreeForkFileMetadata.capture(from: template, reportPath: reportPath)
             case .editedFile:
-                metadata = try protection?.originalMetadata(at: url, reportPath: reportPath)
+                metadata = try protection?.originalMetadata(reportPath: reportPath)
             }
             try swapInReplacement()
             if let protection, protection.isOriginal(at: url) {
-                try protection.restore(at: url, reportPath: reportPath)
+                try protection.restore(reportPath: reportPath)
             } else {
                 try metadata?.apply(to: url, reportPath: reportPath)
             }
         } catch {
-            try? protection?.restore(at: url, reportPath: reportPath)
+            try? protection?.restore(reportPath: reportPath)
             throw error
         }
     }
 }
 
-/// Where a metadata operation lands: a path whose final component is never followed, or an open descriptor.
-/// Lifting and restoring protection run the same steps through either, so a caller that holds descriptors
-/// (descriptor-relative counterpart cloning) never re-resolves a path.
-enum WorktreeForkMetadataTarget {
-    case path(URL)
-    case descriptor(Int32)
-
+/// Metadata changes on an open descriptor. Every permission, flag, or ACL change re-homing makes goes through a
+/// descriptor whose inode the caller has verified, never through a name: a name can be replaced, after any
+/// check, by a hard link to a source file, and changing it would change the source.
+enum WorktreeForkDescriptorMetadata {
     /// Returns errno, or 0.
-    func setFlags(_ flags: UInt32) -> Int32 {
-        let result =
-            switch self {
-            case .path(let url): lchflags(url.path, flags)
-            case .descriptor(let descriptor): fchflags(descriptor, flags)
-            }
-        return result == 0 ? 0 : errno
+    static func setFlags(_ descriptor: Int32, _ flags: UInt32) -> Int32 {
+        fchflags(descriptor, flags) == 0 ? 0 : errno
     }
 
     /// Returns errno, or 0.
-    func setMode(_ mode: mode_t) -> Int32 {
-        let result =
-            switch self {
-            case .path(let url): lchmod(url.path, mode)
-            case .descriptor(let descriptor): fchmod(descriptor, mode)
-            }
-        return result == 0 ? 0 : errno
+    static func setMode(_ descriptor: Int32, _ mode: mode_t) -> Int32 {
+        fchmod(descriptor, mode) == 0 ? 0 : errno
     }
 
-    /// The extended ACL, or nil when there is none. The owner may always read an ACL, even one that denies
-    /// reading the file.
-    func accessControlList(reportPath: String) throws(GitWorktreeForkError) -> acl_t? {
-        let accessControlList =
-            switch self {
-            case .path(let url): acl_get_link_np(url.path, ACL_TYPE_EXTENDED)
-            case .descriptor(let descriptor): acl_get_fd_np(descriptor, ACL_TYPE_EXTENDED)
-            }
-        if let accessControlList {
+    /// The extended ACL, or nil when there is none.
+    static func accessControlList(_ descriptor: Int32, reportPath: String) throws(GitWorktreeForkError) -> acl_t? {
+        if let accessControlList = acl_get_fd_np(descriptor, ACL_TYPE_EXTENDED) {
             return accessControlList
         }
         guard errno == ENOENT else {
@@ -105,22 +86,17 @@ enum WorktreeForkMetadataTarget {
     }
 
     /// Returns errno, or 0.
-    func setAccessControlList(_ accessControlList: acl_t) -> Int32 {
-        let result =
-            switch self {
-            case .path(let url): acl_set_link_np(url.path, ACL_TYPE_EXTENDED, accessControlList)
-            case .descriptor(let descriptor): acl_set_fd_np(descriptor, accessControlList, ACL_TYPE_EXTENDED)
-            }
-        return result == 0 ? 0 : errno
+    static func setAccessControlList(_ descriptor: Int32, _ accessControlList: acl_t) -> Int32 {
+        acl_set_fd_np(descriptor, accessControlList, ACL_TYPE_EXTENDED) == 0 ? 0 : errno
     }
 
     /// Setting an empty extended ACL removes it. Returns errno, or 0.
-    func removeAccessControlList() -> Int32 {
+    static func removeAccessControlList(_ descriptor: Int32) -> Int32 {
         guard let empty = acl_init(0) else {
             return errno
         }
         defer { acl_free(UnsafeMutableRawPointer(empty)) }
-        return setAccessControlList(empty)
+        return setAccessControlList(descriptor, empty)
     }
 }
 
@@ -156,14 +132,16 @@ final class WorktreeForkFileMetadata {
         guard template.path.withCString({ lstat($0, &info) }) == 0, info.st_mode & S_IFMT == S_IFREG else {
             return nil
         }
-        let accessControlList = try WorktreeForkMetadataTarget.path(template).accessControlList(reportPath: reportPath)
         let descriptor = template.path.withCString { open($0, O_RDONLY | O_NOFOLLOW | O_CLOEXEC) }
         guard descriptor >= 0 else {
-            let failure = errno
-            if let accessControlList {
-                acl_free(UnsafeMutableRawPointer(accessControlList))
-            }
-            throw .entryFailed(relativePath: reportPath, reason: .metadataNotReproducible, errorNumber: failure)
+            throw .entryFailed(relativePath: reportPath, reason: .metadataNotReproducible, errorNumber: errno)
+        }
+        let accessControlList: acl_t?
+        do throws(GitWorktreeForkError) {
+            accessControlList = try WorktreeForkDescriptorMetadata.accessControlList(descriptor, reportPath: reportPath)
+        } catch {
+            close(descriptor)
+            throw error
         }
         return WorktreeForkFileMetadata(
             mode: info.st_mode & 0o7777, flags: info.st_flags, accessControlList: accessControlList,
@@ -184,8 +162,7 @@ final class WorktreeForkFileMetadata {
         case .failure(let failure):
             throw .entryFailed(relativePath: reportPath, reason: .metadataNotReproducible, errorNumber: failure.code)
         }
-        let accessControlList = try WorktreeForkMetadataTarget.descriptor(source).accessControlList(
-            reportPath: reportPath)
+        let accessControlList = try WorktreeForkDescriptorMetadata.accessControlList(source, reportPath: reportPath)
         let descriptor = dup(source)
         guard descriptor >= 0 else {
             let failure = errno
@@ -226,7 +203,7 @@ final class WorktreeForkFileMetadata {
         reportPath: String
     ) throws(GitWorktreeForkError) {
         if let accessControlList {
-            let failure = WorktreeForkMetadataTarget.descriptor(replacement).setAccessControlList(accessControlList)
+            let failure = WorktreeForkDescriptorMetadata.setAccessControlList(replacement, accessControlList)
             guard failure == 0 else {
                 throw .entryFailed(relativePath: reportPath, reason: .metadataNotReproducible, errorNumber: failure)
             }
@@ -239,91 +216,115 @@ final class WorktreeForkFileMetadata {
 }
 
 /// What was lifted from the file about to be replaced so that a swap can rename over it, plus the original
-/// values needed to put it back. The swap needs neither user flags nor a `deny delete` entry on the target,
-/// and reading the original (by libgit2 or for its extended attributes) needs owner read.
+/// values needed to put it back. The swap needs neither user flags nor a `deny delete` entry on the target, and
+/// reading the original (by libgit2 or for its extended attributes) needs owner read. Every change goes through
+/// a descriptor of the verified original inode, never through its name.
 final class WorktreeForkReplacementProtection {
     /// Flags the owner may clear that forbid renaming over a file. System flags need privilege and fail.
     private static let userProtectionFlags = UInt32(UF_IMMUTABLE | UF_APPEND)
     private static let systemProtectionFlags = UInt32(SF_IMMUTABLE | SF_APPEND)
 
+    private let descriptor: Int32
+    private let ownsDescriptor: Bool
     private let mode: mode_t
     private let flags: UInt32
     private let identity: WorktreeForkEntryIdentity
     private var accessControlList: acl_t?
 
-    private init(_ info: Darwin.stat) {
+    private init(descriptor: Int32, ownsDescriptor: Bool, originalInfo info: Darwin.stat) {
+        self.descriptor = descriptor
+        self.ownsDescriptor = ownsDescriptor
         mode = info.st_mode & 0o7777
         flags = info.st_flags
         identity = WorktreeForkEntryIdentity(info)
     }
 
     deinit {
+        if ownsDescriptor {
+            _ = close(descriptor)
+        }
         if let accessControlList {
             acl_free(UnsafeMutableRawPointer(accessControlList))
         }
     }
 
-    /// Nil when no regular file is at `url`. On failure the original keeps its protection.
+    /// Nil when no regular file is at `url`. The file is opened without following it, and protection is lifted
+    /// only once the open inode is shown to be the one at `url` with no other link. A file its owner cannot
+    /// open fails rather than having its permissions changed by name.
     static func lift(at url: URL, reportPath: String) throws(GitWorktreeForkError) -> WorktreeForkReplacementProtection?
     {
-        var info = Darwin.stat()
-        guard url.path.withCString({ lstat($0, &info) }) == 0, info.st_mode & S_IFMT == S_IFREG else {
+        guard case .success(let info) = WorktreeForkDescriptors.lstatPath(url), info.st_mode & S_IFMT == S_IFREG else {
             return nil
         }
-        return try lift(.path(url), originalInfo: info, reportPath: reportPath)
+        let descriptor = url.path.withCString { open($0, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC) }
+        guard descriptor >= 0 else {
+            throw .entryFailed(relativePath: reportPath, reason: .unreadableEntry, errorNumber: errno)
+        }
+        guard case .success(let opened) = WorktreeForkDescriptors.statDescriptor(descriptor),
+            WorktreeForkEntryIdentity(opened) == WorktreeForkEntryIdentity(info), opened.st_nlink == 1
+        else {
+            close(descriptor)
+            throw .entryFailed(relativePath: reportPath, reason: .metadataNotReproducible, errorNumber: nil)
+        }
+        return try lift(descriptor: descriptor, owning: true, originalInfo: info, reportPath: reportPath)
     }
 
-    /// Lifts protection from the regular file `target` names, whose state before any change is `originalInfo`.
-    /// On failure the original keeps its protection.
+    /// Lifts protection through `descriptor`, an open regular file the caller has verified; `originalInfo` is its
+    /// state before any change. On failure the original keeps its protection.
     static func lift(
-        _ target: WorktreeForkMetadataTarget,
+        descriptor: Int32,
+        owning ownsDescriptor: Bool = false,
         originalInfo info: Darwin.stat,
         reportPath: String
     ) throws(GitWorktreeForkError) -> WorktreeForkReplacementProtection {
         guard info.st_flags & systemProtectionFlags == 0 else {
+            if ownsDescriptor {
+                close(descriptor)
+            }
             throw .entryFailed(relativePath: reportPath, reason: .entryCreationFailed, errorNumber: EPERM)
         }
-        let protection = WorktreeForkReplacementProtection(info)
+        let protection = WorktreeForkReplacementProtection(
+            descriptor: descriptor, ownsDescriptor: ownsDescriptor, originalInfo: info)
         do throws(GitWorktreeForkError) {
-            try protection.lift(target, reportPath: reportPath)
+            try protection.lift(reportPath: reportPath)
         } catch {
-            try? protection.restore(on: target, reportPath: reportPath)
+            try? protection.restore(reportPath: reportPath)
             throw error
         }
         return protection
     }
 
-    private func lift(_ target: WorktreeForkMetadataTarget, reportPath: String) throws(GitWorktreeForkError) {
+    private func lift(reportPath: String) throws(GitWorktreeForkError) {
         if flags & Self.userProtectionFlags != 0 {
-            let failure = target.setFlags(flags & ~Self.userProtectionFlags)
+            let failure = WorktreeForkDescriptorMetadata.setFlags(descriptor, flags & ~Self.userProtectionFlags)
             guard failure == 0 else {
                 throw .entryFailed(relativePath: reportPath, reason: .entryCreationFailed, errorNumber: failure)
             }
         }
-        accessControlList = try target.accessControlList(reportPath: reportPath)
+        accessControlList = try WorktreeForkDescriptorMetadata.accessControlList(descriptor, reportPath: reportPath)
         if accessControlList != nil {
-            let failure = target.removeAccessControlList()
+            let failure = WorktreeForkDescriptorMetadata.removeAccessControlList(descriptor)
             guard failure == 0 else {
                 throw .entryFailed(relativePath: reportPath, reason: .entryCreationFailed, errorNumber: failure)
             }
         }
         if mode & S_IRUSR == 0 {
-            let failure = target.setMode(mode | S_IRUSR)
+            let failure = WorktreeForkDescriptorMetadata.setMode(descriptor, mode | S_IRUSR)
             guard failure == 0 else {
                 throw .entryFailed(relativePath: reportPath, reason: .entryCreationFailed, errorNumber: failure)
             }
         }
     }
 
-    /// The replaced file's own metadata as it was before lifting, for a rewrite with no other template.
-    func originalMetadata(at url: URL, reportPath: String) throws(GitWorktreeForkError) -> WorktreeForkFileMetadata {
-        let descriptor = url.path.withCString { open($0, O_RDONLY | O_NOFOLLOW | O_CLOEXEC) }
-        guard descriptor >= 0 else {
+    /// The original's metadata as it was before lifting, for a rewrite with no other template.
+    func originalMetadata(reportPath: String) throws(GitWorktreeForkError) -> WorktreeForkFileMetadata {
+        let duplicate = dup(descriptor)
+        guard duplicate >= 0 else {
             throw .entryFailed(relativePath: reportPath, reason: .metadataNotReproducible, errorNumber: errno)
         }
         return WorktreeForkFileMetadata(
             mode: mode, flags: flags, accessControlList: accessControlList.flatMap { acl_dup($0) },
-            descriptor: descriptor)
+            descriptor: duplicate)
     }
 
     /// Whether the file at `url` is still the inode protection was lifted from.
@@ -334,18 +335,14 @@ final class WorktreeForkReplacementProtection {
         return WorktreeForkEntryIdentity(info) == identity
     }
 
-    /// Puts the lifted mode, ACL, and flags back on whichever file `target` names, flags last.
-    func restore(at url: URL, reportPath: String) throws(GitWorktreeForkError) {
-        try restore(on: .path(url), reportPath: reportPath)
-    }
-
-    func restore(on target: WorktreeForkMetadataTarget, reportPath: String) throws(GitWorktreeForkError) {
-        var failure = target.setMode(mode)
+    /// Puts the lifted mode, ACL, and flags back on the original inode, flags last.
+    func restore(reportPath: String) throws(GitWorktreeForkError) {
+        var failure = WorktreeForkDescriptorMetadata.setMode(descriptor, mode)
         if failure == 0, let accessControlList {
-            failure = target.setAccessControlList(accessControlList)
+            failure = WorktreeForkDescriptorMetadata.setAccessControlList(descriptor, accessControlList)
         }
         if failure == 0 {
-            failure = target.setFlags(flags)
+            failure = WorktreeForkDescriptorMetadata.setFlags(descriptor, flags)
         }
         guard failure == 0 else {
             throw .entryFailed(relativePath: reportPath, reason: .metadataNotReproducible, errorNumber: failure)
