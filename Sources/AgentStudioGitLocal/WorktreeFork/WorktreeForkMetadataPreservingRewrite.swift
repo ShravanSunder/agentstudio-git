@@ -15,6 +15,9 @@ enum WorktreeForkMetadataPreservingRewrite {
         /// The source file this destination file stands for. When it is not a regular file, the new file
         /// keeps the swap's own mode and nothing is reported.
         case sourceCounterpart(URL)
+        /// An already-open source regular file, for callers that reached it by descriptor-relative traversal
+        /// and must not resolve its path again. The descriptor stays owned by the caller.
+        case sourceDescriptor(Int32)
         /// The file being edited in place (a libgit2 configuration edit): its metadata before the edit.
         case editedFile
     }
@@ -44,6 +47,8 @@ enum WorktreeForkMetadataPreservingRewrite {
             switch metadataSource {
             case .sourceCounterpart(let template):
                 metadata = try WorktreeForkFileMetadata.capture(from: template, reportPath: reportPath)
+            case .sourceDescriptor(let descriptor):
+                metadata = try WorktreeForkFileMetadata.capture(fromDescriptor: descriptor, reportPath: reportPath)
             case .editedFile:
                 metadata = try protection?.originalMetadata(at: url, reportPath: reportPath)
             }
@@ -95,6 +100,37 @@ private final class WorktreeForkFileMetadata {
         let accessControlList = try WorktreeForkReplacementProtection.accessControlList(
             at: template, reportPath: reportPath)
         let descriptor = template.path.withCString { open($0, O_RDONLY | O_NOFOLLOW | O_CLOEXEC) }
+        guard descriptor >= 0 else {
+            let failure = errno
+            if let accessControlList {
+                acl_free(UnsafeMutableRawPointer(accessControlList))
+            }
+            throw .entryFailed(relativePath: reportPath, reason: .metadataNotReproducible, errorNumber: failure)
+        }
+        return WorktreeForkFileMetadata(
+            mode: info.st_mode & 0o7777, flags: info.st_flags, accessControlList: accessControlList,
+            descriptor: descriptor)
+    }
+
+    /// Captures through a caller-owned descriptor of a regular file; the metadata keeps its own duplicate.
+    static func capture(
+        fromDescriptor source: Int32,
+        reportPath: String
+    ) throws(GitWorktreeForkError) -> WorktreeForkFileMetadata {
+        let info: Darwin.stat
+        switch WorktreeForkDescriptors.statDescriptor(source) {
+        case .success(let sourceInfo) where sourceInfo.st_mode & S_IFMT == S_IFREG:
+            info = sourceInfo
+        case .success:
+            throw .entryFailed(relativePath: reportPath, reason: .metadataNotReproducible, errorNumber: nil)
+        case .failure(let failure):
+            throw .entryFailed(relativePath: reportPath, reason: .metadataNotReproducible, errorNumber: failure.code)
+        }
+        let accessControlList = acl_get_fd_np(source, ACL_TYPE_EXTENDED)
+        if accessControlList == nil, errno != ENOENT {
+            throw .entryFailed(relativePath: reportPath, reason: .metadataNotReproducible, errorNumber: errno)
+        }
+        let descriptor = dup(source)
         guard descriptor >= 0 else {
             let failure = errno
             if let accessControlList {
