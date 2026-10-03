@@ -110,10 +110,20 @@ struct WorktreeForkPrivateAdministrationCounterparts: Sendable {
         relocation: WorktreeForkSourcePathRelocation,
         reportPath: String
     ) throws(GitWorktreeForkError) -> Bool {
-        switch (WorktreeForkDescriptors.lstatPath(first), WorktreeForkDescriptors.lstatPath(second)) {
-        case (.failure, .failure):
+        let lookupFailed = GitWorktreeForkError.entryFailed(
+            relativePath: reportPath, reason: .unresolvableGitAdministration, errorNumber: nil)
+        let firstExists: Bool
+        let secondExists: Bool
+        switch (WorktreeForkDescriptors.existence(first), WorktreeForkDescriptors.existence(second)) {
+        case (.success(let first), .success(let second)):
+            (firstExists, secondExists) = (first, second)
+        default:
+            throw lookupFailed
+        }
+        switch (firstExists, secondExists) {
+        case (false, false):
             return true
-        case (.success, .success):
+        case (true, true):
             guard let firstMatch = relocation.administrationMatch(of: first),
                 let secondMatch = relocation.administrationMatch(of: second)
             else {

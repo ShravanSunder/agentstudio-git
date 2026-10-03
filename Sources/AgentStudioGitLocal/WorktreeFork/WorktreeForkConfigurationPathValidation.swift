@@ -23,11 +23,11 @@ struct WorktreeForkConfigurationPathValidation: Sendable {
         var visited = Set<String>()
         var pending = roots.map { (file: $0.file, reportPath: $0.reportPath, depth: 0) }
         while let (file, reportPath, depth) = pending.popLast() {
-            guard visited.insert(file.path).inserted, case .success = WorktreeForkDescriptors.lstatPath(file) else {
-                continue
-            }
             let leftover = GitWorktreeForkError.validationFailed(
                 reason: .sourceAdministrationReference, relativePath: reportPath)
+            guard visited.insert(file.path).inserted, try exists(file, otherwise: leftover) else {
+                continue
+            }
             guard depth <= WorktreeForkConfigurationIncludes.maximumDepth else {
                 throw leftover
             }
@@ -82,14 +82,13 @@ struct WorktreeForkConfigurationPathValidation: Sendable {
         var pending = roots.map { ReachedFile(copy: $0, referencedBy: nil, depth: 0) }
         while let reached = pending.popLast() {
             let copy = reached.copy
-            // A repository without this file (no config.worktree) has nothing to require.
-            guard visited.insert(copy.source.path).inserted,
-                case .success = WorktreeForkDescriptors.lstatPath(copy.source)
-            else {
-                continue
-            }
             let unusable = GitWorktreeForkError.validationFailed(
                 reason: .nestedRepositoryUnusable, relativePath: reached.referencedBy ?? copy.reportPath)
+            // A repository without this file (no config.worktree) has nothing to require. A source file that
+            // cannot even be looked up is unverifiable, never absent.
+            guard visited.insert(copy.source.path).inserted, try exists(copy.source, otherwise: unusable) else {
+                continue
+            }
             // The unchanged source decides what is required; a source configuration that cannot be read is a
             // failure, never a skip.
             let sourceEntries = try orderedEntries(of: copy.source, reportPath: copy.reportPath, otherwise: unusable)
@@ -128,7 +127,7 @@ struct WorktreeForkConfigurationPathValidation: Sendable {
                         of: source, at: destination, match: match, comparesBytes: !isInclude,
                         requiredSources: &requiredSources, reportPath: copy.reportPath)
                 }
-                if isInclude, case .success = WorktreeForkDescriptors.lstatPath(source) {
+                if isInclude, try exists(source, otherwise: unusable) {
                     pending.append(
                         ReachedFile(
                             copy: WorktreeForkConfigurationCopy(
@@ -138,6 +137,16 @@ struct WorktreeForkConfigurationPathValidation: Sendable {
                             referencedBy: copy.reportPath, depth: reached.depth + 1))
                 }
             }
+        }
+    }
+
+    /// Whether `file` exists; any lookup failure other than absence is `otherwise`.
+    private func exists(_ file: URL, otherwise failure: GitWorktreeForkError) throws(GitWorktreeForkError) -> Bool {
+        switch WorktreeForkDescriptors.existence(file) {
+        case .success(let exists):
+            return exists
+        case .failure:
+            throw failure
         }
     }
 
@@ -179,14 +188,19 @@ struct WorktreeForkConfigurationPathValidation: Sendable {
         // Files re-homing writes itself (HEAD, worktree configuration) legitimately differ from their source.
         let writtenByRehoming = WorktreeForkPrivateAdministrationCounterparts.filesWrittenByRehoming.contains(
             match.remainder)
-        switch (WorktreeForkDescriptors.lstatPath(source), WorktreeForkDescriptors.lstatPath(destination)) {
-        case (.success, .failure):
+        switch (try exists(source, otherwise: unusable), try exists(destination, otherwise: unusable)) {
+        case (true, false):
             throw unusable
-        case (.failure, .success) where !writtenByRehoming:
+        case (false, true) where !writtenByRehoming:
             // Git finds nothing in the source but would read a stand-in in the destination.
             throw unusable
-        case (.success(let sourceInfo), .success)
-        where comparesBytes && !writtenByRehoming && sourceInfo.st_mode & S_IFMT == S_IFREG:
+        case (true, true) where comparesBytes && !writtenByRehoming:
+            guard case .success(let sourceInfo) = WorktreeForkDescriptors.lstatPath(source) else {
+                throw unusable
+            }
+            guard sourceInfo.st_mode & S_IFMT == S_IFREG else {
+                return
+            }
             let equivalent = try WorktreeForkFileEquivalence.isEquivalent(
                 .init(root: match.sourceAdministration, remainder: match.remainder),
                 .init(root: match.destinationAdministration, remainder: match.remainder),

@@ -389,6 +389,64 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
         #expect(try fixture.branchNames() == branchesBefore)
     }
 
+    @Test("a nested repository's source administration that cannot be searched at validation fails typed")
+    func unsearchableSourceAdministrationFailsValidation() async throws {
+        // Arrange: after the destination is built, the nested repository's source .git loses search permission,
+        // so its configuration closure can no longer be looked up, let alone read.
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-source-unsearchable")
+        let sourceAdministration = fixture.source.appending(path: "vendor/tool/.git")
+        defer {
+            _ = chmod(sourceAdministration.path, 0o755)
+            fixture.remove()
+        }
+        try ignore("vendor/", fixture: fixture)
+        try makeNestedRepository(at: fixture.source.appending(path: "vendor/tool"), fixture: fixture)
+        let faults = WorktreeForkFaultInjector { point throws(GitWorktreeForkError) in
+            if point == .afterIndexesBuilt {
+                _ = chmod(sourceAdministration.path, 0o600)
+            }
+        }
+        let client = LibGit2AgentStudioGitLocalClient(worktreeForkWriter: LibGit2WorktreeForkWriter(faults: faults))
+        let branchesBefore = try fixture.branchNames()
+
+        // Act
+        let failure: GitWorktreeForkError?
+        do {
+            _ = try await client.forkWorktree(fixture.request())
+            failure = nil
+        } catch {
+            failure = error
+        }
+
+        // Assert: the walk reaches the node's worktree-scoped root first; either root is unverifiable here.
+        #expect(
+            failure
+                == .validationFailed(
+                    reason: .nestedRepositoryUnusable, relativePath: "vendor/tool/.git/config.worktree"))
+        #expect(!GitWorktreeForkFileProbe.exists(fixture.destination()))
+        #expect(!GitWorktreeForkFileProbe.exists(fixture.linkedWorktreeAdministration()))
+        #expect(try fixture.branchNames() == branchesBefore)
+    }
+
+    @Test("a nested repository without config.worktree forks, its absent worktree configuration requiring nothing")
+    func nestedRepositoryWithoutWorktreeConfigurationForks() async throws {
+        // Arrange
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-no-config-worktree")
+        defer { fixture.remove() }
+        try ignore("vendor/", fixture: fixture)
+        let tool = fixture.source.appending(path: "vendor/tool")
+        try makeNestedRepository(at: tool, fixture: fixture)
+        #expect(!GitWorktreeForkFileProbe.exists(tool.appending(path: ".git/config.worktree")))
+
+        // Act
+        _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+
+        // Assert
+        let destinationTool = fixture.destination().appending(path: "vendor/tool")
+        #expect(try fixture.blobID("HEAD", at: destinationTool) == fixture.blobID("HEAD", at: tool))
+        #expect(try fixture.statusLines(at: destinationTool).isEmpty)
+    }
+
     @Test("a private administration target that cannot be cloned fails typed and leaves nothing behind")
     func uncloneablePrivateAdministrationTargetFails() async throws {
         // Arrange: the named signer file is a FIFO, which has no CoW payload to give the destination.
@@ -421,6 +479,14 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
         #expect(!GitWorktreeForkFileProbe.exists(fixture.destination()))
         #expect(!GitWorktreeForkFileProbe.exists(fixture.linkedWorktreeAdministration()))
         #expect(try fixture.branchNames() == branchesBefore)
+    }
+
+    private func makeNestedRepository(at path: URL, fixture: GitWorktreeForkFixture) throws {
+        try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true)
+        try fixture.git.run(["init", "-q"], currentDirectory: path)
+        try fixture.write("tool.txt", "tool\n", in: path)
+        try fixture.git.run(["add", "."], currentDirectory: path)
+        try fixture.git.run(["commit", "-qm", "initial"], currentDirectory: path)
     }
 
     private func ignore(_ pattern: String, fixture: GitWorktreeForkFixture) throws {

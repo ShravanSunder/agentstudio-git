@@ -123,7 +123,7 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
                 copy = owned
             case .external(let external, let includedBy):
                 guard visited.insert(external.path).inserted,
-                    case .success = WorktreeForkDescriptors.lstatPath(external)
+                    try Self.exists(external, reportPath: includedBy)
                 else {
                     continue
                 }
@@ -135,7 +135,7 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
                 continue
             }
             guard visited.insert(copy.destination.path).inserted,
-                case .success = WorktreeForkDescriptors.lstatPath(copy.destination)
+                try Self.exists(copy.destination, reportPath: copy.reportPath)
             else {
                 continue
             }
@@ -259,6 +259,18 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
     private func sourceRelative(_ path: URL) -> String {
         WorktreeForkAdministrativeSymlinks.relativeComponents(of: path, beneath: plan.sourceRoot)
             ?? path.lastPathComponent
+    }
+
+    /// Whether a reached file exists. Absence is ordinary (no config.worktree, a missing optional include);
+    /// any other lookup failure leaves the closure unverifiable and fails the fork.
+    private static func exists(_ file: URL, reportPath: String) throws(GitWorktreeForkError) -> Bool {
+        switch WorktreeForkDescriptors.existence(file) {
+        case .success(let exists):
+            return exists
+        case .failure(let failure):
+            throw .entryFailed(
+                relativePath: reportPath, reason: .unresolvableGitAdministration, errorNumber: failure.code)
+        }
     }
 
     private static func ownEntries(
