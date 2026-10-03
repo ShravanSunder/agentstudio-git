@@ -103,6 +103,10 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
     let relocation: WorktreeForkSourcePathRelocation
     let lockTracker: WorktreeForkLockTracker
 
+    private var mapping: WorktreeForkConfigurationRelocationMapping {
+        WorktreeForkConfigurationRelocationMapping(plan: plan, relocation: relocation)
+    }
+
     /// Returns the destination files it edited. Every relocated value that names a captured private
     /// administration gets its counterpart cloned through `counterparts` before an include there is followed.
     func rehome(
@@ -144,10 +148,16 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
             // Relocated `includeIf` subsections, old to new, renamed in place before any value edit.
             var renamedSubsections: [String: String] = [:]
             for entry in try Self.ownEntries(of: copy) {
-                let value = try relocatedValue(for: entry, in: copy, counterparts: &counterparts)
+                let valueRelocation = try mapping.valueRelocation(for: entry, in: copy)
+                if let relocatedSource = valueRelocation.relocatedSource,
+                    let relocatedDestination = valueRelocation.relocatedDestination
+                {
+                    try counterparts.materializeCounterpart(of: relocatedSource, at: relocatedDestination)
+                }
+                let value = valueRelocation.replacement
                 var name = entry.name
                 if let condition = WorktreeForkGitDirectoryCondition.parse(includeName: entry.name),
-                    let relocated = try relocatedConditionSubsection(for: entry, in: copy)
+                    let relocated = try mapping.relocatedConditionSubsection(for: entry, in: copy)
                 {
                     renamedSubsections[condition.subsection] = relocated
                     name = "includeif.\(relocated).path"
@@ -192,91 +202,6 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
             }
         }
         return edited
-    }
-
-    /// The new value for an entry, or nil to keep it. An absolute value is re-aimed at its relocated
-    /// counterpart. A relative include is re-aimed only when, read from the copy, it no longer reaches what it
-    /// reached from the source. Values outside the source or in the shared repository keep their target; a
-    /// source path with no counterpart fails.
-    private func relocatedValue(
-        for entry: WorktreeForkConfigurationEntry,
-        in copy: WorktreeForkConfigurationCopy,
-        counterparts: inout WorktreeForkPrivateAdministrationCounterparts
-    ) throws(GitWorktreeForkError) -> String? {
-        guard let form = WorktreeForkConfigurationIncludes.pathForm(name: entry.name, value: entry.value) else {
-            return nil
-        }
-        let source = WorktreeForkConfigurationIncludes.target(
-            of: entry.value, includedFrom: copy.source, homeDirectory: plan.homeDirectory)
-        let wanted: URL
-        switch relocation.counterpart(of: source) {
-        case .outsideSource, .sharedRepository:
-            wanted = source
-        case .relocated(let destination):
-            try counterparts.materializeCounterpart(of: source, at: destination)
-            wanted = destination
-        case .unmapped:
-            let sourcePath =
-                WorktreeForkAdministrativeSymlinks.relativeComponents(of: source, beneath: plan.sourceRoot)
-                ?? source.lastPathComponent
-            throw .entryFailed(
-                relativePath: "\(copy.reportPath): \(entry.name) = \(sourcePath)",
-                reason: .unresolvableGitAdministration,
-                errorNumber: nil
-            )
-        }
-        let reachedFromCopy =
-            form == .absolute
-            ? entry.value
-            : WorktreeForkConfigurationIncludes.target(
-                of: entry.value, includedFrom: copy.destination, homeDirectory: plan.homeDirectory
-            ).path
-        guard reachedFromCopy != wanted.path, !(form == .absolute && wanted == source) else {
-            return nil
-        }
-        return wanted.path
-    }
-
-    /// The new subsection for a `gitdir` conditional include whose pattern names a relocated location, or nil
-    /// to keep it. Patterns outside the source or in the shared repository keep their target. A glob that could
-    /// match beneath a location that relocates differently has no exact counterpart, so it fails.
-    private func relocatedConditionSubsection(
-        for entry: WorktreeForkConfigurationEntry,
-        in copy: WorktreeForkConfigurationCopy
-    ) throws(GitWorktreeForkError) -> String? {
-        guard let condition = WorktreeForkGitDirectoryCondition.parse(includeName: entry.name),
-            let source = condition.location(includedFrom: copy.source, homeDirectory: plan.homeDirectory)
-        else {
-            return nil
-        }
-        let sourceLiteral =
-            WorktreeForkAdministrativeSymlinks.relativeComponents(of: source.literal, beneath: plan.sourceRoot)
-            ?? source.literal.lastPathComponent
-        let displayedPattern = WorktreeForkGitDirectoryCondition.pattern(literal: sourceLiteral, following: source)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let unresolvable = GitWorktreeForkError.entryFailed(
-            relativePath: "\(copy.reportPath): includeif.\(condition.prefix)\(displayedPattern).path",
-            reason: .unresolvableGitAdministration,
-            errorNumber: nil
-        )
-        switch relocation.counterpart(of: source.literal) {
-        case .outsideSource, .sharedRepository:
-            return nil
-        case .unmapped:
-            throw unresolvable
-        case .relocated(let destination):
-            if source.matchesBeneathLiteral, relocation.hasRelocation(strictlyBeneath: source.literal) {
-                throw unresolvable
-            }
-            // A `./` pattern that still reaches the counterpart from the copy keeps its text.
-            if condition.location(includedFrom: copy.destination, homeDirectory: plan.homeDirectory)?.literal.path
-                == destination.path
-            {
-                return nil
-            }
-            return condition.subsection(
-                withPattern: WorktreeForkGitDirectoryCondition.pattern(literal: destination.path, following: source))
-        }
     }
 
     /// A reached configuration file and whether the fork owns a copy of it. An external file is read in
@@ -342,82 +267,6 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
             // libgit2 refuses a file whose own includes cycle or nest too deeply; Git refuses it too.
             throw .entryFailed(relativePath: copy.reportPath, reason: .unresolvableGitAdministration, errorNumber: nil)
         }
-    }
-}
-
-/// Walks the destination include closure the re-homer edited, external files included, and rejects any value
-/// that still names a source location the fork relocates elsewhere, or one with no counterpart, and any value
-/// naming a destination file that is not the counterpart of its existing private-administration source:
-/// missing (Git would silently read nothing) or a different file (Git would read the wrong bytes).
-struct WorktreeForkConfigurationPathValidation: Sendable {
-    let plan: WorktreeForkPlan
-    let relocation: WorktreeForkSourcePathRelocation
-
-    /// `roots` are destination configuration files with their report paths.
-    func validate(_ roots: [(file: URL, reportPath: String)]) throws(GitWorktreeForkError) {
-        var visited = Set<String>()
-        var pending = roots.map { (file: $0.file, reportPath: $0.reportPath, depth: 0) }
-        while let (file, reportPath, depth) = pending.popLast() {
-            guard visited.insert(file.path).inserted, case .success = WorktreeForkDescriptors.lstatPath(file) else {
-                continue
-            }
-            let leftover = GitWorktreeForkError.validationFailed(
-                reason: .sourceAdministrationReference, relativePath: reportPath)
-            guard depth <= WorktreeForkConfigurationIncludes.maximumDepth,
-                let entries = try? WorktreeForkConfigurationFile.ownEntries(in: file)
-            else {
-                throw leftover
-            }
-            for entry in entries {
-                if let condition = WorktreeForkGitDirectoryCondition.parse(includeName: entry.name),
-                    let location = condition.location(includedFrom: file, homeDirectory: plan.homeDirectory),
-                    !WorktreeForkDestinationOwnership.isDestinationOwned(location.literal, plan: plan),
-                    relocation.namesRelocatedSource(location.literal)
-                {
-                    throw leftover
-                }
-                guard WorktreeForkConfigurationIncludes.pathForm(name: entry.name, value: entry.value) != nil else {
-                    continue
-                }
-                let isInclude = WorktreeForkConfigurationIncludes.isInclude(entry.name)
-                let target = WorktreeForkConfigurationIncludes.target(
-                    of: entry.value, includedFrom: file, homeDirectory: plan.homeDirectory)
-                let destinationOwned = WorktreeForkDestinationOwnership.isDestinationOwned(target, plan: plan)
-                if !destinationOwned, relocation.namesRelocatedSource(target) {
-                    throw leftover
-                }
-                if destinationOwned, !hasPrivateCounterpart(target) {
-                    throw .validationFailed(reason: .nestedRepositoryUnusable, relativePath: reportPath)
-                }
-                // External includes are walked too: they are never edited, so a leftover there is a leak.
-                if isInclude {
-                    pending.append(
-                        (
-                            target, WorktreeForkDestinationOwnership.reportLocation(of: target, plan: plan),
-                            depth + 1
-                        ))
-                }
-            }
-        }
-    }
-
-    /// False when `target` stands for an existing private-administration source and is missing, or is a regular
-    /// file not equivalent to that source. Files re-homing writes itself legitimately differ and are skipped.
-    private func hasPrivateCounterpart(_ target: URL) -> Bool {
-        for match in relocation.privateAdministrationSources(ofDestination: target)
-        where !WorktreeForkPrivateAdministrationCounterparts.filesWrittenByRehoming.contains(match.remainder) {
-            let source = match.sourceAdministration.appending(path: match.remainder)
-            guard case .success(let sourceInfo) = WorktreeForkDescriptors.lstatPath(source) else {
-                continue
-            }
-            guard case .success = WorktreeForkDescriptors.lstatPath(target) else {
-                return false
-            }
-            if sourceInfo.st_mode & S_IFMT == S_IFREG, !WorktreeForkFileEquivalence.isEquivalent(source, target) {
-                return false
-            }
-        }
-        return true
     }
 }
 

@@ -37,9 +37,7 @@ struct WorktreeForkTopologyValidator: Sendable {
             try validateCopiedRegistrations(copied)
         }
         try WorktreeForkConfigurationPathValidation(plan: plan, relocation: relocation).validate(
-            GitRepositoryStateRehomer.configurationRoots(plan: plan, nodes: rehomed).map {
-                ($0.destination, $0.reportPath)
-            })
+            GitRepositoryStateRehomer.configurationRoots(plan: plan, nodes: rehomed))
     }
 
     /// Every alternate a copied Git directory holds must resolve to destination-owned state (the destination

@@ -35,7 +35,7 @@ struct WorktreeForkPrivateCounterpartTests {
             try FileManager.default.createSymbolicLink(
                 at: destinationAdministration.appending(path: "keys"), withDestinationURL: outside)
         }
-        let match = WorktreeForkSourcePathRelocation.PrivateAdministrationMatch(
+        let match = WorktreeForkSourcePathRelocation.AdministrationMatch(
             sourceAdministration: sourceAdministration, destinationAdministration: destinationAdministration,
             remainder: "keys/allowed_signers")
 

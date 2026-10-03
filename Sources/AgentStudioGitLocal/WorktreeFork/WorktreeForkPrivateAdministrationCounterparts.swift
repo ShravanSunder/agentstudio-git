@@ -83,7 +83,7 @@ struct WorktreeForkPrivateAdministrationCounterparts: Sendable {
     }
 
     /// Two sources agree when neither exists (Git finds nothing through either) or both are equivalent files.
-    private static func sourcesAgree(_ first: URL, _ second: URL) -> Bool {
+    static func sourcesAgree(_ first: URL, _ second: URL) -> Bool {
         switch (WorktreeForkDescriptors.lstatPath(first), WorktreeForkDescriptors.lstatPath(second)) {
         case (.failure, .failure):
             return true
@@ -98,7 +98,7 @@ struct WorktreeForkPrivateAdministrationCounterparts: Sendable {
     /// destination entry that is missing is cloned from its source; an existing regular-file target that is
     /// not equivalent to its source is replaced. `reportPath` maps a remainder prefix to its report location.
     static func realize(
-        _ match: WorktreeForkSourcePathRelocation.PrivateAdministrationMatch,
+        _ match: WorktreeForkSourcePathRelocation.AdministrationMatch,
         reportPath: (String) -> String
     ) throws(GitWorktreeForkError) -> Realization {
         let sourceRoot = try openRoot(match.sourceAdministration, reportPath: reportPath(""))

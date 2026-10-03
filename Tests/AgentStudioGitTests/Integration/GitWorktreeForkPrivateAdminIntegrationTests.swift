@@ -192,6 +192,133 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
         #expect(try String(contentsOf: privateExtra, encoding: .utf8) == privateText)
     }
 
+    @Test("a private included config whose path values re-homing rewrites passes validation with its rewritten values")
+    func rewrittenPrivateIncludePassesValidation() async throws {
+        // Arrange: private extra.conf includes private deeper.conf by absolute source path and names a source-tree
+        // lfs.storage, so its destination copy must differ from its source by exactly those relocations.
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-private-rewritten")
+        defer { fixture.remove() }
+        try fixture.write(".gitignore", ".claude/\nlarge-file-store/\n")
+        try fixture.git.run("add", ".gitignore")
+        try fixture.git.run("commit", "-qm", "ignore agents and storage")
+        try fixture.write("large-file-store/objects/placeholder", "stored\n")
+        let agent = fixture.source.appending(path: ".claude/worktrees/agent")
+        try fixture.git.run("worktree", "add", "-q", "-b", "agent", agent.path)
+        let privateAdministration = try canonical(fixture.source.appending(path: ".git/worktrees/agent"))
+        let extra = privateAdministration.appending(path: "extra.conf")
+        let deeper = privateAdministration.appending(path: "deeper.conf")
+        let storage = try canonical(fixture.source.appending(path: "large-file-store"))
+        try "[agentstudio]\n\tmarker = private-original\n".write(to: deeper, atomically: false, encoding: .utf8)
+        try "[include]\n\tpath = \(deeper.path)\n[lfs]\n\tstorage = \(storage.path)\n".write(
+            to: extra, atomically: false, encoding: .utf8)
+        try fixture.git.run("config", "include.path", extra.path)
+        #expect(try configValue("agentstudio.marker", at: agent, fixture) == "private-original")
+        let extraBytes = try Data(contentsOf: extra)
+
+        // Act
+        _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+
+        // Assert
+        let destinationAgent = fixture.destination().appending(path: ".claude/worktrees/agent")
+        #expect(try configValue("agentstudio.marker", at: destinationAgent, fixture) == "private-original")
+        #expect(
+            try configValue("lfs.storage", at: destinationAgent, fixture)
+                == canonical(fixture.destination().appending(path: "large-file-store")).path)
+        #expect(try Data(contentsOf: extra) == extraBytes)
+        try "[agentstudio]\n\tmarker = changed-in-source\n".write(to: deeper, atomically: false, encoding: .utf8)
+        #expect(try configValue("agentstudio.marker", at: destinationAgent, fixture) == "private-original")
+    }
+
+    @Test("a reference to only the common file passes validation beside an unrelated same-named private file")
+    func commonOnlyReferenceIgnoresUnrelatedPrivateFile() async throws {
+        // Arrange: an external repository's linked worktree under vendor/ is flattened; its config includes only
+        // the common extra.conf, while its private administration holds an unreferenced extra.conf.
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-common-only")
+        defer { fixture.remove() }
+        try ignore("vendor/", fixture: fixture)
+        let upstream = fixture.repository.root.appending(path: "upstream")
+        try FileManager.default.createDirectory(at: upstream, withIntermediateDirectories: true)
+        try fixture.git.run(["init", "-q"], currentDirectory: upstream)
+        try fixture.write("up.txt", "up\n", in: upstream)
+        try fixture.git.run(["add", "."], currentDirectory: upstream)
+        try fixture.git.run(["commit", "-qm", "initial"], currentDirectory: upstream)
+        let linked = fixture.source.appending(path: "vendor/linked")
+        try fixture.git.run(["worktree", "add", "-q", "-b", "linked", linked.path], currentDirectory: upstream)
+        let commonAdministration = try canonical(upstream.appending(path: ".git"))
+        let commonExtra = commonAdministration.appending(path: "extra.conf")
+        try "[agentstudio]\n\tmarker = required-common\n".write(to: commonExtra, atomically: false, encoding: .utf8)
+        try "[agentstudio]\n\tmarker = unreferenced-private\n".write(
+            to: commonAdministration.appending(path: "worktrees/linked/extra.conf"), atomically: false,
+            encoding: .utf8)
+        try fixture.git.run(["config", "include.path", commonExtra.path], currentDirectory: upstream)
+        #expect(try configValue("agentstudio.marker", at: linked, fixture) == "required-common")
+
+        // Act
+        _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+
+        // Assert
+        let destinationLinked = fixture.destination().appending(path: "vendor/linked")
+        #expect(try configValue("agentstudio.marker", at: destinationLinked, fixture) == "required-common")
+        #expect(
+            try Data(contentsOf: canonical(destinationLinked.appending(path: ".git")).appending(path: "extra.conf"))
+                == Data(contentsOf: commonExtra))
+    }
+
+    @Test(
+        "a private counterpart replaced or removed after re-homing fails validation and leaves nothing behind",
+        arguments: TamperedCounterpart.allCases)
+    func tamperedPrivateCounterpartFailsValidation(tampering: TamperedCounterpart) async throws {
+        // Arrange: re-homing clones both private files; a fault then breaks one before validation runs.
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-private-tampered")
+        defer { fixture.remove() }
+        try ignore(".claude/", fixture: fixture)
+        let agent = fixture.source.appending(path: ".claude/worktrees/agent")
+        try fixture.git.run("worktree", "add", "-q", "-b", "agent", agent.path)
+        let privateAdministration = try canonical(fixture.source.appending(path: ".git/worktrees/agent"))
+        let signers = privateAdministration.appending(path: "allowed_signers")
+        let extra = privateAdministration.appending(path: "extra.conf")
+        try "agent@example.com ssh-ed25519 AAAAexample\n".write(to: signers, atomically: false, encoding: .utf8)
+        try "[agentstudio]\n\tprobe = from-private\n".write(to: extra, atomically: false, encoding: .utf8)
+        try fixture.git.run("config", "gpg.ssh.allowedSignersFile", signers.path)
+        try fixture.git.run("config", "include.path", extra.path)
+        let destinationAdministration = fixture.destination().appending(path: ".claude/worktrees/agent/.git")
+        let faults = WorktreeForkFaultInjector { point throws(GitWorktreeForkError) in
+            guard point == .afterGitStateRehomed else {
+                return
+            }
+            switch tampering {
+            case .wrongBytes:
+                try? Data("stranger@example.com ssh-ed25519 AAAAstranger\n".utf8)
+                    .write(to: destinationAdministration.appending(path: "allowed_signers"))
+            case .missing:
+                try? FileManager.default.removeItem(at: destinationAdministration.appending(path: "extra.conf"))
+            case .includedEntriesChanged:
+                try? Data("[agentstudio]\n\tprobe = tampered\n".utf8)
+                    .write(to: destinationAdministration.appending(path: "extra.conf"))
+            }
+        }
+        let client = LibGit2AgentStudioGitLocalClient(worktreeForkWriter: LibGit2WorktreeForkWriter(faults: faults))
+        let branchesBefore = try fixture.branchNames()
+
+        // Act
+        let failure: GitWorktreeForkError?
+        do {
+            _ = try await client.forkWorktree(fixture.request())
+            failure = nil
+        } catch {
+            failure = error
+        }
+
+        // Assert
+        #expect(
+            failure
+                == .validationFailed(
+                    reason: .nestedRepositoryUnusable, relativePath: ".claude/worktrees/agent/.git/config"))
+        #expect(!GitWorktreeForkFileProbe.exists(fixture.destination()))
+        #expect(!GitWorktreeForkFileProbe.exists(fixture.linkedWorktreeAdministration()))
+        #expect(try fixture.branchNames() == branchesBefore)
+    }
+
     @Test("a private administration target that cannot be cloned fails typed and leaves nothing behind")
     func uncloneablePrivateAdministrationTargetFails() async throws {
         // Arrange: the named signer file is a FIFO, which has no CoW payload to give the destination.
@@ -248,4 +375,14 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
 enum CollidingAdministrationContent: String, CaseIterable, Sendable {
     case different
     case identical
+}
+
+/// How a fault breaks a cloned private counterpart before validation.
+enum TamperedCounterpart: String, CaseIterable, Sendable {
+    /// A referenced non-configuration file holds different bytes.
+    case wrongBytes
+    /// A referenced included configuration file is gone.
+    case missing
+    /// A referenced included configuration file holds entries no authorized relocation explains.
+    case includedEntriesChanged
 }
