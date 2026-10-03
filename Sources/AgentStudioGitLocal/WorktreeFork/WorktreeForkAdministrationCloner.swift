@@ -47,6 +47,32 @@ struct WorktreeForkAdministrationCloner: Sendable {
         }
     }
 
+    /// Clones the directory open at `sourceDirectory` into a new directory `name` created beneath the open
+    /// `destinationParent`, never resolving a destination path, so a destination ancestor swapped after the
+    /// parent was opened cannot redirect the copy. `source` and `destination` only label the returned tree,
+    /// whose later metadata pass reopens them with no symlink allowed anywhere in the path.
+    func cloneTree(
+        fromDirectory sourceDirectory: Int32,
+        intoNewDirectory name: String,
+        beneath destinationParent: Int32,
+        source: URL,
+        destination: URL
+    ) throws(GitWorktreeForkError) -> WorktreeForkClonedAdministrationTree {
+        try WorktreeForkDatalessPolicy.withMaterializationDenied(reportPath: reportPath) {
+            () throws(GitWorktreeForkError) in
+            guard name.withCString({ mkdirat(destinationParent, $0, 0o755) }) == 0 else {
+                throw .entryFailed(relativePath: reportPath, reason: .entryCreationFailed, errorNumber: errno)
+            }
+            let destinationRoot = try descriptor(
+                WorktreeForkDescriptors.openDirectory(beneath: destinationParent, relativePath: name))
+            defer { close(destinationRoot) }
+            var tree = WorktreeForkClonedAdministrationTree(
+                source: source, destination: destination, reportPath: reportPath)
+            try cloneDirectory(sourceDirectory, destinationRoot, relativePath: "", into: &tree)
+            return tree
+        }
+    }
+
     private func cloneTreeWithMaterializationDenied(
         from source: URL,
         to destination: URL,

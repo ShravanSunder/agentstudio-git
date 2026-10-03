@@ -4,29 +4,98 @@ import Foundation
 /// Whether two regular files are the same counterpart: equal bytes, permission bits, user-visible flags,
 /// extended attributes, and extended ACL. Used to tell a strict clone of a source file from a different file
 /// that happens to share its name.
+///
+/// Comparing reads payload bytes, and strict CoW never authorizes a download: every comparison runs with
+/// dataless materialization denied, and a dataless file fails closed before any read. Files are opened from
+/// already-open descriptors or descriptor-relative beneath a no-symlink administration root.
 enum WorktreeForkFileEquivalence {
+    /// A file named by the administration root it lies beneath and its `/`-separated path below that root.
+    struct ContainedFile: Equatable, Sendable {
+        let root: URL
+        let remainder: String
+    }
+
     /// Kernel-managed attributes a copy may carry differently from its original.
     private static let kernelManagedAttributes: Set<String> = ["com.apple.provenance"]
     private static let readChunkSize = 64 * 1024
 
-    static func isEquivalent(_ first: URL, _ second: URL) -> Bool {
-        let firstDescriptor = first.path.withCString { open($0, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC) }
-        guard firstDescriptor >= 0 else {
-            return false
+    /// Compares two already-open files.
+    static func isEquivalent(_ first: Int32, _ second: Int32, reportPath: String) throws(GitWorktreeForkError) -> Bool {
+        try WorktreeForkDatalessPolicy.withMaterializationDenied(reportPath: reportPath) {
+            () throws(GitWorktreeForkError) in
+            try compare(first, second, reportPath: reportPath)
         }
-        defer { close(firstDescriptor) }
-        let secondDescriptor = second.path.withCString { open($0, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC) }
-        guard secondDescriptor >= 0 else {
-            return false
-        }
-        defer { close(secondDescriptor) }
-        return isEquivalent(firstDescriptor, secondDescriptor)
     }
 
-    static func isEquivalent(_ first: Int32, _ second: Int32) -> Bool {
+    /// Compares two contained files; a file that is missing, or a symlink, is never equivalent.
+    static func isEquivalent(
+        _ first: ContainedFile,
+        _ second: ContainedFile,
+        reportPath: String
+    ) throws(GitWorktreeForkError) -> Bool {
+        try WorktreeForkDatalessPolicy.withMaterializationDenied(reportPath: reportPath) {
+            () throws(GitWorktreeForkError) in
+            guard let firstDescriptor = try open(first, reportPath: reportPath) else {
+                return false
+            }
+            defer { close(firstDescriptor) }
+            guard let secondDescriptor = try open(second, reportPath: reportPath) else {
+                return false
+            }
+            defer { close(secondDescriptor) }
+            return try compare(firstDescriptor, secondDescriptor, reportPath: reportPath)
+        }
+    }
+
+    /// Opens `file` beneath its root with no symlink anywhere in the path; nil when it is missing or a symlink.
+    private static func open(_ file: ContainedFile, reportPath: String) throws(GitWorktreeForkError) -> Int32? {
+        let root: Int32
+        switch WorktreeForkDescriptors.openRoot(atCanonicalPath: file.root) {
+        case .success(let descriptor):
+            root = descriptor
+        case .failure(let failure) where failure.code == ENOENT:
+            return nil
+        case .failure(let failure):
+            throw .entryFailed(
+                relativePath: reportPath, reason: .unresolvableGitAdministration, errorNumber: failure.code)
+        }
+        defer { close(root) }
+        let (parentPath, name) = WorktreeForkDescriptors.splitParent(file.remainder)
+        let parent: Int32
+        switch WorktreeForkDescriptors.openDirectory(beneath: root, relativePath: parentPath) {
+        case .success(let descriptor):
+            parent = descriptor
+        case .failure(let failure) where failure.code == ENOENT:
+            return nil
+        case .failure(let failure):
+            throw .entryFailed(
+                relativePath: reportPath, reason: .unresolvableGitAdministration, errorNumber: failure.code)
+        }
+        defer { close(parent) }
+        let descriptor = name.withCString { openat(parent, $0, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC) }
+        guard descriptor >= 0 else {
+            if errno == ENOENT || errno == ELOOP {
+                return nil
+            }
+            throw .entryFailed(relativePath: reportPath, reason: .unreadableEntry, errorNumber: errno)
+        }
+        return descriptor
+    }
+
+    /// Runs with materialization denied; checks both files for a dataless payload before reading either.
+    private static func compare(_ first: Int32, _ second: Int32, reportPath: String) throws(GitWorktreeForkError)
+        -> Bool
+    {
         guard case .success(let firstInfo) = WorktreeForkDescriptors.statDescriptor(first),
-            case .success(let secondInfo) = WorktreeForkDescriptors.statDescriptor(second),
-            firstInfo.st_mode & S_IFMT == S_IFREG, secondInfo.st_mode & S_IFMT == S_IFREG,
+            case .success(let secondInfo) = WorktreeForkDescriptors.statDescriptor(second)
+        else {
+            throw .entryFailed(relativePath: reportPath, reason: .unreadableEntry, errorNumber: errno)
+        }
+        for info in [firstInfo, secondInfo]
+        where WorktreeForkEntryPolicy.disposition(for: .regularFile, flags: info.st_flags) == .rejectDataless {
+            throw .entryFailed(relativePath: reportPath, reason: .datalessFile, errorNumber: nil)
+        }
+        guard firstInfo.st_mode & S_IFMT == S_IFREG, secondInfo.st_mode & S_IFMT == S_IFREG,
             firstInfo.st_size == secondInfo.st_size,
             firstInfo.st_mode & WorktreeForkEntryMetadata.permissionMask
                 == secondInfo.st_mode & WorktreeForkEntryMetadata.permissionMask,

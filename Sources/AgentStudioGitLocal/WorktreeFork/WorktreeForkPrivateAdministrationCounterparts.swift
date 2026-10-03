@@ -74,21 +74,41 @@ struct WorktreeForkPrivateAdministrationCounterparts: Sendable {
             requiredSources[destination.path] = source
             return
         }
-        guard required != source, !Self.sourcesAgree(required, source) else {
+        guard required != source,
+            try !Self.sourcesAgree(required, source, relocation: relocation, reportPath: reportPath(of: destination))
+        else {
             return
         }
         throw .entryFailed(
-            relativePath: WorktreeForkDestinationOwnership.reportLocation(of: destination, plan: plan),
-            reason: .unresolvableGitAdministration, errorNumber: nil)
+            relativePath: reportPath(of: destination), reason: .unresolvableGitAdministration, errorNumber: nil)
+    }
+
+    private func reportPath(of destination: URL) -> String {
+        WorktreeForkDestinationOwnership.reportLocation(of: destination, plan: plan)
     }
 
     /// Two sources agree when neither exists (Git finds nothing through either) or both are equivalent files.
-    static func sourcesAgree(_ first: URL, _ second: URL) -> Bool {
+    /// Only sources in relocated administration can share a destination name; each is read descriptor-relative
+    /// beneath its administration root.
+    static func sourcesAgree(
+        _ first: URL,
+        _ second: URL,
+        relocation: WorktreeForkSourcePathRelocation,
+        reportPath: String
+    ) throws(GitWorktreeForkError) -> Bool {
         switch (WorktreeForkDescriptors.lstatPath(first), WorktreeForkDescriptors.lstatPath(second)) {
         case (.failure, .failure):
             return true
         case (.success, .success):
-            return WorktreeForkFileEquivalence.isEquivalent(first, second)
+            guard let firstMatch = relocation.administrationMatch(of: first),
+                let secondMatch = relocation.administrationMatch(of: second)
+            else {
+                return false
+            }
+            return try WorktreeForkFileEquivalence.isEquivalent(
+                .init(root: firstMatch.sourceAdministration, remainder: firstMatch.remainder),
+                .init(root: secondMatch.sourceAdministration, remainder: secondMatch.remainder),
+                reportPath: reportPath)
         default:
             return false
         }
@@ -97,9 +117,13 @@ struct WorktreeForkPrivateAdministrationCounterparts: Sendable {
     /// Walks `match.remainder` beneath both administration roots one component at a time. The topmost
     /// destination entry that is missing is cloned from its source; an existing regular-file target that is
     /// not equivalent to its source is replaced. `reportPath` maps a remainder prefix to its report location.
+    /// Every destination operation goes through the parent descriptor opened for that entry, never a path, so
+    /// a destination ancestor replaced after it was opened cannot redirect a write. `afterParentsOpened` runs
+    /// once both parent descriptors for an entry are open and before that entry is realized.
     static func realize(
         _ match: WorktreeForkSourcePathRelocation.AdministrationMatch,
-        reportPath: (String) -> String
+        reportPath: (String) -> String,
+        afterParentsOpened: (_ entryPath: String) -> Void = { _ in }
     ) throws(GitWorktreeForkError) -> Realization {
         let sourceRoot = try openRoot(match.sourceAdministration, reportPath: reportPath(""))
         defer { close(sourceRoot) }
@@ -114,6 +138,7 @@ struct WorktreeForkPrivateAdministrationCounterparts: Sendable {
             defer { close(sourceParent) }
             let destinationParent = try openContainedDirectory(destinationRoot, parentPath, report, isSource: false)
             defer { close(destinationParent) }
+            afterParentsOpened(entryPath)
             guard let sourceInfo = try entryInfo(in: sourceParent, name: name, report: report) else {
                 return .unchanged
             }
@@ -127,11 +152,14 @@ struct WorktreeForkPrivateAdministrationCounterparts: Sendable {
                 }
                 throw .entryFailed(relativePath: report, reason: .unsupportedEntryKind, errorNumber: nil)
             case (.directory, nil):
+                let sourceDirectory = try openContainedDirectory(sourceParent, name, report, isSource: true)
+                defer { close(sourceDirectory) }
                 let cloner = WorktreeForkAdministrationCloner(reportPath: report)
                 return .clonedDirectory(
                     try cloner.cloneTree(
-                        from: match.sourceAdministration.appending(path: entryPath),
-                        to: match.destinationAdministration.appending(path: entryPath)))
+                        fromDirectory: sourceDirectory, intoNewDirectory: name, beneath: destinationParent,
+                        source: match.sourceAdministration.appending(path: entryPath),
+                        destination: match.destinationAdministration.appending(path: entryPath)))
             case (.directory, .directory) where !isTarget:
                 parentPath = entryPath
             case (.regularFile, nil) where isTarget:
@@ -139,8 +167,7 @@ struct WorktreeForkPrivateAdministrationCounterparts: Sendable {
                     try cloneFile(name, from: sourceParent, into: destinationParent, report: report))
             case (.regularFile, .regularFile) where isTarget:
                 return try replaceIfDifferent(
-                    name, sourceParent: sourceParent, destinationParent: destinationParent,
-                    destination: match.destinationAdministration.appending(path: entryPath), report: report)
+                    name, sourceParent: sourceParent, destinationParent: destinationParent, report: report)
             case (.regularFile, _) where !isTarget:
                 return .unchanged
             case (.fifo, _), (.unixSocket, _), (.characterDevice, _), (.blockDevice, _), (.unknown, _):
@@ -154,39 +181,85 @@ struct WorktreeForkPrivateAdministrationCounterparts: Sendable {
         return .unchanged
     }
 
+    /// Replaces the existing target with a clone of its source, entirely through `destinationParent` and the
+    /// target's and clone's own descriptors: protection is lifted from the target, the clone gets the source's
+    /// attributes and mode, is renamed into place, and only then gets the ACL and flags that would have
+    /// forbidden the rename. Before the rename, a failure puts the target's protection back.
     private static func replaceIfDifferent(
         _ name: String,
         sourceParent: Int32,
         destinationParent: Int32,
-        destination: URL,
         report: String
     ) throws(GitWorktreeForkError) -> Realization {
         let source = try openSourceFile(name, in: sourceParent, report: report)
         defer { close(source) }
-        let existing = name.withCString {
-            openat(destinationParent, $0, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard case .success(let targetInfo) = WorktreeForkDescriptors.statEntry(in: destinationParent, name: name)
+        else {
+            throw .entryFailed(relativePath: report, reason: .unresolvableGitAdministration, errorNumber: errno)
         }
-        if existing >= 0 {
-            defer { close(existing) }
-            if WorktreeForkFileEquivalence.isEquivalent(source, existing) {
-                return .unchanged
-            }
+        // Swapping one name of a hard-link group would split it from its other names.
+        guard targetInfo.st_nlink == 1 else {
+            throw .entryFailed(relativePath: report, reason: .metadataNotReproducible, errorNumber: nil)
         }
-        try WorktreeForkMetadataPreservingRewrite.rewrite(
-            destination, metadataFrom: .sourceDescriptor(source), reportPath: report
-        ) { () throws(GitWorktreeForkError) in
-            let temporary = ".\(name).agentstudio-\(UUID().uuidString).tmp"
-            try cloneUnprotected(source, as: temporary, into: destinationParent, report: report)
-            let renamed = temporary.withCString { temporaryName in
+        let target = try openTarget(name, in: destinationParent, info: targetInfo, report: report)
+        defer { close(target) }
+        if try WorktreeForkFileEquivalence.isEquivalent(source, target, reportPath: report) {
+            return .unchanged
+        }
+        let protection = try WorktreeForkReplacementProtection.lift(
+            .descriptor(target), originalInfo: targetInfo, reportPath: report)
+        let temporary = ".\(name).agentstudio-\(UUID().uuidString).tmp"
+        var renamed = false
+        do throws(GitWorktreeForkError) {
+            let metadata = try WorktreeForkFileMetadata.capture(fromDescriptor: source, reportPath: report)
+            let clone = try cloneUnprotected(source, as: temporary, into: destinationParent, report: report)
+            defer { close(clone) }
+            try metadata.applyAttributesAndMode(toDescriptor: clone, reportPath: report)
+            let renameResult = temporary.withCString { temporaryName in
                 name.withCString { renameat(destinationParent, temporaryName, destinationParent, $0) }
             }
-            guard renamed == 0 else {
-                let failure = errno
-                _ = temporary.withCString { unlinkat(destinationParent, $0, 0) }
-                throw .entryFailed(relativePath: report, reason: .entryCreationFailed, errorNumber: failure)
+            guard renameResult == 0 else {
+                throw .entryFailed(relativePath: report, reason: .entryCreationFailed, errorNumber: errno)
             }
+            renamed = true
+            try metadata.applyAccessControlAndFlags(toDescriptor: clone, reportPath: report)
+        } catch {
+            if !renamed {
+                _ = temporary.withCString { unlinkat(destinationParent, $0, 0) }
+                try? protection.restore(on: .descriptor(target), reportPath: report)
+            }
+            throw error
         }
         return .clonedFile(try normalization(source: source, name: name, in: destinationParent, report: report))
+    }
+
+    /// Opens the existing target beneath `destinationParent` without following it. A target whose mode withholds
+    /// owner read is granted it first, relative to the parent; it is replaced either way.
+    private static func openTarget(
+        _ name: String,
+        in destinationParent: Int32,
+        info: Darwin.stat,
+        report: String
+    ) throws(GitWorktreeForkError) -> Int32 {
+        let flags = O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC
+        var target = name.withCString { openat(destinationParent, $0, flags) }
+        if target < 0, errno == EACCES,
+            name.withCString({ fchmodat(destinationParent, $0, (info.st_mode & 0o7777) | S_IRUSR, AT_SYMLINK_NOFOLLOW) }
+            )
+                == 0
+        {
+            target = name.withCString { openat(destinationParent, $0, flags) }
+        }
+        guard target >= 0 else {
+            throw .entryFailed(relativePath: report, reason: .unresolvableGitAdministration, errorNumber: errno)
+        }
+        guard case .success(let opened) = WorktreeForkDescriptors.statDescriptor(target),
+            WorktreeForkEntryIdentity(opened) == WorktreeForkEntryIdentity(info)
+        else {
+            close(target)
+            throw .entryFailed(relativePath: report, reason: .unresolvableGitAdministration, errorNumber: nil)
+        }
+        return target
     }
 
     private static func cloneFile(
@@ -201,33 +274,30 @@ struct WorktreeForkPrivateAdministrationCounterparts: Sendable {
         return try normalization(source: source, name: name, in: destinationParent, report: report)
     }
 
-    /// Clones under a temporary name with the clone's flags and ACL cleared and owner write granted, because a
-    /// user-immutable flag or a `deny delete` entry would forbid renaming it into place and a read-only mode
-    /// would refuse its extended attributes; the rewrite then applies the source's mode, ACL, and flags.
+    /// Clones under a temporary name and returns the clone's descriptor, with the clone's flags and ACL
+    /// cleared and owner write granted: a user-immutable flag or a `deny delete` entry would forbid renaming it
+    /// into place, and a read-only mode would refuse its extended attributes. The caller applies the source's
+    /// metadata through the returned descriptor. On failure nothing is left under the temporary name.
     private static func cloneUnprotected(
         _ source: Int32,
         as temporary: String,
         into destinationParent: Int32,
         report: String
-    ) throws(GitWorktreeForkError) {
+    ) throws(GitWorktreeForkError) -> Int32 {
         try strictClone(source, as: temporary, into: destinationParent, report: report)
         let clone = temporary.withCString { openat(destinationParent, $0, O_RDONLY | O_NOFOLLOW | O_CLOEXEC) }
-        var failure: Int32?
-        if clone < 0 {
-            failure = errno
-        } else {
-            if fchflags(clone, 0) != 0 { failure = errno }
-            if failure == nil, fchmod(clone, 0o600) != 0 { failure = errno }
-            if failure == nil, let empty = acl_init(0) {
-                if acl_set_fd_np(clone, empty, ACL_TYPE_EXTENDED) != 0 { failure = errno }
-                acl_free(UnsafeMutableRawPointer(empty))
+        var failure: Int32 = clone < 0 ? errno : 0
+        if failure == 0, fchflags(clone, 0) != 0 { failure = errno }
+        if failure == 0 { failure = WorktreeForkMetadataTarget.descriptor(clone).removeAccessControlList() }
+        if failure == 0, fchmod(clone, 0o600) != 0 { failure = errno }
+        guard failure == 0 else {
+            if clone >= 0 {
+                close(clone)
             }
-            close(clone)
-        }
-        if let failure {
             _ = temporary.withCString { unlinkat(destinationParent, $0, 0) }
             throw .entryFailed(relativePath: report, reason: .entryCreationFailed, errorNumber: failure)
         }
+        return clone
     }
 
     private static func strictClone(

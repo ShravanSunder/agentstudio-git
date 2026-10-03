@@ -135,9 +135,12 @@ struct WorktreeForkConfigurationPathValidation: Sendable {
         let unusable = GitWorktreeForkError.validationFailed(
             reason: .nestedRepositoryUnusable, relativePath: reportPath)
         if let required = requiredSources[destination.path] {
-            guard required == source || WorktreeForkPrivateAdministrationCounterparts.sourcesAgree(required, source)
-            else {
-                throw unusable
+            if required != source {
+                let agree = try WorktreeForkPrivateAdministrationCounterparts.sourcesAgree(
+                    required, source, relocation: relocation, reportPath: reportPath)
+                guard agree else {
+                    throw unusable
+                }
             }
         } else {
             requiredSources[destination.path] = source
@@ -153,7 +156,11 @@ struct WorktreeForkConfigurationPathValidation: Sendable {
             throw unusable
         case (.success(let sourceInfo), .success)
         where comparesBytes && !writtenByRehoming && sourceInfo.st_mode & S_IFMT == S_IFREG:
-            guard WorktreeForkFileEquivalence.isEquivalent(source, destination) else {
+            let equivalent = try WorktreeForkFileEquivalence.isEquivalent(
+                .init(root: match.sourceAdministration, remainder: match.remainder),
+                .init(root: match.destinationAdministration, remainder: match.remainder),
+                reportPath: reportPath)
+            guard equivalent else {
                 throw unusable
             }
         default:
