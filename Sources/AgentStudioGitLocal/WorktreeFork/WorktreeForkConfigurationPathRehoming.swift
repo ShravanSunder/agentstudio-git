@@ -58,6 +58,21 @@ enum WorktreeForkConfigurationIncludes {
     }
 }
 
+/// Keys whose values Git reads as regular expressions, not paths, so a value that happens to start with `/`
+/// must not be relocated or validated as one: a diff driver's `xfuncname`, `funcname`, and `wordRegex`
+/// (Git's `userdiff_config`). The re-homer and the validator both consult this one list.
+enum WorktreeForkConfigurationPatternKeys {
+    private static let diffDriverPatternVariables: Set<String> = ["xfuncname", "funcname", "wordregex"]
+
+    static func holdsPattern(_ name: String) -> Bool {
+        let parts = name.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count >= 3, parts.first?.lowercased() == "diff", let variable = parts.last else {
+            return false
+        }
+        return diffDriverPatternVariables.contains(variable.lowercased())
+    }
+}
+
 /// Re-aims the absolute paths that a repository's configuration records, across its whole include closure,
 /// at their destination counterparts. Every reached file the fork owns a copy of (inside the destination
 /// tree or the fork's own administration) is edited; files outside those places (outside the source, or in
@@ -128,7 +143,9 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
         let isRelativeInclude =
             WorktreeForkConfigurationIncludes.isInclude(entry.name)
             && WorktreeForkConfigurationIncludes.isRelative(entry.value)
-        guard entry.value.hasPrefix("/") || isRelativeInclude else {
+        guard entry.value.hasPrefix("/") || isRelativeInclude,
+            !WorktreeForkConfigurationPatternKeys.holdsPattern(entry.name)
+        else {
             return nil
         }
         let source = WorktreeForkConfigurationIncludes.target(of: entry.value, includedFrom: copy.source)
@@ -240,7 +257,9 @@ struct WorktreeForkConfigurationPathValidation: Sendable {
                     throw leftover
                 }
                 let isInclude = WorktreeForkConfigurationIncludes.isInclude(entry.name)
-                guard entry.value.hasPrefix("/") || isInclude else {
+                guard entry.value.hasPrefix("/") || isInclude,
+                    !WorktreeForkConfigurationPatternKeys.holdsPattern(entry.name)
+                else {
                     continue
                 }
                 let target = WorktreeForkConfigurationIncludes.target(of: entry.value, includedFrom: file)
