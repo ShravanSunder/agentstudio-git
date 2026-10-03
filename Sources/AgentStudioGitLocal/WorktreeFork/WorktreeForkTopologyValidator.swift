@@ -37,14 +37,43 @@ struct WorktreeForkTopologyValidator: Sendable {
                 in: node.destinationAdministration, reportPath: node.node.relativePath, relocation: relocation)
         }
         for copied in plan.gitTopology.copiedGitDirectories {
+            try validateCopiedAlternates(copied, relocation: relocation)
             try validateConfigurationPaths(
                 in: plan.destinationRoot.appending(path: copied.relativePath), reportPath: copied.relativePath,
                 relocation: relocation)
         }
     }
 
+    /// Every alternate a copied Git directory holds must resolve to destination-owned state (the destination
+    /// tree or the fork's own administration, where object mirrors live) or to the source repository's shared
+    /// common directory, which the fork itself uses. The one exception is a line that already dangled in the
+    /// source, which the re-homer keeps as written.
+    private func validateCopiedAlternates(
+        _ copied: WorktreeForkCopiedGitDirectory,
+        relocation: WorktreeForkSourcePathRelocation
+    ) throws(GitWorktreeForkError) {
+        let objects = plan.destinationRoot.appending(path: copied.relativePath).appending(path: "objects")
+        let danglingInSource = Set(copied.alternates.filter { $0.target == nil }.map(\.line))
+        for line in WorktreeForkGitTopologyPlanner.alternateLines(objects) {
+            let recorded = line.hasPrefix("/") ? URL(fileURLWithPath: line) : objects.appending(path: line)
+            guard case .success(let resolved) = WorktreeForkDescriptors.realpathURL(recorded) else {
+                if danglingInSource.contains(line) {
+                    continue
+                }
+                throw .validationFailed(reason: .sourceAdministrationReference, relativePath: copied.relativePath)
+            }
+            guard
+                allowedPrefixes.contains(where: { (resolved.path + "/").hasPrefix($0) })
+                    || relocation.counterpart(of: resolved) == .sharedRepository
+            else {
+                throw .validationFailed(reason: .sourceAdministrationReference, relativePath: copied.relativePath)
+            }
+        }
+    }
+
     /// A configuration value that still names the source tree or a source administration the fork re-homed
-    /// would keep the destination reading, or writing, source state.
+    /// would keep the destination reading, or writing, source state. Values outside the source, and values in
+    /// the shared repository (the same path the fork itself sees), are accepted.
     private func validateConfigurationPaths(
         in administration: URL,
         reportPath: String,
@@ -58,10 +87,25 @@ struct WorktreeForkTopologyValidator: Sendable {
             for entry in try WorktreeForkConfigurationFile.absolutePathEntries(in: file) {
                 let path = WorktreeForkSourcePathRelocation.canonicalized(absolutePath: entry.value)
                 let destinationOwned = allowedPrefixes.contains { (path.path + "/").hasPrefix($0) }
-                if !destinationOwned, relocation.counterpart(of: path) != .outsideSource {
+                if !destinationOwned, Self.namesRelocatedSource(relocation.counterpart(of: path), path: path) {
                     throw .validationFailed(reason: .sourceAdministrationReference, relativePath: reportPath)
                 }
             }
+        }
+    }
+
+    /// True when `path` is a source location the fork relocates to somewhere else, or one with no counterpart.
+    private static func namesRelocatedSource(
+        _ counterpart: WorktreeForkSourcePathRelocation.Counterpart,
+        path: URL
+    ) -> Bool {
+        switch counterpart {
+        case .outsideSource, .sharedRepository:
+            false
+        case .relocated(let destination):
+            destination.path != path.path
+        case .unmapped:
+            true
         }
     }
 

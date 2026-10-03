@@ -92,6 +92,7 @@ struct WorktreeForkPlanner: Sendable {
             }
             let gitTopology = try planGitTopology(
                 sourceRoot: sourceRoot,
+                commonDirectory: gitCapture.commonDirectory,
                 capturedHead: gitCapture.capturedHead,
                 nestedGitEntryPaths: nestedGitEntryPaths,
                 gitDirectoryCandidatePaths: gitDirectoryCandidatePaths
@@ -109,6 +110,7 @@ struct WorktreeForkPlanner: Sendable {
                 destinationRequestPath: request.destinationPath,
                 worktreeName: destination.worktreeName,
                 commonDirectory: gitCapture.commonDirectory,
+                sourceGitDirectory: gitCapture.sourceGitDirectory,
                 capturedHead: gitCapture.capturedHead,
                 branchIdentity: gitCapture.branchIdentity,
                 materialization: request.materialization,
@@ -125,6 +127,7 @@ struct WorktreeForkPlanner: Sendable {
 
     private func planGitTopology(
         sourceRoot: URL,
+        commonDirectory: URL,
         capturedHead: WorktreeForkCapturedHead,
         nestedGitEntryPaths: [String],
         gitDirectoryCandidatePaths: [String]
@@ -137,7 +140,10 @@ struct WorktreeForkPlanner: Sendable {
         else {
             throw .rejected(reason: .sourceNotWorktreeRoot)
         }
-        return try WorktreeForkGitTopologyPlanner(sourceRoot: sourceRoot, cancellation: cancellation).plan(
+        return try WorktreeForkGitTopologyPlanner(
+            sourceRoot: sourceRoot, commonDirectory: commonDirectory, cancellation: cancellation
+        )
+        .plan(
             rootRepository: repository,
             rootGitDirectory: gitDirectory,
             rootCapturedHead: capturedHead,
@@ -271,7 +277,10 @@ struct WorktreeForkPlanner: Sendable {
         }
         guard let commonDirectoryPointer = git_repository_commondir(repository),
             case .success(let commonDirectory) = WorktreeForkDescriptors.realpathURL(
-                URL(fileURLWithPath: String(cString: commonDirectoryPointer)))
+                URL(fileURLWithPath: String(cString: commonDirectoryPointer))),
+            let gitDirectoryPointer = git_repository_path(repository),
+            case .success(let sourceGitDirectory) = WorktreeForkDescriptors.realpathURL(
+                URL(fileURLWithPath: String(cString: gitDirectoryPointer)))
         else {
             throw .rejected(reason: .sourceNotWorktreeRoot)
         }
@@ -283,6 +292,7 @@ struct WorktreeForkPlanner: Sendable {
         let branchIdentity = try validateBranchIdentity(mode, capturedHead: capturedHead, repository: repository)
         return WorktreeForkGitCapture(
             commonDirectory: commonDirectory,
+            sourceGitDirectory: sourceGitDirectory,
             capturedHead: capturedHead,
             branchIdentity: branchIdentity
         )
@@ -376,6 +386,7 @@ struct WorktreeForkDestination: Sendable {
 
 struct WorktreeForkGitCapture: Sendable {
     let commonDirectory: URL
+    let sourceGitDirectory: URL
     let capturedHead: WorktreeForkCapturedHead
     let branchIdentity: WorktreeForkBranchIdentity
 }

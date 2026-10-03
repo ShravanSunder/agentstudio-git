@@ -93,7 +93,7 @@ struct GitRepositoryStateRehomer: Sendable {
         }
         for copied in topology.copiedGitDirectories {
             try cancellation.throwIfCancelled()
-            try rehomeCopiedPointers(copied, relocation: relocation)
+            try rehomeCopiedPointers(copied, relocation: relocation, mirrorByStore: mirrorByStore)
             try rehomeConfigurationPaths(
                 in: plan.destinationRoot.appending(path: copied.relativePath), reportPath: copied.relativePath,
                 relocation: relocation)
@@ -118,7 +118,7 @@ struct GitRepositoryStateRehomer: Sendable {
             for entry in try WorktreeForkConfigurationFile.absolutePathEntries(in: file) {
                 let source = WorktreeForkSourcePathRelocation.canonicalized(absolutePath: entry.value)
                 switch relocation.counterpart(of: source) {
-                case .outsideSource:
+                case .outsideSource, .sharedRepository:
                     continue
                 case .relocated(let destination) where destination.path != entry.value:
                     edits.append(.replaceValue(entry.name, matching: entry.value, with: destination.path))
@@ -143,12 +143,14 @@ struct GitRepositoryStateRehomer: Sendable {
     }
 
     /// Rewrites each pointer in a copied Git directory's alternates and linked-worktree registrations that
-    /// does not already lead, from the copy, to its destination counterpart. A pointer that already does
-    /// (a relative path inside the tree, an absolute path outside it) keeps its bytes, so tracked fixtures
-    /// stay clean.
+    /// does not already lead, from the copy, to its destination counterpart. An alternate outside every
+    /// relocated location leads to its destination-owned mirror; a registration outside keeps its target. A
+    /// pointer that already leads where it should (a relative path inside the tree) keeps its bytes, so
+    /// tracked fixtures stay clean.
     private func rehomeCopiedPointers(
         _ copied: WorktreeForkCopiedGitDirectory,
-        relocation: WorktreeForkSourcePathRelocation
+        relocation: WorktreeForkSourcePathRelocation,
+        mirrorByStore: [URL: URL]
     ) throws(GitWorktreeForkError) {
         let gitDirectory = plan.destinationRoot.appending(path: copied.relativePath)
         let alternatesPath = WorktreeForkAdministrationCloner.alternatesRelativePath
@@ -158,7 +160,8 @@ struct GitRepositoryStateRehomer: Sendable {
         for pointer in copied.alternates {
             alternateLines.append(
                 try destinationLine(
-                    for: pointer, resolvingFrom: objects, relocation: relocation, reportPath: alternatesReportPath))
+                    for: pointer, resolvingFrom: objects, relocation: relocation, outsideMirrors: mirrorByStore,
+                    reportPath: alternatesReportPath))
         }
         if alternateLines != copied.alternates.map(\.line) {
             try writeText(
@@ -172,20 +175,24 @@ struct GitRepositoryStateRehomer: Sendable {
             let registration = gitDirectory.appending(path: registrationDirectory)
             let reportPath = "\(copied.relativePath)/\(registrationPath)"
             let line = try destinationLine(
-                for: pointer, resolvingFrom: registration, relocation: relocation, reportPath: reportPath)
+                for: pointer, resolvingFrom: registration, relocation: relocation, outsideMirrors: nil,
+                reportPath: reportPath)
             if line != pointer.line {
                 try writeText(line + "\n", to: gitDirectory.appending(path: registrationPath), reportPath: reportPath)
             }
         }
     }
 
-    /// The text that leads from the copy to the pointer's destination counterpart, or to its unchanged
-    /// target when it has none. The recorded text is kept when it already resolves there from the copy; a
-    /// counterpart that is unmapped or does not exist would leave the copy dangling, so it fails.
+    /// The text that leads from the copy to the pointer's destination counterpart. A target outside every
+    /// relocated location leads to its mirror when `outsideMirrors` is given, otherwise to itself; a target in
+    /// the shared repository leads to itself. The recorded
+    /// text is kept when it already resolves there from the copy; a counterpart that is unmapped, unmirrored,
+    /// or missing would leave the copy dangling or source-dependent, so it fails.
     private func destinationLine(
         for pointer: WorktreeForkCopiedPointer,
         resolvingFrom base: URL,
         relocation: WorktreeForkSourcePathRelocation,
+        outsideMirrors: [URL: URL]?,
         reportPath: String
     ) throws(GitWorktreeForkError) -> String {
         guard let target = pointer.target else {
@@ -196,6 +203,15 @@ struct GitRepositoryStateRehomer: Sendable {
         let wanted: URL
         switch relocation.counterpart(of: target) {
         case .outsideSource:
+            guard let outsideMirrors else {
+                wanted = target
+                break
+            }
+            guard let mirror = outsideMirrors[target] else {
+                throw unresolvable
+            }
+            wanted = mirror
+        case .sharedRepository:
             wanted = target
         case .relocated(let destination):
             wanted = destination

@@ -86,26 +86,42 @@ struct GitWorktreeForkNestedRepositoryIntegrationTests {
         #expect(try fixture.git.succeeds("cat-file", "-e", "HEAD:up.txt", currentDirectory: destinationShared))
     }
 
-    @Test("an in-tree bare repository's alternates outside the source tree are left unchanged")
-    func outsideBareAlternatesAreUnchanged() async throws {
-        // Arrange
+    @Test("an in-tree bare repository's outside alternates, transitive ones included, become destination mirrors")
+    func outsideBareAlternatesBecomeDestinationMirrors() async throws {
+        // Arrange: shared.git (in the source) borrows from middle, which borrows from origin; both are outside.
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-bare-outside")
         defer { fixture.remove() }
         try ignore(".build/", fixture: fixture)
-        let upstream = try makeRepository(
-            at: fixture.repository.root.appending(path: "upstream"), file: "up.txt", fixture: fixture)
+        let root = fixture.repository.root
+        let origin = try makeRepository(at: root.appending(path: "origin"), file: "up.txt", fixture: fixture)
+        let middle = root.appending(path: "middle")
+        try fixture.git.run(["clone", "-q", "--shared", origin.path, middle.path])
         let shared = fixture.source.appending(path: ".build/repositories/shared.git")
-        try fixture.git.run(["clone", "-q", "--bare", "--shared", upstream.path, shared.path])
+        try fixture.git.run(["clone", "-q", "--bare", "--shared", middle.path, shared.path])
         let sourceAlternates = try Data(contentsOf: shared.appending(path: "objects/info/alternates"))
         let destination = fixture.destination()
 
         // Act
         _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+        let destinationShared = destination.appending(path: ".build/repositories/shared.git")
+        let targets = try alternateTargets(of: destinationShared)
+        let moved = [(origin, root.appending(path: "origin.moved")), (middle, root.appending(path: "middle.moved"))]
+        for (store, aside) in moved {
+            try FileManager.default.moveItem(at: store, to: aside)
+        }
+        defer {
+            for (store, aside) in moved {
+                try? FileManager.default.moveItem(at: aside, to: store)
+            }
+        }
 
         // Assert
-        let destinationShared = destination.appending(path: ".build/repositories/shared.git")
-        #expect(try Data(contentsOf: destinationShared.appending(path: "objects/info/alternates")) == sourceAlternates)
+        let mirrors = try canonical(fixture.linkedWorktreeAdministration()).appending(
+            path: "agentstudio-object-mirrors")
+        #expect(targets.count == 1)
+        #expect(targets.allSatisfy { $0.hasPrefix(mirrors.path + "/") }, "\(targets)")
         #expect(try fixture.git.succeeds("cat-file", "-e", "HEAD:up.txt", currentDirectory: destinationShared))
+        #expect(try Data(contentsOf: shared.appending(path: "objects/info/alternates")) == sourceAlternates)
     }
 
     @Test("an in-tree bare repository's linked-worktree registrations name the destination, never the source")

@@ -137,6 +137,110 @@ struct GitWorktreeForkNestedConfigurationIntegrationTests {
         #expect(try configValue("agentstudio.marker", at: destinationTool, fixture) == "shared")
     }
 
+    @Test("a nested linked worktree's shared config naming another worktree's private path keeps that path")
+    func uncapturedWorktreePrivatePathIsShared() async throws {
+        // Arrange: the real-checkout shape. Agent worktrees of the source repository live in an ignored folder,
+        // and the shared repository config names a file in a third worktree's private administration.
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-config-other-worktree")
+        defer { fixture.remove() }
+        try ignore(".claude/", fixture: fixture)
+        let other = fixture.repository.root.appending(path: "other-worktree")
+        try fixture.git.run("worktree", "add", "-q", "-b", "other", other.path)
+        let signers = try canonical(fixture.source.appending(path: ".git/worktrees/other-worktree"))
+            .appending(path: "allowed_signers")
+        try "signers\n".write(to: signers, atomically: false, encoding: .utf8)
+        try fixture.git.run("config", "gpg.ssh.allowedSignersFile", signers.path)
+        let agent = fixture.source.appending(path: ".claude/worktrees/agent")
+        try fixture.git.run("worktree", "add", "-q", "-b", "agent", agent.path)
+        let destination = fixture.destination()
+
+        // Act
+        _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+
+        // Assert
+        let destinationAgent = destination.appending(path: ".claude/worktrees/agent")
+        #expect(try configValue("gpg.ssh.allowedSignersFile", at: destinationAgent, fixture) == signers.path)
+        #expect(
+            try absoluteGitDirectory(destinationAgent, fixture)
+                == canonical(destinationAgent.appending(path: ".git")).path)
+    }
+
+    @Test("a nested linked worktree's config naming its own private administration follows its destination copy")
+    func nestedWorktreePrivatePathFollowsDestinationAdministration() async throws {
+        // Arrange
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-config-own-private")
+        defer { fixture.remove() }
+        try ignore(".claude/", fixture: fixture)
+        let agent = fixture.source.appending(path: ".claude/worktrees/agent")
+        try fixture.git.run("worktree", "add", "-q", "-b", "agent", agent.path)
+        let signers = try canonical(fixture.source.appending(path: ".git/worktrees/agent"))
+            .appending(path: "allowed_signers")
+        try fixture.git.run("config", "gpg.ssh.allowedSignersFile", signers.path)
+        let destination = fixture.destination()
+
+        // Act
+        _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+
+        // Assert
+        let destinationAgent = destination.appending(path: ".claude/worktrees/agent")
+        #expect(
+            try configValue("gpg.ssh.allowedSignersFile", at: destinationAgent, fixture)
+                == canonical(destinationAgent.appending(path: ".git")).appending(path: "allowed_signers").path)
+    }
+
+    @Test("a linked source's private administration path in nested config follows the fork's private administration")
+    func linkedSourcePrivatePathFollowsForkAdministration() async throws {
+        // Arrange: fork from a linked worktree whose nested repository names that worktree's private administration.
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-config-linked-source")
+        defer { fixture.remove() }
+        try ignore("vendor/", fixture: fixture)
+        let linkedSource = fixture.repository.root.appending(path: "linked-source")
+        try fixture.git.run("worktree", "add", "-q", "-b", "linked-source", linkedSource.path)
+        let tool = try makeRepository(
+            at: linkedSource.appending(path: "vendor/tool"), file: "tool.txt", fixture: fixture)
+        let sourcePrivate = try canonical(fixture.linkedWorktreeAdministration("linked-source"))
+        try fixture.git.run(
+            ["config", "gpg.ssh.allowedSignersFile", sourcePrivate.appending(path: "allowed_signers").path],
+            currentDirectory: tool)
+        let destination = fixture.destination()
+
+        // Act
+        _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(
+            GitForkWorktreeRequest(
+                sourceWorktreePath: linkedSource,
+                destinationPath: destination,
+                mode: .newBranch(name: "fork"),
+                materialization: .copyOnWrite
+            ))
+
+        // Assert
+        #expect(
+            try configValue("gpg.ssh.allowedSignersFile", at: destination.appending(path: "vendor/tool"), fixture)
+                == canonical(fixture.linkedWorktreeAdministration()).appending(path: "allowed_signers").path)
+    }
+
+    @Test("a nested repository's config naming a shared file in the source repository's common directory keeps it")
+    func sharedCommonDirectoryPathIsUnchanged() async throws {
+        // Arrange: the fork is a linked worktree of the same repository, so the common directory is shared.
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-config-common")
+        defer { fixture.remove() }
+        try ignore("vendor/", fixture: fixture)
+        let tool = try makeRepository(
+            at: fixture.source.appending(path: "vendor/tool"), file: "tool.txt", fixture: fixture)
+        let shared = try canonical(fixture.source.appending(path: ".git")).appending(path: "shared.conf")
+        try "[agentstudio]\n\tmarker = shared\n".write(to: shared, atomically: false, encoding: .utf8)
+        try fixture.git.run(["config", "include.path", shared.path], currentDirectory: tool)
+        let destination = fixture.destination()
+
+        // Act
+        _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+
+        // Assert
+        let destinationTool = destination.appending(path: "vendor/tool")
+        #expect(try configValue("include.path", at: destinationTool, fixture) == shared.path)
+        #expect(try configValue("agentstudio.marker", at: destinationTool, fixture) == "shared")
+    }
+
     private func ignore(_ pattern: String, fixture: GitWorktreeForkFixture) throws {
         try fixture.write(".gitignore", "\(pattern)\n")
         try fixture.git.run("add", ".gitignore")
