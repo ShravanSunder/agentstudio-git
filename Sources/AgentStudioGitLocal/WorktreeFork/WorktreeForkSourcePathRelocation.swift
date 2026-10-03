@@ -91,6 +91,15 @@ struct WorktreeForkSourcePathRelocation: Sendable {
         return .relocated(match.remainder.isEmpty ? destination : destination.appending(path: match.remainder))
     }
 
+    /// True when some relocated location lies strictly beneath `path`, so a pattern matching below `path` could
+    /// reach locations that relocate differently.
+    func hasRelocation(strictlyBeneath path: URL) -> Bool {
+        relocations.contains { relocation in
+            WorktreeForkAdministrativeSymlinks.relativeComponents(of: relocation.source, beneath: path)
+                .map { !$0.isEmpty } ?? false
+        }
+    }
+
     /// Canonical form of an absolute path whose tail may not exist (a missing include, a store created on
     /// demand): the deepest existing ancestor is resolved and the rest appended, so `/var/...` and
     /// `/private/var/...` compare equal.
