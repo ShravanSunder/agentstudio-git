@@ -1,6 +1,9 @@
 import AgentStudioGit
 import Foundation
 import Testing
+import os
+
+@testable import AgentStudioGitLocal
 
 /// Nested Git shapes found in real prepared worktrees: bare caches whose alternates point back into the
 /// source tree, linked worktrees of the source repository itself, separate Git directories, nested sparse
@@ -84,6 +87,68 @@ struct GitWorktreeForkNestedRepositoryIntegrationTests {
                     == Data(contentsOf: shared.appending(path: pointer)), "\(pointer)")
         }
         #expect(try fixture.git.succeeds("cat-file", "-e", "HEAD:up.txt", currentDirectory: destinationShared))
+    }
+
+    @Test(
+        "a tracked fixture Git directory whose absolute pointer is re-aimed reports that file as modified",
+        arguments: RewrittenFixturePointer.allCases
+    )
+    func trackedFixtureRewrittenPointerReportsModified(pointer: RewrittenFixturePointer) async throws {
+        // Arrange: a committed fixture that recorded this machine's absolute source path, which the fork must
+        // re-aim at the destination copy. The rewritten bytes differ from captured HEAD, so they are not clean.
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-rewritten-fixture")
+        defer { fixture.remove() }
+        let upstream = try makeRepository(
+            at: fixture.repository.root.appending(path: "upstream"), file: "up.txt", fixture: fixture)
+        let fixtures = fixture.source.appending(path: "fixtures")
+        let base = fixtures.appending(path: "base.gitted")
+        let shared = fixtures.appending(path: "shared.gitted")
+        try fixture.git.run(["clone", "-q", "--bare", upstream.path, base.path])
+        try fixture.git.run(["clone", "-q", "--bare", "--shared", base.path, shared.path])
+        let sourceBase = try canonical(base)
+        let recordedLine: String
+        switch pointer {
+        case .configurationPath:
+            try fixture.write("objects/info/alternates", "../../base.gitted/objects\n", in: shared)
+            recordedLine = sourceBase.path
+            try fixture.git.run(
+                ["config", "--file", "config", "remote.origin.url", recordedLine], currentDirectory: shared)
+        case .alternates:
+            recordedLine = sourceBase.appending(path: "objects").path
+            try fixture.write("objects/info/alternates", "\(recordedLine)\n", in: shared)
+        }
+        // Older than the index Git writes next, so every fixture entry is non-racy and eligible for adoption.
+        try backdateRegularFiles(under: fixtures)
+        try fixture.git.run("add", "-f", "fixtures")
+        try fixture.git.run("commit", "-qm", "fixtures")
+        let sourceBytes = try Data(contentsOf: shared.appending(path: pointer.relativePath))
+        let rootEvidence = OSAllocatedUnfairLock<WorktreeForkIndexRefreshEvidence?>(initialState: nil)
+        let observer = WorktreeForkIndexObserver { node, evidence in
+            if node.isEmpty {
+                rootEvidence.withLock { $0 = evidence }
+            }
+        }
+        let client = LibGit2AgentStudioGitLocalClient(
+            worktreeForkWriter: LibGit2WorktreeForkWriter(indexObserver: observer))
+        let destination = fixture.destination()
+
+        // Act
+        _ = try await client.forkWorktree(fixture.request())
+
+        // Assert
+        let trackedPath = "fixtures/shared.gitted/\(pointer.relativePath)"
+        let adoptedPaths = try #require(rootEvidence.withLock { $0 }).adoptedPaths
+        #expect(!adoptedPaths.contains(trackedPath), "rewritten bytes must be hashed, never adopted as clean")
+        #expect(adoptedPaths.contains("fixtures/shared.gitted/HEAD"), "untouched fixture files stay adoptable")
+        let status = try fixture.statusLines(at: destination)
+        #expect(status.contains(" M \(trackedPath)"), "\(status)")
+        let destinationBase = try canonical(destination.appending(path: "fixtures/base.gitted"))
+        let wantedLine =
+            pointer == .alternates ? destinationBase.appending(path: "objects").path : destinationBase.path
+        let diff = try fixture.git.run(["diff", "--", trackedPath], currentDirectory: destination)
+        #expect(diff.contains("-\(pointer.diffPrefix)\(recordedLine)\n"), "\(diff)")
+        #expect(diff.contains("+\(pointer.diffPrefix)\(wantedLine)\n"), "\(diff)")
+        #expect(try Data(contentsOf: shared.appending(path: pointer.relativePath)) == sourceBytes)
     }
 
     @Test("an in-tree bare repository's outside alternates, transitive ones included, become destination mirrors")
@@ -313,6 +378,20 @@ struct GitWorktreeForkNestedRepositoryIntegrationTests {
         try fixture.git.run("commit", "-qm", "ignore \(pattern)")
     }
 
+    private func backdateRegularFiles(under root: URL) throws {
+        guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) else {
+            return
+        }
+        let past = timespec(tv_sec: time(nil) - 60, tv_nsec: 0)
+        for case let url as URL in enumerator {
+            guard let info = GitWorktreeForkFileProbe.info(url), info.st_mode & S_IFMT == S_IFREG else {
+                continue
+            }
+            var times = [past, past]
+            try #require(utimensat(AT_FDCWD, url.path, &times, AT_SYMLINK_NOFOLLOW) == 0)
+        }
+    }
+
     private func makeRepository(at path: URL, file: String, fixture: GitWorktreeForkFixture) throws -> URL {
         try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true)
         try fixture.git.run(["init", "-q"], currentDirectory: path)
@@ -358,4 +437,26 @@ enum AlternateLineForm: String, CaseIterable, Sendable {
     case absolute
     /// Climbs out of the source root and back in by name, so a byte copy would still resolve to the source.
     case relativeThroughParent
+}
+
+enum RewrittenFixturePointer: String, CaseIterable, Sendable {
+    /// An absolute `remote.origin.url` re-aimed by configuration path re-homing.
+    case configurationPath
+    /// An absolute `objects/info/alternates` line re-aimed by copied-pointer re-homing.
+    case alternates
+
+    var relativePath: String {
+        switch self {
+        case .configurationPath: "config"
+        case .alternates: "objects/info/alternates"
+        }
+    }
+
+    /// What precedes the path on its line, as `git config` and alternates write it.
+    var diffPrefix: String {
+        switch self {
+        case .configurationPath: "\turl = "
+        case .alternates: ""
+        }
+    }
 }
