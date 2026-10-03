@@ -139,6 +139,51 @@ struct WorktreeForkFilesystemPlan: Sendable {
         max(0, directories.count - 1)
     }
 
+    static func isPath(_ path: String, within subtree: String) -> Bool {
+        path == subtree || path.hasPrefix(subtree + "/")
+    }
+
+    /// The plan with every entry inside `subtrees` left out, so it is never materialized and the validator
+    /// expects it absent. A hard-link group keeps its paths outside the subtrees; a group whose cloned
+    /// primary is inside one while other paths are outside cannot be realized without that clone, so it
+    /// fails instead of silently changing which paths share an inode.
+    func excludingSubtrees(_ subtrees: [String]) throws(GitWorktreeForkError) -> Self {
+        guard !subtrees.isEmpty else {
+            return self
+        }
+        func isExcluded(_ path: String) -> Bool {
+            subtrees.contains { Self.isPath(path, within: $0) }
+        }
+        var keptGroups: [WorktreeForkHardLinkGroup] = []
+        for group in hardLinkGroups {
+            let secondaries = group.secondaryRelativePaths.filter { !isExcluded($0) }
+            if isExcluded(group.primaryRelativePath) {
+                guard secondaries.isEmpty else {
+                    throw .entryFailed(
+                        relativePath: group.primaryRelativePath, reason: .unresolvableGitAdministration,
+                        errorNumber: nil)
+                }
+            } else if !secondaries.isEmpty {
+                keptGroups.append(
+                    WorktreeForkHardLinkGroup(
+                        identity: group.identity, primaryRelativePath: group.primaryRelativePath,
+                        secondaryRelativePaths: secondaries))
+            }
+        }
+        return Self(
+            directories: directories.filter { !isExcluded($0.relativePath) },
+            leafBatches: leafBatches.compactMap { batch in
+                let leaves = batch.leaves.filter { !isExcluded($0.relativePath) }
+                return leaves.isEmpty
+                    ? nil : WorktreeForkLeafBatch(directoryRelativePath: batch.directoryRelativePath, leaves: leaves)
+            },
+            hardLinkGroups: keptGroups,
+            skippedEntries: skippedEntries.filter { !isExcluded($0.relativePath) },
+            nestedGitEntryPaths: nestedGitEntryPaths.filter { !isExcluded($0) },
+            gitDirectoryCandidatePaths: gitDirectoryCandidatePaths.filter { !isExcluded($0) }
+        )
+    }
+
     func leafCount(of kind: WorktreeForkLeafKind) -> Int {
         leafBatches.reduce(0) { total, batch in total + batch.leaves.filter { $0.kind == kind }.count }
     }

@@ -114,7 +114,8 @@ struct WorktreeForkPlanner: Sendable {
                 capturedHead: gitCapture.capturedHead,
                 branchIdentity: gitCapture.branchIdentity,
                 materialization: request.materialization,
-                filesystem: filesystem,
+                filesystem: try filesystem.excludingSubtrees(
+                    gitTopology.copiedGitDirectories.flatMap(\.retiredRegistrationSubtrees)),
                 changesOnly: changesOnly,
                 gitTopology: gitTopology
             )

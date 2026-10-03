@@ -27,6 +27,15 @@ struct WorktreeForkCopiedGitDirectory: Sendable {
     let alternates: [WorktreeForkCopiedPointer]
     /// The `gitdir` file of each linked-worktree registration, keyed by Git-directory-relative path.
     let worktreeRegistrations: [String: WorktreeForkCopiedPointer]
+    /// Git-directory-relative `worktrees/<name>` registrations whose linked worktree the fork captured as a
+    /// nested node and re-homes as an independent repository. The destination has no gitfile pointing back at
+    /// them, so Git would see a broken registration; they are left out of the copy instead of rewritten.
+    let retiredRegistrations: [String]
+
+    /// Source-root-relative roots of the retired registrations, which the filesystem plan excludes.
+    var retiredRegistrationSubtrees: [String] {
+        retiredRegistrations.map { "\(relativePath)/\($0)" }
+    }
 }
 
 /// One path a copied Git directory records, as written and as Git resolves it.

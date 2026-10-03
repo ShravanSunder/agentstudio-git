@@ -189,9 +189,13 @@ struct GitWorktreeForkNestedRepositoryIntegrationTests {
         #expect(try Data(contentsOf: shared.appending(path: "objects/info/alternates")) == sourceAlternates)
     }
 
-    @Test("an in-tree bare repository's linked-worktree registrations name the destination, never the source")
-    func inTreeBareWorktreeRegistrationsNameDestination() async throws {
-        // Arrange: a bare repository with one linked worktree inside the source and one outside it.
+    @Test(
+        "an in-tree bare repository retires the registration of a flattened worktree and keeps the outside one"
+    )
+    func inTreeBareRetiresFlattenedWorktreeRegistration() async throws {
+        // Arrange: a bare repository with one linked worktree inside the source and one outside it. The fork
+        // flattens the inside worktree into an independent repository, so its registration has no reciprocal
+        // gitfile in the destination and must not survive in the destination copy of the bare repository.
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-bare-linked")
         defer { fixture.remove() }
         try ignore(".build/", fixture: fixture)
@@ -204,6 +208,7 @@ struct GitWorktreeForkNestedRepositoryIntegrationTests {
         let outside = fixture.repository.root.appending(path: "outside-worktree")
         try fixture.git.run(["worktree", "add", "-q", "-b", "side", outside.path, "main"], currentDirectory: project)
         let sourceRegistrations = try worktreePaths(of: project, fixture)
+        let sourceInsideRegistration = try Data(contentsOf: project.appending(path: "worktrees/main/gitdir"))
         let destination = fixture.destination()
 
         // Act
@@ -211,17 +216,22 @@ struct GitWorktreeForkNestedRepositoryIntegrationTests {
 
         // Assert
         let destinationProject = destination.appending(path: ".build/project.git")
+        let destinationInside = destination.appending(path: ".build/work/main")
         #expect(
             try worktreePaths(of: destinationProject, fixture)
-                == [
-                    try canonical(destinationProject).path,
-                    try canonical(destination.appending(path: ".build/work/main")).path,
-                    try canonical(outside).path,
-                ])
-        #expect(try worktreePaths(of: project, fixture) == sourceRegistrations)
+                == [try canonical(destinationProject).path, try canonical(outside).path])
+        #expect(!GitWorktreeForkFileProbe.exists(destinationProject.appending(path: "worktrees/main")))
         #expect(
-            try fixture.blobID("HEAD", at: destination.appending(path: ".build/work/main"))
-                == fixture.blobID("HEAD", at: inside))
+            try fixture.git.run(["worktree", "prune", "-n", "-v"], currentDirectory: destinationProject).isEmpty)
+        #expect(
+            !(try fixture.git.run(["worktree", "list", "--porcelain"], currentDirectory: destinationProject))
+                .contains("prunable"))
+        let insideGitEntry = try #require(GitWorktreeForkFileProbe.info(destinationInside.appending(path: ".git")))
+        #expect(insideGitEntry.st_mode & S_IFMT == S_IFDIR, "the flattened worktree is an independent repository")
+        #expect(try fixture.statusLines(at: destinationInside).isEmpty)
+        #expect(try fixture.blobID("HEAD", at: destinationInside) == fixture.blobID("HEAD", at: inside))
+        #expect(try worktreePaths(of: project, fixture) == sourceRegistrations)
+        #expect(try Data(contentsOf: project.appending(path: "worktrees/main/gitdir")) == sourceInsideRegistration)
     }
 
     @Test("a submodule whose .git directory was never absorbed is re-homed under destination administration")

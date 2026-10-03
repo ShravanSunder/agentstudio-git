@@ -51,7 +51,8 @@ struct WorktreeForkGitTopologyPlanner: Sendable {
                     administrativeSymlinks: captured.administrativeSymlinks
                 ))
         }
-        let copiedGitDirectories = try captureCopiedGitDirectories(gitDirectoryCandidatePaths)
+        let copiedGitDirectories = try captureCopiedGitDirectories(
+            gitDirectoryCandidatePaths, capturedAdministration: Set(nodes.map(\.sourceGitDirectory.path)))
         let mirroredObjectStores = Array(
             Set(
                 nodes.flatMap(\.alternateObjectStores)
@@ -105,9 +106,12 @@ struct WorktreeForkGitTopologyPlanner: Sendable {
     }
 
     /// Keeps each candidate libgit2 opens as a Git directory and records the pointers its copy will hold. A
-    /// candidate Git would not open is not a repository, so its copy stays ordinary content.
+    /// candidate Git would not open is not a repository, so its copy stays ordinary content. A registration
+    /// whose directory is a captured node's own administration (`capturedAdministration`, canonical paths) is
+    /// retired rather than recorded, and no candidate inside a retired registration is kept.
     private func captureCopiedGitDirectories(
-        _ candidatePaths: [String]
+        _ candidatePaths: [String],
+        capturedAdministration: Set<String>
     ) throws(GitWorktreeForkError) -> [WorktreeForkCopiedGitDirectory] {
         var copied: [WorktreeForkCopiedGitDirectory] = []
         for relativePath in candidatePaths {
@@ -123,14 +127,30 @@ struct WorktreeForkGitTopologyPlanner: Sendable {
             }
             git_repository_free(repository)
             let objects = gitDirectory.appending(path: "objects")
+            var registrations = Self.worktreeRegistrations(in: gitDirectory)
+            var retired: [String] = []
+            for registrationPath in registrations.keys.sorted() {
+                let registrationDirectory = WorktreeForkDescriptors.splitParent(registrationPath).parent
+                if case .success(let canonical) = WorktreeForkDescriptors.realpathURL(
+                    gitDirectory.appending(path: registrationDirectory)),
+                    capturedAdministration.contains(canonical.path)
+                {
+                    registrations[registrationPath] = nil
+                    retired.append(registrationDirectory)
+                }
+            }
             copied.append(
                 WorktreeForkCopiedGitDirectory(
                     relativePath: relativePath,
                     alternates: Self.alternateLines(objects).map { Self.copiedPointer($0, resolvingFrom: objects) },
-                    worktreeRegistrations: Self.worktreeRegistrations(in: gitDirectory)
+                    worktreeRegistrations: registrations,
+                    retiredRegistrations: retired
                 ))
         }
-        return copied
+        let retiredSubtrees = copied.flatMap(\.retiredRegistrationSubtrees)
+        return copied.filter { candidate in
+            !retiredSubtrees.contains { WorktreeForkFilesystemPlan.isPath(candidate.relativePath, within: $0) }
+        }
     }
 
     /// Each `worktrees/<name>/gitdir` file, which Git writes as the linked worktree's `.git` path, absolute
