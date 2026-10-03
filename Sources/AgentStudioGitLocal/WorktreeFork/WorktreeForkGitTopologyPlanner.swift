@@ -49,9 +49,11 @@ struct WorktreeForkGitTopologyPlanner: Sendable {
                     administrativeSymlinks: captured.administrativeSymlinks
                 ))
         }
+        let copiedGitDirectories = try captureCopiedGitDirectories(gitDirectoryCandidatePaths)
         let mirroredObjectStores = Array(
             Set(
                 nodes.flatMap(\.alternateObjectStores)
+                    + (try outsideObjectStores(of: copiedGitDirectories))
                     + nodes.flatMap { node in
                         node.administrativeSymlinks.values.compactMap { symlink -> URL? in
                             if case .externalStore(let store) = symlink {
@@ -73,8 +75,29 @@ struct WorktreeForkGitTopologyPlanner: Sendable {
             uninitializedSubmodulePaths: uninitializedSubmodules(registrations, nodes: nodes),
             mirroredObjectStores: mirroredObjectStores,
             mirroredStoreSymlinks: mirroredStoreSymlinks,
-            copiedGitDirectories: try captureCopiedGitDirectories(gitDirectoryCandidatePaths)
+            copiedGitDirectories: copiedGitDirectories
         )
+    }
+
+    /// Object stores outside the source tree that copied Git directories borrow from, with every store those
+    /// borrow from in turn. Each gets a destination-owned mirror, exactly as a nested node's alternates do.
+    private func outsideObjectStores(
+        of copiedGitDirectories: [WorktreeForkCopiedGitDirectory]
+    ) throws(GitWorktreeForkError) -> [URL] {
+        var stores: [URL] = []
+        for copied in copiedGitDirectories {
+            let reportPath = "\(copied.relativePath)/\(WorktreeForkAdministrationCloner.alternatesRelativePath)"
+            for pointer in copied.alternates {
+                guard let target = pointer.target,
+                    WorktreeForkAdministrativeSymlinks.relativeComponents(of: target, beneath: sourceRoot) == nil
+                else {
+                    continue
+                }
+                stores.append(target)
+                stores += try Self.alternateClosure(of: target, reportPath)
+            }
+        }
+        return stores
     }
 
     /// Keeps each candidate libgit2 opens as a Git directory and records the pointers its copy will hold. A

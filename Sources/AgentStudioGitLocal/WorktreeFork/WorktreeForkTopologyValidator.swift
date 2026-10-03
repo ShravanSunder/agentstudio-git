@@ -37,9 +37,30 @@ struct WorktreeForkTopologyValidator: Sendable {
                 in: node.destinationAdministration, reportPath: node.node.relativePath, relocation: relocation)
         }
         for copied in plan.gitTopology.copiedGitDirectories {
+            try validateCopiedAlternates(copied)
             try validateConfigurationPaths(
                 in: plan.destinationRoot.appending(path: copied.relativePath), reportPath: copied.relativePath,
                 relocation: relocation)
+        }
+    }
+
+    /// Every alternate a copied Git directory holds must resolve to destination-owned state: the destination
+    /// tree or the fork's own administration, where object mirrors live. The one exception is a line that
+    /// already dangled in the source, which the re-homer keeps as written.
+    private func validateCopiedAlternates(_ copied: WorktreeForkCopiedGitDirectory) throws(GitWorktreeForkError) {
+        let objects = plan.destinationRoot.appending(path: copied.relativePath).appending(path: "objects")
+        let danglingInSource = Set(copied.alternates.filter { $0.target == nil }.map(\.line))
+        for line in WorktreeForkGitTopologyPlanner.alternateLines(objects) {
+            let recorded = line.hasPrefix("/") ? URL(fileURLWithPath: line) : objects.appending(path: line)
+            guard case .success(let resolved) = WorktreeForkDescriptors.realpathURL(recorded) else {
+                if danglingInSource.contains(line) {
+                    continue
+                }
+                throw .validationFailed(reason: .sourceAdministrationReference, relativePath: copied.relativePath)
+            }
+            guard allowedPrefixes.contains(where: { (resolved.path + "/").hasPrefix($0) }) else {
+                throw .validationFailed(reason: .sourceAdministrationReference, relativePath: copied.relativePath)
+            }
         }
     }
 
