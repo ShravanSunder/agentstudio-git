@@ -48,7 +48,7 @@ enum WorktreeForkFileEquivalence {
     }
 
     /// Opens `file` beneath its root with no symlink anywhere in the path; nil when it is missing or a symlink.
-    private static func open(_ file: ContainedFile, reportPath: String) throws(GitWorktreeForkError) -> Int32? {
+    static func open(_ file: ContainedFile, reportPath: String) throws(GitWorktreeForkError) -> Int32? {
         let root: Int32
         switch WorktreeForkDescriptors.openRoot(atCanonicalPath: file.root) {
         case .success(let descriptor):
@@ -86,14 +86,12 @@ enum WorktreeForkFileEquivalence {
     private static func compare(_ first: Int32, _ second: Int32, reportPath: String) throws(GitWorktreeForkError)
         -> Bool
     {
+        try WorktreeForkDatalessGuardedRead.rejectDataless(first, reportPath: reportPath)
+        try WorktreeForkDatalessGuardedRead.rejectDataless(second, reportPath: reportPath)
         guard case .success(let firstInfo) = WorktreeForkDescriptors.statDescriptor(first),
             case .success(let secondInfo) = WorktreeForkDescriptors.statDescriptor(second)
         else {
             throw .entryFailed(relativePath: reportPath, reason: .unreadableEntry, errorNumber: errno)
-        }
-        for info in [firstInfo, secondInfo]
-        where WorktreeForkEntryPolicy.disposition(for: .regularFile, flags: info.st_flags) == .rejectDataless {
-            throw .entryFailed(relativePath: reportPath, reason: .datalessFile, errorNumber: nil)
         }
         guard firstInfo.st_mode & S_IFMT == S_IFREG, secondInfo.st_mode & S_IFMT == S_IFREG,
             firstInfo.st_size == secondInfo.st_size,

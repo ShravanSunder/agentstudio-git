@@ -21,8 +21,34 @@ enum WorktreeForkConfigurationFile {
     static let repositoryFileNames = ["config", "config.worktree"]
 
     /// Entries written in this file itself, not reached through an include; each distinct name and value once.
-    /// libgit2 still reads the file's includes, so a file whose includes cycle or nest too deeply fails here.
-    static func ownEntries(in path: URL) throws(GitWorktreeForkError) -> [WorktreeForkConfigurationEntry] {
+    /// The re-homer edits with this list: a value replacement already rewrites every equal value of its key.
+    static func ownEntries(
+        in path: URL,
+        reportPath: String
+    ) throws(GitWorktreeForkError) -> [WorktreeForkConfigurationEntry] {
+        var distinct: [WorktreeForkConfigurationEntry] = []
+        for entry in try orderedEntries(in: path, reportPath: reportPath) where !distinct.contains(entry) {
+            distinct.append(entry)
+        }
+        return distinct
+    }
+
+    /// Every entry written in this file itself, in file order with repeats kept: Git's effective value of a key
+    /// is its last occurrence, so dropping or reordering a repeat changes behavior. libgit2 still reads the
+    /// file's includes, so a file whose includes cycle or nest too deeply fails here. The read is guarded
+    /// against dataless payloads.
+    static func orderedEntries(
+        in path: URL,
+        reportPath: String
+    ) throws(GitWorktreeForkError) -> [WorktreeForkConfigurationEntry] {
+        try WorktreeForkDatalessGuardedRead.run(path, reportPath: reportPath) { () throws(GitWorktreeForkError) in
+            try readOrderedEntries(in: path)
+        }
+    }
+
+    private static func readOrderedEntries(in path: URL) throws(GitWorktreeForkError)
+        -> [WorktreeForkConfigurationEntry]
+    {
         var configuration: OpaquePointer?
         let openResult = path.path.withCString { git_config_open_ondisk(&configuration, $0) }
         guard openResult >= 0, let configuration else {
@@ -48,10 +74,7 @@ enum WorktreeForkConfigurationFile {
             guard current.include_depth == 0, let name = current.name, let value = current.value else {
                 continue
             }
-            let candidate = WorktreeForkConfigurationEntry(name: String(cString: name), value: String(cString: value))
-            if !entries.contains(candidate) {
-                entries.append(candidate)
-            }
+            entries.append(WorktreeForkConfigurationEntry(name: String(cString: name), value: String(cString: value)))
         }
     }
 
@@ -65,7 +88,9 @@ enum WorktreeForkConfigurationFile {
     ) throws(GitWorktreeForkError) {
         try WorktreeForkMetadataPreservingRewrite.rewrite(path, metadataFrom: .editedFile, reportPath: reportPath) {
             () throws(GitWorktreeForkError) in
-            try applyThroughLibGit2(edits, to: path, lockTracker: lockTracker)
+            try WorktreeForkDatalessGuardedRead.run(path, reportPath: reportPath) { () throws(GitWorktreeForkError) in
+                try applyThroughLibGit2(edits, to: path, lockTracker: lockTracker)
+            }
         }
     }
 

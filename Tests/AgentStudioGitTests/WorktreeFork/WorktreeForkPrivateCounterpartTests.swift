@@ -162,6 +162,40 @@ struct WorktreeForkPrivateCounterpartTests {
         #expect(observation.after == IOPOL_MATERIALIZE_DATALESS_FILES_ON)
     }
 
+    @Test("a configuration read under an ambient materializing policy keeps every entry and restores the policy")
+    func configurationReadRestoresAmbientMaterializingPolicy() async throws {
+        // Arrange
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try LibGit2Runtime.shared.ensureInitialized()
+        let configuration = root.appending(path: "extra.conf")
+        try Data("[agentstudio]\n\tprobe = one\n\tprobe = two\n\tprobe = one\n".utf8).write(to: configuration)
+        let (observations, continuation) = AsyncStream.makeStream(of: ConfigurationReadObservation.self)
+
+        // Act: an embedding thread that materializes dataless files by default reads the file through libgit2.
+        let worker = Thread {
+            let ambient = setiopolicy_np(
+                IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_THREAD, IOPOL_MATERIALIZE_DATALESS_FILES_ON)
+            let before = WorktreeForkDatalessPolicy.currentThreadPolicy()
+            let values = try? WorktreeForkConfigurationFile.orderedEntries(in: configuration, reportPath: "extra.conf")
+                .map(\.value)
+            continuation.yield(
+                ConfigurationReadObservation(
+                    ambientEstablished: ambient == 0, before: before, values: values,
+                    after: WorktreeForkDatalessPolicy.currentThreadPolicy()))
+            continuation.finish()
+        }
+        worker.start()
+        var iterator = observations.makeAsyncIterator()
+        let observation = try #require(await iterator.next())
+
+        // Assert
+        #expect(observation.ambientEstablished)
+        #expect(observation.before == IOPOL_MATERIALIZE_DATALESS_FILES_ON)
+        #expect(observation.values == ["one", "two", "one"])
+        #expect(observation.after == IOPOL_MATERIALIZE_DATALESS_FILES_ON)
+    }
+
     /// A canonical temporary directory: the clone opens its roots with no symlink anywhere in the path.
     private func temporaryRoot() throws -> URL {
         let resolved = try #require(realpath(NSTemporaryDirectory(), nil))
@@ -190,5 +224,12 @@ private struct EquivalencePolicyObservation: Sendable {
     let ambientEstablished: Bool
     let before: Int32
     let equivalent: Bool?
+    let after: Int32
+}
+
+private struct ConfigurationReadObservation: Sendable {
+    let ambientEstablished: Bool
+    let before: Int32
+    let values: [String]?
     let after: Int32
 }

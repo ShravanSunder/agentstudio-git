@@ -102,8 +102,8 @@ struct WorktreeForkConfigurationRelocationMapping: Sendable {
         }
     }
 
-    /// The entries `copy.destination` must hold: the source file's own entries in order, each with exactly its
-    /// authorized value and `gitdir` condition relocation applied.
+    /// The entries `copy.destination` must hold: the source file's own entries in order, repeats kept, each with
+    /// exactly its authorized value and `gitdir` condition relocation applied.
     func expectedEntries(
         of sourceEntries: [WorktreeForkConfigurationEntry],
         in copy: WorktreeForkConfigurationCopy
@@ -115,10 +115,7 @@ struct WorktreeForkConfigurationRelocationMapping: Sendable {
                 name = "includeif.\(subsection).path"
             }
             let value = try valueRelocation(for: entry, in: copy).replacement ?? entry.value
-            let mapped = WorktreeForkConfigurationEntry(name: name, value: value)
-            if !expected.contains(mapped) {
-                expected.append(mapped)
-            }
+            expected.append(WorktreeForkConfigurationEntry(name: name, value: value))
         }
         return expected
     }

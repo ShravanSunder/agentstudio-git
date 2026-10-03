@@ -219,8 +219,11 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
     ) throws(GitWorktreeForkError) -> [PendingFile] {
         let entries: [WorktreeForkConfigurationEntry]
         do {
-            entries = try WorktreeForkConfigurationFile.ownEntries(in: file)
+            entries = try WorktreeForkConfigurationFile.ownEntries(in: file, reportPath: includedBy)
         } catch {
+            if WorktreeForkDatalessGuardedRead.isDatalessRefusal(error) {
+                throw error
+            }
             throw .entryFailed(relativePath: includedBy, reason: .unresolvableGitAdministration, errorNumber: nil)
         }
         var includes: [PendingFile] = []
@@ -262,8 +265,11 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
         of copy: WorktreeForkConfigurationCopy
     ) throws(GitWorktreeForkError) -> [WorktreeForkConfigurationEntry] {
         do {
-            return try WorktreeForkConfigurationFile.ownEntries(in: copy.destination)
+            return try WorktreeForkConfigurationFile.ownEntries(in: copy.destination, reportPath: copy.reportPath)
         } catch {
+            if WorktreeForkDatalessGuardedRead.isDatalessRefusal(error) {
+                throw error
+            }
             // libgit2 refuses a file whose own includes cycle or nest too deeply; Git refuses it too.
             throw .entryFailed(relativePath: copy.reportPath, reason: .unresolvableGitAdministration, errorNumber: nil)
         }

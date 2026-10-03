@@ -20,10 +20,14 @@ enum WorktreeForkConfigurationSectionRename {
             reason: .unresolvableGitAdministration,
             errorNumber: nil
         )
-        guard let original = try? String(contentsOf: path, encoding: .utf8) else {
+        let original = try WorktreeForkDatalessGuardedRead.run(path, reportPath: reportPath) {
+            () throws(GitWorktreeForkError) in
+            try? String(contentsOf: path, encoding: .utf8)
+        }
+        guard let original else {
             throw unresolvable
         }
-        let entriesBefore = try WorktreeForkConfigurationFile.ownEntries(in: path)
+        let entriesBefore = try WorktreeForkConfigurationFile.ownEntries(in: path, reportPath: reportPath)
         var renamedHeaders = 0
         let lines = original.split(separator: "\n", omittingEmptySubsequences: false).map { line -> String in
             guard let header = SectionHeader(line: String(line)),
@@ -52,7 +56,7 @@ enum WorktreeForkConfigurationSectionRename {
             return WorktreeForkConfigurationEntry(
                 name: "\(section.lowercased()).\(newSubsection).\(variable)", value: entry.value)
         }
-        guard (try? WorktreeForkConfigurationFile.ownEntries(in: path)) == expected else {
+        guard try WorktreeForkConfigurationFile.ownEntries(in: path, reportPath: reportPath) == expected else {
             throw unresolvable
         }
     }

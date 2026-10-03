@@ -229,6 +229,36 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
         #expect(try configValue("agentstudio.marker", at: destinationAgent, fixture) == "private-original")
     }
 
+    @Test("a relocated path value repeated around an unrelated one keeps its order and multiplicity")
+    func repeatedRelocatedValueKeepsOrderAndMultiplicity() async throws {
+        // Arrange: private extra.conf lists one source-tree path, an outside path, and the source-tree path again.
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-private-repeated")
+        defer { fixture.remove() }
+        try fixture.write(".gitignore", ".claude/\nlarge-file-store/\n")
+        try fixture.git.run("add", ".gitignore")
+        try fixture.git.run("commit", "-qm", "ignore agents and storage")
+        try fixture.write("large-file-store/objects/placeholder", "stored\n")
+        let agent = fixture.source.appending(path: ".claude/worktrees/agent")
+        try fixture.git.run("worktree", "add", "-q", "-b", "agent", agent.path)
+        let extra = try canonical(fixture.source.appending(path: ".git/worktrees/agent")).appending(path: "extra.conf")
+        let storage = try canonical(fixture.source.appending(path: "large-file-store")).path
+        let outside = try canonical(fixture.repository.root).appending(path: "outside-store").path
+        try "[agentstudio]\n\tstore = \(storage)\n\tstore = \(outside)\n\tstore = \(storage)\n".write(
+            to: extra, atomically: false, encoding: .utf8)
+        try fixture.git.run("config", "include.path", extra.path)
+
+        // Act
+        _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+
+        // Assert
+        let destinationAgent = fixture.destination().appending(path: ".claude/worktrees/agent")
+        let destinationStorage = try canonical(fixture.destination().appending(path: "large-file-store")).path
+        #expect(
+            try fixture.git.run(["config", "--get-all", "agentstudio.store"], currentDirectory: destinationAgent)
+                .split(separator: "\n").map(String.init) == [destinationStorage, outside, destinationStorage])
+        #expect(try configValue("agentstudio.store", at: destinationAgent, fixture) == destinationStorage)
+    }
+
     @Test("a reference to only the common file passes validation beside an unrelated same-named private file")
     func commonOnlyReferenceIgnoresUnrelatedPrivateFile() async throws {
         // Arrange: an external repository's linked worktree under vendor/ is flattened; its config includes only
@@ -278,7 +308,9 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
         let signers = privateAdministration.appending(path: "allowed_signers")
         let extra = privateAdministration.appending(path: "extra.conf")
         try "agent@example.com ssh-ed25519 AAAAexample\n".write(to: signers, atomically: false, encoding: .utf8)
-        try "[agentstudio]\n\tprobe = from-private\n".write(to: extra, atomically: false, encoding: .utf8)
+        // A repeated key: Git's effective value is the last occurrence, so dropping it changes behavior.
+        try "[agentstudio]\n\tprobe = one\n\tprobe = two\n\tprobe = one\n".write(
+            to: extra, atomically: false, encoding: .utf8)
         try fixture.git.run("config", "gpg.ssh.allowedSignersFile", signers.path)
         try fixture.git.run("config", "include.path", extra.path)
         let destinationAdministration = fixture.destination().appending(path: ".claude/worktrees/agent/.git")
@@ -294,6 +326,9 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
                 try? FileManager.default.removeItem(at: destinationAdministration.appending(path: "extra.conf"))
             case .includedEntriesChanged:
                 try? Data("[agentstudio]\n\tprobe = tampered\n".utf8)
+                    .write(to: destinationAdministration.appending(path: "extra.conf"))
+            case .repeatedEntryDropped:
+                try? Data("[agentstudio]\n\tprobe = one\n\tprobe = two\n".utf8)
                     .write(to: destinationAdministration.appending(path: "extra.conf"))
             }
         }
@@ -385,4 +420,6 @@ enum TamperedCounterpart: String, CaseIterable, Sendable {
     case missing
     /// A referenced included configuration file holds entries no authorized relocation explains.
     case includedEntriesChanged
+    /// A referenced included configuration file lost a repeated entry, changing the key's effective value.
+    case repeatedEntryDropped
 }

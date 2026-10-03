@@ -28,10 +28,14 @@ struct WorktreeForkConfigurationPathValidation: Sendable {
             }
             let leftover = GitWorktreeForkError.validationFailed(
                 reason: .sourceAdministrationReference, relativePath: reportPath)
-            guard depth <= WorktreeForkConfigurationIncludes.maximumDepth,
-                let entries = try? WorktreeForkConfigurationFile.ownEntries(in: file)
-            else {
+            guard depth <= WorktreeForkConfigurationIncludes.maximumDepth else {
                 throw leftover
+            }
+            let entries: [WorktreeForkConfigurationEntry]
+            do {
+                entries = try WorktreeForkConfigurationFile.ownEntries(in: file, reportPath: reportPath)
+            } catch {
+                throw WorktreeForkDatalessGuardedRead.isDatalessRefusal(error) ? error : leftover
             }
             for entry in entries {
                 if let condition = WorktreeForkGitDirectoryCondition.parse(includeName: entry.name),
@@ -78,19 +82,33 @@ struct WorktreeForkConfigurationPathValidation: Sendable {
         var pending = roots.map { ReachedFile(copy: $0, referencedBy: nil, depth: 0) }
         while let reached = pending.popLast() {
             let copy = reached.copy
+            // A repository without this file (no config.worktree) has nothing to require.
             guard visited.insert(copy.source.path).inserted,
-                let sourceEntries = try? WorktreeForkConfigurationFile.ownEntries(in: copy.source)
+                case .success = WorktreeForkDescriptors.lstatPath(copy.source)
             else {
                 continue
             }
-            if let referencedBy = reached.referencedBy {
-                // An included file the fork owns: the source's entries with exactly the authorized relocations.
-                guard reached.depth <= WorktreeForkConfigurationIncludes.maximumDepth,
-                    let destinationEntries = try? WorktreeForkConfigurationFile.ownEntries(in: copy.destination),
-                    let expected = try? mapping.expectedEntries(of: sourceEntries, in: copy),
-                    destinationEntries == expected
-                else {
-                    throw .validationFailed(reason: .nestedRepositoryUnusable, relativePath: referencedBy)
+            let unusable = GitWorktreeForkError.validationFailed(
+                reason: .nestedRepositoryUnusable, relativePath: reached.referencedBy ?? copy.reportPath)
+            // The unchanged source decides what is required; a source configuration that cannot be read is a
+            // failure, never a skip.
+            let sourceEntries = try orderedEntries(of: copy.source, reportPath: copy.reportPath, otherwise: unusable)
+            if reached.referencedBy != nil {
+                // An included file the fork owns: the source's entries in order, repeats kept, with exactly the
+                // authorized relocations.
+                guard reached.depth <= WorktreeForkConfigurationIncludes.maximumDepth else {
+                    throw unusable
+                }
+                let destinationEntries = try orderedEntries(
+                    of: copy.destination, reportPath: copy.reportPath, otherwise: unusable)
+                let expected: [WorktreeForkConfigurationEntry]
+                do {
+                    expected = try mapping.expectedEntries(of: sourceEntries, in: copy)
+                } catch {
+                    throw unusable
+                }
+                guard destinationEntries == expected else {
+                    throw unusable
                 }
             }
             for entry in sourceEntries {
@@ -120,6 +138,19 @@ struct WorktreeForkConfigurationPathValidation: Sendable {
                             referencedBy: copy.reportPath, depth: reached.depth + 1))
                 }
             }
+        }
+    }
+
+    /// A dataless file fails as itself; any other read failure is `otherwise`.
+    private func orderedEntries(
+        of file: URL,
+        reportPath: String,
+        otherwise failure: GitWorktreeForkError
+    ) throws(GitWorktreeForkError) -> [WorktreeForkConfigurationEntry] {
+        do {
+            return try WorktreeForkConfigurationFile.orderedEntries(in: file, reportPath: reportPath)
+        } catch {
+            throw WorktreeForkDatalessGuardedRead.isDatalessRefusal(error) ? error : failure
         }
     }
 
