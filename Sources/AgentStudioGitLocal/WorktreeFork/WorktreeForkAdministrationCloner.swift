@@ -68,7 +68,8 @@ struct WorktreeForkAdministrationCloner: Sendable {
         }
         let destinationRoot = try descriptor(WorktreeForkDescriptors.openRoot(atCanonicalPath: destination))
         defer { close(destinationRoot) }
-        var tree = WorktreeForkClonedAdministrationTree(source: source, destination: destination, reportPath: reportPath)
+        var tree = WorktreeForkClonedAdministrationTree(
+            source: source, destination: destination, reportPath: reportPath)
         try cloneDirectory(sourceRoot, destinationRoot, relativePath: "", into: &tree)
         return tree
     }
@@ -204,7 +205,8 @@ struct WorktreeForkClonedAdministrationTree: Sendable {
             case .success:
                 throw .sourceChanged(relativePath: directoryReportPath, reason: .entryIdentityChanged)
             case .failure(let failure):
-                throw .entryFailed(relativePath: directoryReportPath, reason: .unreadableEntry, errorNumber: failure.code)
+                throw .entryFailed(
+                    relativePath: directoryReportPath, reason: .unreadableEntry, errorNumber: failure.code)
             }
             normalized += try WorktreeForkEntryMetadata.copyInodeMetadata(
                 sourceDescriptor: sourceDescriptor,
