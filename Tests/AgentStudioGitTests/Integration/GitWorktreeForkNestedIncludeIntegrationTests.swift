@@ -343,6 +343,80 @@ struct GitWorktreeForkNestedIncludeIntegrationTests {
         #expect(try Data(contentsOf: outsideInclude) == outsideBytes)
     }
 
+    @Test("relocating a gitdir condition keeps its section in place, so a later local override still wins")
+    func relocatedConditionKeepsPrecedence() async throws {
+        // Arrange: the Advisor's shape; an active conditional include, then a later override of the same key.
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-include-precedence")
+        defer { fixture.remove() }
+        try ignore("dependency/", fixture: fixture)
+        let dependency = try makeRepository(
+            at: fixture.source.appending(path: "dependency"), file: "tracked.txt", fixture: fixture)
+        let administration = try canonical(dependency.appending(path: ".git"))
+        let included = administration.appending(path: "conditional.conf")
+        try "[agentstudio]\n\tmarker = included-value\n".write(to: included, atomically: false, encoding: .utf8)
+        let configuration = administration.appending(path: "config")
+        try fixture.git.run([
+            "config", "--file", configuration.path, "includeIf.gitdir:\(administration.path).path", included.path,
+        ])
+        try fixture.git.run(["config", "--file", configuration.path, "agentstudio.marker", "local-override"])
+        #expect(try configValue("agentstudio.marker", at: dependency, fixture) == "local-override")
+        let sourceBytes = try Data(contentsOf: configuration)
+        let destination = fixture.destination()
+
+        // Act
+        _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+
+        // Assert
+        let destinationDependency = destination.appending(path: "dependency")
+        #expect(try configValue("agentstudio.marker", at: destinationDependency, fixture) == "local-override")
+        #expect(
+            try fixture.git.run(["config", "--get-all", "agentstudio.marker"], currentDirectory: destinationDependency)
+                == "included-value\nlocal-override\n")
+        #expect(try Data(contentsOf: configuration) == sourceBytes)
+    }
+
+    @Test("relocating a gitdir condition rewrites only its header, keeping several paths and their comments")
+    func relocatedConditionKeepsSectionBody() async throws {
+        // Arrange: a commented condition section with two relative includes, followed by a later override.
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-include-section-body")
+        defer { fixture.remove() }
+        try ignore("dependency/", fixture: fixture)
+        let dependency = try makeRepository(
+            at: fixture.source.appending(path: "dependency"), file: "tracked.txt", fixture: fixture)
+        let administration = try canonical(dependency.appending(path: ".git"))
+        try "[agentstudio]\n\tmarker = one\n"
+            .write(to: administration.appending(path: "one.conf"), atomically: false, encoding: .utf8)
+        try "[agentstudio]\n\tmarker = two\n"
+            .write(to: administration.appending(path: "two.conf"), atomically: false, encoding: .utf8)
+        let configuration = administration.appending(path: "config")
+        let section =
+            "# conditional settings for this checkout\n[includeIf \"gitdir:\(administration.path)\"]\n"
+            + "\t# first include\n\tpath = one.conf\n\tpath = two.conf ; second include\n"
+            + "[agentstudio]\n\tmarker = local-override\n"
+        let handle = try FileHandle(forWritingTo: configuration)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(section.utf8))
+        try handle.close()
+        let sourceText = try String(contentsOf: configuration, encoding: .utf8)
+        let destination = fixture.destination()
+
+        // Act
+        _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+
+        // Assert
+        let destinationDependency = destination.appending(path: "dependency")
+        let destinationAdministration = try canonical(destinationDependency.appending(path: ".git"))
+        #expect(
+            try String(contentsOf: destinationAdministration.appending(path: "config"), encoding: .utf8)
+                == sourceText.replacingOccurrences(
+                    of: "[includeIf \"gitdir:\(administration.path)\"]",
+                    with: "[includeIf \"gitdir:\(destinationAdministration.path)\"]"))
+        #expect(
+            try fixture.git.run(["config", "--get-all", "agentstudio.marker"], currentDirectory: destinationDependency)
+                == "one\ntwo\nlocal-override\n")
+        #expect(try String(contentsOf: configuration, encoding: .utf8) == sourceText)
+    }
+
     private func ignoreVendorAndStorage(_ fixture: GitWorktreeForkFixture) throws {
         try fixture.write(".gitignore", "vendor/\nlarge-file-store/\n")
         try fixture.git.run("add", ".gitignore")

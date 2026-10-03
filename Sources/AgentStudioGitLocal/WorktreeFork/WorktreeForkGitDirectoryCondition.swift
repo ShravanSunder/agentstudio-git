@@ -62,9 +62,14 @@ struct WorktreeForkGitDirectoryCondition: Equatable, Sendable {
         )
     }
 
-    /// The include entry name for this condition with `pattern` in place of the current one.
-    func includeName(withPattern pattern: String) -> String {
-        "includeIf.\(prefix)\(pattern).path"
+    /// The `includeIf` subsection as written: the prefix and the pattern.
+    var subsection: String {
+        prefix + pattern
+    }
+
+    /// This condition's subsection with `pattern` in place of the current one.
+    func subsection(withPattern pattern: String) -> String {
+        prefix + pattern
     }
 
     /// `literal` followed by the glob tail and trailing slash of `location`.
