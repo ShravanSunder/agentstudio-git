@@ -213,7 +213,7 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
         case .outsideSource, .sharedRepository:
             wanted = source
         case .relocated(let destination):
-            try counterparts.materializeCounterpart(of: source)
+            try counterparts.materializeCounterpart(of: source, at: destination)
             wanted = destination
         case .unmapped:
             let sourcePath =
@@ -347,8 +347,8 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
 
 /// Walks the destination include closure the re-homer edited, external files included, and rejects any value
 /// that still names a source location the fork relocates elsewhere, or one with no counterpart, and any value
-/// naming a missing destination file whose private-administration source exists (Git would silently read
-/// nothing).
+/// naming a destination file that is not the counterpart of its existing private-administration source:
+/// missing (Git would silently read nothing) or a different file (Git would read the wrong bytes).
 struct WorktreeForkConfigurationPathValidation: Sendable {
     let plan: WorktreeForkPlan
     let relocation: WorktreeForkSourcePathRelocation
@@ -386,11 +386,7 @@ struct WorktreeForkConfigurationPathValidation: Sendable {
                 if !destinationOwned, relocation.namesRelocatedSource(target) {
                     throw leftover
                 }
-                if destinationOwned, case .failure = WorktreeForkDescriptors.lstatPath(target),
-                    relocation.privateAdministrationSources(ofDestination: target).contains(where: {
-                        if case .success = WorktreeForkDescriptors.lstatPath($0) { true } else { false }
-                    })
-                {
+                if destinationOwned, !hasPrivateCounterpart(target) {
                     throw .validationFailed(reason: .nestedRepositoryUnusable, relativePath: reportPath)
                 }
                 // External includes are walked too: they are never edited, so a leftover there is a leak.
@@ -405,6 +401,24 @@ struct WorktreeForkConfigurationPathValidation: Sendable {
         }
     }
 
+    /// False when `target` stands for an existing private-administration source and is missing, or is a regular
+    /// file not equivalent to that source. Files re-homing writes itself legitimately differ and are skipped.
+    private func hasPrivateCounterpart(_ target: URL) -> Bool {
+        for match in relocation.privateAdministrationSources(ofDestination: target)
+        where !WorktreeForkPrivateAdministrationCounterparts.filesWrittenByRehoming.contains(match.remainder) {
+            let source = match.sourceAdministration.appending(path: match.remainder)
+            guard case .success(let sourceInfo) = WorktreeForkDescriptors.lstatPath(source) else {
+                continue
+            }
+            guard case .success = WorktreeForkDescriptors.lstatPath(target) else {
+                return false
+            }
+            if sourceInfo.st_mode & S_IFMT == S_IFREG, !WorktreeForkFileEquivalence.isEquivalent(source, target) {
+                return false
+            }
+        }
+        return true
+    }
 }
 
 extension WorktreeForkSourcePathRelocation {

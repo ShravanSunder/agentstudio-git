@@ -114,9 +114,9 @@ struct WorktreeForkSourcePathRelocation: Sendable {
             remainder: match.remainder)
     }
 
-    /// The source private-administration paths whose counterpart is `destination`. A flattened node's
-    /// destination administration holds both its common and private copies, so only private sources count.
-    func privateAdministrationSources(ofDestination destination: URL) -> [URL] {
+    /// The private-administration sources whose counterpart is `destination`. A flattened node's destination
+    /// administration holds both its common and private copies, so only private sources count.
+    func privateAdministrationSources(ofDestination destination: URL) -> [PrivateAdministrationMatch] {
         relocations.compactMap { relocation in
             guard relocation.isPrivateAdministration,
                 case .administration(let administration) = relocation.disposition,
@@ -126,7 +126,9 @@ struct WorktreeForkSourcePathRelocation: Sendable {
             else {
                 return nil
             }
-            return relocation.source.appending(path: remainder)
+            return PrivateAdministrationMatch(
+                sourceAdministration: relocation.source, destinationAdministration: administration,
+                remainder: remainder)
         }
     }
 

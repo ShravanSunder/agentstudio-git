@@ -30,6 +30,7 @@ suites=(
   WorktreeForkPolicyTests
   SparseCheckoutMatcherTests
   WorktreeForkCleanEntryAdoptionTests
+  WorktreeForkPrivateCounterpartTests
   GitProcessRunnerTests
   SystemGitRemoteClientTests
   GitRemoteOutputParserTests
