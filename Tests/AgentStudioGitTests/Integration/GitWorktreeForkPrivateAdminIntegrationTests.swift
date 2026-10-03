@@ -259,6 +259,41 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
         #expect(try configValue("agentstudio.store", at: destinationAgent, fixture) == destinationStorage)
     }
 
+    @Test("a private include two nested worktrees reach is realized once and keeps its re-homed values")
+    func privateIncludeReachedTwiceIsRealizedOnce() async throws {
+        // Arrange: worktrees a and b share the common config, which includes a's private extra.conf; that file
+        // names a source-tree lfs.storage the re-homer must relocate in the realized copy.
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-private-twice")
+        defer { fixture.remove() }
+        try fixture.write(".gitignore", ".claude/\nlarge-file-store/\n")
+        try fixture.git.run("add", ".gitignore")
+        try fixture.git.run("commit", "-qm", "ignore agents and storage")
+        try fixture.write("large-file-store/objects/placeholder", "stored\n")
+        for name in ["a", "b"] {
+            try fixture.git.run(
+                "worktree", "add", "-q", "-b", name, fixture.source.appending(path: ".claude/worktrees/\(name)").path)
+        }
+        let extra = try canonical(fixture.source.appending(path: ".git/worktrees/a")).appending(path: "extra.conf")
+        let storage = try canonical(fixture.source.appending(path: "large-file-store"))
+        try "[lfs]\n\tstorage = \(storage.path)\n".write(to: extra, atomically: false, encoding: .utf8)
+        try fixture.git.run("config", "include.path", extra.path)
+
+        // Act
+        _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+
+        // Assert
+        let destinationStorage = try canonical(fixture.destination().appending(path: "large-file-store")).path
+        for name in ["a", "b"] {
+            let destinationWorktree = fixture.destination().appending(path: ".claude/worktrees/\(name)")
+            #expect(try configValue("lfs.storage", at: destinationWorktree, fixture) == destinationStorage, "\(name)")
+        }
+        try "[lfs]\n\tstorage = /changed-in-source\n".write(to: extra, atomically: false, encoding: .utf8)
+        #expect(
+            try configValue(
+                "lfs.storage", at: fixture.destination().appending(path: ".claude/worktrees/a"), fixture)
+                == destinationStorage)
+    }
+
     @Test("a reference to only the common file passes validation beside an unrelated same-named private file")
     func commonOnlyReferenceIgnoresUnrelatedPrivateFile() async throws {
         // Arrange: an external repository's linked worktree under vendor/ is flattened; its config includes only

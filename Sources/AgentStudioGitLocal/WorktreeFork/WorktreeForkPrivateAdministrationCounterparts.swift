@@ -38,6 +38,10 @@ struct WorktreeForkPrivateAdministrationCounterparts: Sendable {
     private(set) var normalizedEntries: [GitWorktreeMaterializationNormalizedEntry] = []
     /// The source each relocated destination path is required from, keyed by destination path.
     private var requiredSources: [String: URL] = [:]
+    /// Destination paths already realized from their required source. The re-homer may then edit the copy (an
+    /// include's relocated values), so a later reference to the same source must not compare it with the
+    /// unedited source and clone the source bytes back over those edits.
+    private var realizedDestinations: Set<String> = []
 
     init(plan: WorktreeForkPlan, relocation: WorktreeForkSourcePathRelocation) {
         self.plan = plan
@@ -49,7 +53,9 @@ struct WorktreeForkPrivateAdministrationCounterparts: Sendable {
     /// from a different, non-equivalent source fails.
     mutating func materializeCounterpart(of source: URL, at destination: URL) throws(GitWorktreeForkError) {
         try requireSingleSource(source, at: destination)
-        guard let match = relocation.privateAdministrationMatch(of: source),
+        // `requireSingleSource` has proven any earlier realization here came from this same source.
+        guard realizedDestinations.insert(destination.path).inserted,
+            let match = relocation.privateAdministrationMatch(of: source),
             !Self.filesWrittenByRehoming.contains(match.remainder)
         else {
             return
