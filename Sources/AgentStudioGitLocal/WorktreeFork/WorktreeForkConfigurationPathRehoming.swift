@@ -122,12 +122,19 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
                 throw unresolvable
             }
             var edits: [WorktreeForkConfigurationEdit] = []
+            // Relocated `includeIf` subsections, old to new, renamed in place before any value edit.
+            var renamedSubsections: [String: String] = [:]
             for entry in try Self.ownEntries(of: copy) {
                 let value = try relocatedValue(for: entry, in: copy, counterparts: &counterparts)
-                if let name = try relocatedConditionName(for: entry, in: copy) {
-                    edits.append(.moveValue(entry.name, matching: entry.value, to: name, value: value ?? entry.value))
-                } else if let value {
-                    edits.append(.replaceValue(entry.name, matching: entry.value, with: value))
+                var name = entry.name
+                if let condition = WorktreeForkGitDirectoryCondition.parse(includeName: entry.name),
+                    let relocated = try relocatedConditionSubsection(for: entry, in: copy)
+                {
+                    renamedSubsections[condition.subsection] = relocated
+                    name = "includeif.\(relocated).path"
+                }
+                if let value {
+                    edits.append(.replaceValue(name, matching: entry.value, with: value))
                 }
                 guard WorktreeForkConfigurationIncludes.isInclude(entry.name) else {
                     continue
@@ -151,9 +158,16 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
                     continue
                 }
             }
+            for (oldSubsection, newSubsection) in renamedSubsections.sorted(by: { $0.key < $1.key }) {
+                try WorktreeForkConfigurationSectionRename.renameSubsection(
+                    section: "includeIf", from: oldSubsection, to: newSubsection, in: copy.destination,
+                    reportPath: copy.reportPath)
+            }
             if !edits.isEmpty {
                 try WorktreeForkConfigurationFile.apply(
                     edits, to: copy.destination, reportPath: copy.reportPath, lockTracker: lockTracker)
+            }
+            if !edits.isEmpty || !renamedSubsections.isEmpty {
                 edited.append(copy.destination)
             }
         }
@@ -205,10 +219,10 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
         return wanted.path
     }
 
-    /// The new key for a `gitdir` conditional include whose pattern names a relocated location, or nil to keep
-    /// it. Patterns outside the source or in the shared repository keep their target. A glob that could
+    /// The new subsection for a `gitdir` conditional include whose pattern names a relocated location, or nil
+    /// to keep it. Patterns outside the source or in the shared repository keep their target. A glob that could
     /// match beneath a location that relocates differently has no exact counterpart, so it fails.
-    private func relocatedConditionName(
+    private func relocatedConditionSubsection(
         for entry: WorktreeForkConfigurationEntry,
         in copy: WorktreeForkConfigurationCopy
     ) throws(GitWorktreeForkError) -> String? {
@@ -240,7 +254,7 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
             if condition.location(includedFrom: copy.destination)?.literal.path == destination.path {
                 return nil
             }
-            return condition.includeName(
+            return condition.subsection(
                 withPattern: WorktreeForkGitDirectoryCondition.pattern(literal: destination.path, following: source))
         }
     }
