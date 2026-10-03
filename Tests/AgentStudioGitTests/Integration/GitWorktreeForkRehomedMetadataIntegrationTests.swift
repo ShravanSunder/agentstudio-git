@@ -10,67 +10,98 @@ import Testing
 /// attributes, or file flags a failure, so each rewrite must carry the metadata of the file it stands for.
 @Suite("Git worktree fork re-homed file metadata integration", .serialized)
 struct GitWorktreeForkRehomedMetadataIntegrationTests {
-    private static let nestedHead = ".build/checkouts/dependency/.git/HEAD"
-
-    @Test("a rewritten nested HEAD keeps the replaced file's metadata", arguments: RehomedFileMetadata.allCases)
-    func rewrittenNestedHeadKeepsMetadata(metadata: RehomedFileMetadata) async throws {
+    @Test(
+        "a rewritten administrative file keeps the metadata of the file it stands for",
+        arguments: RehomedAdministrativeFile.allCases, RehomedFileMetadata.allCases)
+    func rewrittenAdministrativeFileKeepsMetadata(
+        file: RehomedAdministrativeFile,
+        metadata: RehomedFileMetadata
+    ) async throws {
         // Arrange
-        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-head-metadata")
-        let sourceHead = fixture.source.appending(path: Self.nestedHead)
-        let destinationHead = fixture.destination().appending(path: Self.nestedHead)
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-file-metadata")
+        let sourceFile = fixture.source.appending(path: file.relativePath)
+        let destinationFile = fixture.destination().appending(path: file.relativePath)
         defer {
-            clearProtection(sourceHead)
-            clearProtection(destinationHead)
+            clearProtection(sourceFile)
+            clearProtection(destinationFile)
             fixture.remove()
         }
         try fixture.write(".gitignore", ".build/\n")
         try fixture.git.run("add", ".gitignore")
         try fixture.git.run("commit", "-qm", "ignore build")
-        let checkout = fixture.source.appending(path: ".build/checkouts/dependency")
-        try makeRepository(at: checkout, file: "Package.swift", fixture: fixture)
-        try metadata.apply(to: sourceHead)
+        switch file {
+        case .nestedHead, .nestedConfiguration:
+            try makeRepository(
+                at: fixture.source.appending(path: file.worktreeRelativePath), file: "Package.swift",
+                fixture: fixture)
+        case .submoduleGitfile:
+            let library = try makeRepository(
+                at: fixture.repository.root.appending(path: "library"), file: "library.txt", fixture: fixture)
+            try fixture.git.run("submodule", "add", "-q", library.path, file.worktreeRelativePath)
+            try fixture.git.run("commit", "-qm", "submodule")
+        }
+        try metadata.apply(to: sourceFile)
 
         // Act
         _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
 
         // Assert
-        let destinationCheckout = fixture.destination().appending(path: ".build/checkouts/dependency")
-        #expect(try fixture.blobID("HEAD", at: destinationCheckout) == fixture.blobID("HEAD", at: checkout))
-        #expect(metadata.isCarried(by: destinationHead), "\(metadata) on the rewritten HEAD")
-        let sourceInfo = try #require(GitWorktreeForkFileProbe.info(sourceHead))
-        let destinationInfo = try #require(GitWorktreeForkFileProbe.info(destinationHead))
+        let sourceWorktree = fixture.source.appending(path: file.worktreeRelativePath)
+        let destinationWorktree = fixture.destination().appending(path: file.worktreeRelativePath)
+        #expect(try fixture.blobID("HEAD", at: destinationWorktree) == fixture.blobID("HEAD", at: sourceWorktree))
+        #expect(try fixture.statusLines(at: destinationWorktree).isEmpty)
+        #expect(metadata.isCarried(by: destinationFile), "\(metadata) on the rewritten \(file)")
+        let sourceInfo = try #require(GitWorktreeForkFileProbe.info(sourceFile))
+        let destinationInfo = try #require(GitWorktreeForkFileProbe.info(destinationFile))
         #expect(destinationInfo.st_mode & 0o7777 == sourceInfo.st_mode & 0o7777)
         #expect(
             destinationInfo.st_flags & WorktreeForkEntryMetadata.reproducibleFlagMask
                 == sourceInfo.st_flags & WorktreeForkEntryMetadata.reproducibleFlagMask)
-        #expect(probeAttribute(destinationHead) == probeAttribute(sourceHead))
-        #expect(accessControlText(destinationHead) == accessControlText(sourceHead))
+        #expect(probeAttribute(destinationFile) == probeAttribute(sourceFile))
+        #expect(accessControlText(destinationFile) == accessControlText(sourceFile))
     }
 
     @Test(
         "rewritten sparse configuration keeps its source file's mode and extended attribute",
-        arguments: SparseNestedLayout.allCases)
-    func rewrittenSparseConfigurationKeepsMetadata(layout: SparseNestedLayout) async throws {
+        arguments: SparseAdministrationLayout.allCases)
+    func rewrittenSparseConfigurationKeepsMetadata(layout: SparseAdministrationLayout) async throws {
         // Arrange: config.worktree is rewritten by re-homing and then edited through libgit2's lock-file
-        // rename; a flattened linked worktree's copy is removed and rebuilt from its private source file.
+        // rename; a flattened linked worktree's copy is removed and rebuilt from its private source file, and
+        // the fork root's copy is new fork administration built from the source worktree's own files.
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-sparse-metadata")
         defer { fixture.remove() }
         try fixture.write(".gitignore", ".build/\n")
         try fixture.git.run("add", ".gitignore")
         try fixture.git.run("commit", "-qm", "ignore build")
-        let nested = fixture.source.appending(path: ".build/checkouts/dependency")
+        let nestedPath = ".build/checkouts/dependency"
+        let nested = fixture.source.appending(path: nestedPath)
+        let sparseWorktree: URL
         let sourceAdministration: URL
+        let destinationWorktree: URL
+        let destinationAdministration: URL
         switch layout {
         case .embeddedRepository:
             try makeSparseTree(at: nested, fixture: fixture)
-            sourceAdministration = nested.appending(path: ".git")
+            (sparseWorktree, sourceAdministration) = (nested, nested.appending(path: ".git"))
+            destinationWorktree = fixture.destination().appending(path: nestedPath)
+            destinationAdministration = destinationWorktree.appending(path: ".git")
         case .linkedWorktree:
             let upstream = fixture.repository.root.appending(path: "upstream")
             try makeSparseTree(at: upstream, fixture: fixture)
             try fixture.git.run(["worktree", "add", "-q", nested.path], currentDirectory: upstream)
-            sourceAdministration = upstream.appending(path: ".git/worktrees/dependency")
+            (sparseWorktree, sourceAdministration) = (nested, upstream.appending(path: ".git/worktrees/dependency"))
+            destinationWorktree = fixture.destination().appending(path: nestedPath)
+            destinationAdministration = destinationWorktree.appending(path: ".git")
+        case .forkRoot:
+            try fixture.write("kept/one.txt", "kept\n")
+            try fixture.write("dropped/two.txt", "dropped\n")
+            try fixture.git.run("add", ".")
+            try fixture.git.run("commit", "-qm", "sparse tree")
+            (sparseWorktree, sourceAdministration) = (fixture.source, fixture.source.appending(path: ".git"))
+            destinationWorktree = fixture.destination()
+            destinationAdministration = fixture.linkedWorktreeAdministration()
         }
-        try fixture.git.run(["sparse-checkout", "set", "--cone", "kept"], currentDirectory: nested)
+        try fixture.git.run(["sparse-checkout", "set", "--cone", "kept"], currentDirectory: sparseWorktree)
         let administrativeFiles = ["config.worktree", "info/sparse-checkout"]
         for file in administrativeFiles {
             let url = sourceAdministration.appending(path: file)
@@ -82,15 +113,12 @@ struct GitWorktreeForkRehomedMetadataIntegrationTests {
         _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
 
         // Assert
-        let destinationNested = fixture.destination().appending(path: ".build/checkouts/dependency")
-        #expect(try fixture.git.run(["sparse-checkout", "list"], currentDirectory: destinationNested) == "kept\n")
+        #expect(try fixture.git.run(["sparse-checkout", "list"], currentDirectory: destinationWorktree) == "kept\n")
         for file in administrativeFiles {
-            let destination = try #require(
-                GitWorktreeForkFileProbe.info(destinationNested.appending(path: ".git/\(file)")))
-            #expect(destination.st_mode & 0o7777 == 0o444, "\(file) keeps its read-only mode")
-            #expect(
-                probeAttribute(destinationNested.appending(path: ".git/\(file)")) == Array("x".utf8),
-                "\(file) keeps its extended attribute")
+            let destination = destinationAdministration.appending(path: file)
+            let destinationInfo = try #require(GitWorktreeForkFileProbe.info(destination))
+            #expect(destinationInfo.st_mode & 0o7777 == 0o444, "\(file) keeps its read-only mode")
+            #expect(probeAttribute(destination) == Array("x".utf8), "\(file) keeps its extended attribute")
         }
     }
 
@@ -124,13 +152,49 @@ struct GitWorktreeForkRehomedMetadataIntegrationTests {
 
 private let probeAttributeName = "com.example.forklab"
 
-/// How a sparse nested repository's administration is laid out in the source.
-enum SparseNestedLayout: String, CaseIterable, Sendable, CustomStringConvertible {
+/// An administrative file re-homing rewrites, by its source-relative path.
+enum RehomedAdministrativeFile: String, CaseIterable, Sendable, CustomStringConvertible {
+    /// Rewritten on a fresh inode by re-homing.
+    case nestedHead
+    /// Edited through libgit2's lock-file rename (`core.bare`, `core.worktree`).
+    case nestedConfiguration
+    /// Never copied; written from scratch with the source gitfile as its metadata template.
+    case submoduleGitfile
+
+    var description: String {
+        rawValue
+    }
+
+    var worktreeRelativePath: String {
+        switch self {
+        case .nestedHead, .nestedConfiguration:
+            return ".build/checkouts/dependency"
+        case .submoduleGitfile:
+            return "deps/library"
+        }
+    }
+
+    var relativePath: String {
+        switch self {
+        case .nestedHead:
+            return "\(worktreeRelativePath)/.git/HEAD"
+        case .nestedConfiguration:
+            return "\(worktreeRelativePath)/.git/config"
+        case .submoduleGitfile:
+            return "\(worktreeRelativePath)/.git"
+        }
+    }
+}
+
+/// Where a sparse repository's administration lives in the source.
+enum SparseAdministrationLayout: String, CaseIterable, Sendable, CustomStringConvertible {
     /// An embedded `.git` directory; the destination copy is cloned, then rewritten in place.
     case embeddedRepository
     /// A gitfile-reached linked worktree; its destination copy is flattened and rebuilt from the private
     /// source administration.
     case linkedWorktree
+    /// The worktree being forked; the fork's own administration starts without these files.
+    case forkRoot
 
     var description: String {
         rawValue

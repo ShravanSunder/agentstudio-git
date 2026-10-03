@@ -289,8 +289,14 @@ struct GitRepositoryStateRehomer: Sendable {
             lockTracker: lockTracker
         )
         if case .submodule = node.kind {
+            // The materializer never copies a nested gitfile, so the source gitfile is the metadata template.
             let pointer = "gitdir: \(WorktreeForkRelativePath.from(worktree, to: administration))\n"
-            try writeText(pointer, to: worktree.appending(path: ".git"), reportPath: reportPath)
+            try writeData(
+                Data(pointer.utf8),
+                to: worktree.appending(path: ".git"),
+                metadataFrom: plan.sourceRoot.appending(path: node.relativePath).appending(path: ".git"),
+                reportPath: reportPath
+            )
         }
         if let sparse = node.sparse {
             try writeSparseState(sparse, administration: administration, reportPath: reportPath)
