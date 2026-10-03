@@ -8,6 +8,8 @@ import Foundation
 /// walker found inside ordinary content are confirmed here and their copied pointers captured.
 struct WorktreeForkGitTopologyPlanner: Sendable {
     let sourceRoot: URL
+    /// The source repository's common directory, which the fork shares rather than mirrors.
+    let commonDirectory: URL
     let cancellation: WorktreeForkCancellation
 
     func plan(
@@ -81,6 +83,7 @@ struct WorktreeForkGitTopologyPlanner: Sendable {
 
     /// Object stores outside the source tree that copied Git directories borrow from, with every store those
     /// borrow from in turn. Each gets a destination-owned mirror, exactly as a nested node's alternates do.
+    /// The source repository's own common directory is shared by the fork, so it is never mirrored here.
     private func outsideObjectStores(
         of copiedGitDirectories: [WorktreeForkCopiedGitDirectory]
     ) throws(GitWorktreeForkError) -> [URL] {
@@ -89,7 +92,8 @@ struct WorktreeForkGitTopologyPlanner: Sendable {
             let reportPath = "\(copied.relativePath)/\(WorktreeForkAdministrationCloner.alternatesRelativePath)"
             for pointer in copied.alternates {
                 guard let target = pointer.target,
-                    WorktreeForkAdministrativeSymlinks.relativeComponents(of: target, beneath: sourceRoot) == nil
+                    WorktreeForkAdministrativeSymlinks.relativeComponents(of: target, beneath: sourceRoot) == nil,
+                    WorktreeForkAdministrativeSymlinks.relativeComponents(of: target, beneath: commonDirectory) == nil
                 else {
                     continue
                 }

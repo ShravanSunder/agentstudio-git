@@ -10,6 +10,8 @@ struct WorktreeForkPlan: Sendable {
     let destinationRequestPath: URL
     let worktreeName: String
     let commonDirectory: URL
+    /// The source worktree's private administration; the common directory itself for a main worktree.
+    let sourceGitDirectory: URL
     let capturedHead: WorktreeForkCapturedHead
     let branchIdentity: WorktreeForkBranchIdentity
     let materialization: GitWorktreeForkMaterialization

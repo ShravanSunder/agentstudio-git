@@ -118,7 +118,7 @@ struct GitRepositoryStateRehomer: Sendable {
             for entry in try WorktreeForkConfigurationFile.absolutePathEntries(in: file) {
                 let source = WorktreeForkSourcePathRelocation.canonicalized(absolutePath: entry.value)
                 switch relocation.counterpart(of: source) {
-                case .outsideSource:
+                case .outsideSource, .sharedRepository:
                     continue
                 case .relocated(let destination) where destination.path != entry.value:
                     edits.append(.replaceValue(entry.name, matching: entry.value, with: destination.path))
@@ -184,7 +184,8 @@ struct GitRepositoryStateRehomer: Sendable {
     }
 
     /// The text that leads from the copy to the pointer's destination counterpart. A target outside every
-    /// relocated location leads to its mirror when `outsideMirrors` is given, otherwise to itself. The recorded
+    /// relocated location leads to its mirror when `outsideMirrors` is given, otherwise to itself; a target in
+    /// the shared repository leads to itself. The recorded
     /// text is kept when it already resolves there from the copy; a counterpart that is unmapped, unmirrored,
     /// or missing would leave the copy dangling or source-dependent, so it fails.
     private func destinationLine(
@@ -210,6 +211,8 @@ struct GitRepositoryStateRehomer: Sendable {
                 throw unresolvable
             }
             wanted = mirror
+        case .sharedRepository:
+            wanted = target
         case .relocated(let destination):
             wanted = destination
         case .unmapped:
