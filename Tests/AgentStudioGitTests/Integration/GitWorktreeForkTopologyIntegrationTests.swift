@@ -170,7 +170,8 @@ struct GitWorktreeForkTopologyIntegrationTests {
         }
         #expect(
             try fixture.git.succeeds(
-                "cat-file", "-e", "HEAD:up.txt", currentDirectory: destination.appending(path: ".build/checkouts/shared")))
+                "cat-file", "-e", "HEAD:up.txt",
+                currentDirectory: destination.appending(path: ".build/checkouts/shared")))
         guard case .copyOnWrite(let materializationReport) = result.materialization else {
             Issue.record("expected copy-on-write materialization")
             return
