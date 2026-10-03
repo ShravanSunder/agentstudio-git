@@ -73,14 +73,17 @@ struct WorktreeForkPlanner: Sendable {
             let filesystem: WorktreeForkFilesystemPlan
             let changesOnly: WorktreeForkChangesOnlyPlan?
             let nestedGitEntryPaths: [String]
+            let gitDirectoryCandidatePaths: [String]
             if request.materialization == .copyOnWrite {
                 filesystem = try WorktreeForkSourceWalker(cancellation: cancellation)
                     .walk(sourceRootDescriptor: sourceRootDescriptor)
                 nestedGitEntryPaths = filesystem.nestedGitEntryPaths
+                gitDirectoryCandidatePaths = filesystem.gitDirectoryCandidatePaths
                 changesOnly = nil
             } else {
                 filesystem = .empty
                 nestedGitEntryPaths = []
+                gitDirectoryCandidatePaths = []
                 changesOnly = try WorktreeForkChangesOnlyPlanner(cancellation: cancellation).plan(
                     sourceRootDescriptor: sourceRootDescriptor,
                     sourceRoot: sourceRoot,
@@ -90,7 +93,8 @@ struct WorktreeForkPlanner: Sendable {
             let gitTopology = try planGitTopology(
                 sourceRoot: sourceRoot,
                 capturedHead: gitCapture.capturedHead,
-                nestedGitEntryPaths: nestedGitEntryPaths
+                nestedGitEntryPaths: nestedGitEntryPaths,
+                gitDirectoryCandidatePaths: gitDirectoryCandidatePaths
             )
             if request.materialization == .changesOnly, gitTopology.rootSparse != nil {
                 throw .workingStateUnsupported(
@@ -122,7 +126,8 @@ struct WorktreeForkPlanner: Sendable {
     private func planGitTopology(
         sourceRoot: URL,
         capturedHead: WorktreeForkCapturedHead,
-        nestedGitEntryPaths: [String]
+        nestedGitEntryPaths: [String],
+        gitDirectoryCandidatePaths: [String]
     ) throws(GitWorktreeForkError) -> WorktreeForkGitTopology {
         let repository = try WorktreeForkGitHandles.openWorktree(sourceRoot)
         defer { git_repository_free(repository) }
@@ -136,7 +141,8 @@ struct WorktreeForkPlanner: Sendable {
             rootRepository: repository,
             rootGitDirectory: gitDirectory,
             rootCapturedHead: capturedHead,
-            nestedGitEntryPaths: nestedGitEntryPaths
+            nestedGitEntryPaths: nestedGitEntryPaths,
+            gitDirectoryCandidatePaths: gitDirectoryCandidatePaths
         )
     }
 

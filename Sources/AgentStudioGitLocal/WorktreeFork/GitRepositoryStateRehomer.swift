@@ -30,7 +30,8 @@ struct WorktreeForkRehomeOutcome: Sendable {
 /// Gives every initialized nested Git node destination-owned administration: submodules beneath the fork's
 /// own `$GIT_DIR/modules/...` (as Git lays out a linked worktree's submodules), independent repositories as
 /// embedded `.git` directories, and every object alternate a destination-owned CoW mirror. No administrative
-/// pointer is copied as final; each is rewritten for the destination.
+/// pointer is copied as final; each is rewritten for the destination. Git directories copied with ordinary
+/// content keep their own copy, with every pointer into the source re-aimed at the destination.
 struct GitRepositoryStateRehomer: Sendable {
     let plan: WorktreeForkPlan
     let cancellation: WorktreeForkCancellation
@@ -83,7 +84,133 @@ struct GitRepositoryStateRehomer: Sendable {
                 WorktreeForkRehomedNode(
                     node: node, destinationWorktree: destinationWorktree, destinationAdministration: administration))
         }
+        let relocation = WorktreeForkSourcePathRelocation(plan: plan, administrationByNode: administrationByNode)
+        for node in outcome.nodes {
+            try cancellation.throwIfCancelled()
+            try rehomeConfigurationPaths(
+                in: node.destinationAdministration, reportPath: "\(node.node.relativePath)/.git",
+                relocation: relocation)
+        }
+        for copied in topology.copiedGitDirectories {
+            try cancellation.throwIfCancelled()
+            try rehomeCopiedPointers(copied, relocation: relocation)
+            try rehomeConfigurationPaths(
+                in: plan.destinationRoot.appending(path: copied.relativePath), reportPath: copied.relativePath,
+                relocation: relocation)
+        }
         return outcome
+    }
+
+    /// Re-aims every absolute path a repository's own configuration records (`include.path`, `lfs.storage`,
+    /// `core.hooksPath`, a local remote URL, any key) at its destination counterpart. Paths outside the
+    /// relocated locations keep their target; a path with no counterpart fails rather than being guessed.
+    private func rehomeConfigurationPaths(
+        in administration: URL,
+        reportPath: String,
+        relocation: WorktreeForkSourcePathRelocation
+    ) throws(GitWorktreeForkError) {
+        for fileName in WorktreeForkConfigurationFile.repositoryFileNames {
+            let file = administration.appending(path: fileName)
+            guard case .success = WorktreeForkDescriptors.lstatPath(file) else {
+                continue
+            }
+            var edits: [WorktreeForkConfigurationEdit] = []
+            for entry in try WorktreeForkConfigurationFile.absolutePathEntries(in: file) {
+                let source = WorktreeForkSourcePathRelocation.canonicalized(absolutePath: entry.value)
+                switch relocation.counterpart(of: source) {
+                case .outsideSource:
+                    continue
+                case .relocated(let destination) where destination.path != entry.value:
+                    edits.append(.replaceValue(entry.name, matching: entry.value, with: destination.path))
+                case .relocated:
+                    continue
+                case .unmapped:
+                    let sourcePath =
+                        WorktreeForkAdministrativeSymlinks.relativeComponents(of: source, beneath: plan.sourceRoot)
+                        ?? source.lastPathComponent
+                    throw .entryFailed(
+                        relativePath: "\(reportPath)/\(fileName): \(entry.name) = \(sourcePath)",
+                        reason: .unresolvableGitAdministration,
+                        errorNumber: nil
+                    )
+                }
+            }
+            if !edits.isEmpty {
+                try WorktreeForkConfigurationFile.apply(
+                    edits, to: file, reportPath: "\(reportPath)/\(fileName)", lockTracker: lockTracker)
+            }
+        }
+    }
+
+    /// Rewrites each pointer in a copied Git directory's alternates and linked-worktree registrations that
+    /// does not already lead, from the copy, to its destination counterpart. A pointer that already does
+    /// (a relative path inside the tree, an absolute path outside it) keeps its bytes, so tracked fixtures
+    /// stay clean.
+    private func rehomeCopiedPointers(
+        _ copied: WorktreeForkCopiedGitDirectory,
+        relocation: WorktreeForkSourcePathRelocation
+    ) throws(GitWorktreeForkError) {
+        let gitDirectory = plan.destinationRoot.appending(path: copied.relativePath)
+        let alternatesPath = WorktreeForkAdministrationCloner.alternatesRelativePath
+        let objects = gitDirectory.appending(path: "objects")
+        let alternatesReportPath = "\(copied.relativePath)/\(alternatesPath)"
+        var alternateLines: [String] = []
+        for pointer in copied.alternates {
+            alternateLines.append(
+                try destinationLine(
+                    for: pointer, resolvingFrom: objects, relocation: relocation, reportPath: alternatesReportPath))
+        }
+        if alternateLines != copied.alternates.map(\.line) {
+            try writeText(
+                alternateLines.joined(separator: "\n") + "\n",
+                to: gitDirectory.appending(path: alternatesPath),
+                reportPath: alternatesReportPath
+            )
+        }
+        for (registrationPath, pointer) in copied.worktreeRegistrations.sorted(by: { $0.key < $1.key }) {
+            let registrationDirectory = WorktreeForkDescriptors.splitParent(registrationPath).parent
+            let registration = gitDirectory.appending(path: registrationDirectory)
+            let reportPath = "\(copied.relativePath)/\(registrationPath)"
+            let line = try destinationLine(
+                for: pointer, resolvingFrom: registration, relocation: relocation, reportPath: reportPath)
+            if line != pointer.line {
+                try writeText(line + "\n", to: gitDirectory.appending(path: registrationPath), reportPath: reportPath)
+            }
+        }
+    }
+
+    /// The text that leads from the copy to the pointer's destination counterpart, or to its unchanged
+    /// target when it has none. The recorded text is kept when it already resolves there from the copy; a
+    /// counterpart that is unmapped or does not exist would leave the copy dangling, so it fails.
+    private func destinationLine(
+        for pointer: WorktreeForkCopiedPointer,
+        resolvingFrom base: URL,
+        relocation: WorktreeForkSourcePathRelocation,
+        reportPath: String
+    ) throws(GitWorktreeForkError) -> String {
+        guard let target = pointer.target else {
+            return pointer.line
+        }
+        let unresolvable = GitWorktreeForkError.entryFailed(
+            relativePath: reportPath, reason: .unresolvableGitAdministration, errorNumber: nil)
+        let wanted: URL
+        switch relocation.counterpart(of: target) {
+        case .outsideSource:
+            wanted = target
+        case .relocated(let destination):
+            wanted = destination
+        case .unmapped:
+            throw unresolvable
+        }
+        let recorded =
+            pointer.line.hasPrefix("/") ? URL(fileURLWithPath: pointer.line) : base.appending(path: pointer.line)
+        if case .success(let resolved) = WorktreeForkDescriptors.realpathURL(recorded), resolved.path == wanted.path {
+            return pointer.line
+        }
+        guard case .success = WorktreeForkDescriptors.realpathURL(wanted) else {
+            throw unresolvable
+        }
+        return wanted.path
     }
 
     /// Defense in depth behind the planner's name rule: destination administration must sit beneath the
@@ -391,10 +518,55 @@ enum WorktreeForkConfigurationEdit: Sendable {
     case setBool(String, Bool)
     case setString(String, String)
     case delete(String)
+    /// Replaces every value of a (possibly multi-valued) key that equals `matching` exactly.
+    case replaceValue(String, matching: String, with: String)
+}
+
+struct WorktreeForkConfigurationEntry: Equatable, Sendable {
+    let name: String
+    let value: String
 }
 
 /// Edits one Git configuration file through libgit2 so its syntax and locking stay Git's.
 enum WorktreeForkConfigurationFile {
+    /// The configuration files a repository's administration owns: shared, then worktree-scoped.
+    static let repositoryFileNames = ["config", "config.worktree"]
+
+    /// Entries written in this file itself, not reached through an include, whose value is an absolute path;
+    /// each distinct name and value once.
+    static func absolutePathEntries(in path: URL) throws(GitWorktreeForkError) -> [WorktreeForkConfigurationEntry] {
+        var configuration: OpaquePointer?
+        let openResult = path.path.withCString { git_config_open_ondisk(&configuration, $0) }
+        guard openResult >= 0, let configuration else {
+            throw .gitFailure(LibGit2ErrorCapture.failure(code: openResult))
+        }
+        defer { git_config_free(configuration) }
+        var iterator: OpaquePointer?
+        let iteratorResult = git_config_iterator_new(&iterator, configuration)
+        guard iteratorResult >= 0, let iterator else {
+            throw .gitFailure(LibGit2ErrorCapture.failure(code: iteratorResult))
+        }
+        defer { git_config_iterator_free(iterator) }
+        var entries: [WorktreeForkConfigurationEntry] = []
+        var entry: UnsafeMutablePointer<git_config_entry>?
+        while true {
+            let nextResult = git_config_next(&entry, iterator)
+            if nextResult == GIT_ITEROVER.rawValue {
+                return entries
+            }
+            guard nextResult >= 0, let current = entry?.pointee else {
+                throw .gitFailure(LibGit2ErrorCapture.failure(code: nextResult))
+            }
+            guard current.include_depth == 0, let name = current.name, let value = current.value else {
+                continue
+            }
+            let candidate = WorktreeForkConfigurationEntry(name: String(cString: name), value: String(cString: value))
+            if candidate.value.hasPrefix("/"), !entries.contains(candidate) {
+                entries.append(candidate)
+            }
+        }
+    }
+
     /// libgit2 commits each edit by renaming a fresh lock file over `path`, so the edit runs as a
     /// metadata-preserving rewrite of the configuration file.
     static func apply(
@@ -436,6 +608,8 @@ enum WorktreeForkConfigurationFile {
             case .delete(let name):
                 let deleteResult = git_config_delete_entry(configuration, name)
                 result = deleteResult == GIT_ENOTFOUND.rawValue ? 0 : deleteResult
+            case .replaceValue(let name, let matching, let value):
+                result = git_config_set_multivar(configuration, name, "^\(Self.escapedPattern(matching))$", value)
             }
             let systemErrorCode = errno
             guard result >= 0 else {
@@ -447,6 +621,17 @@ enum WorktreeForkConfigurationFile {
                         systemErrorCode: systemErrorCode
                     ))
             }
+        }
+    }
+
+    /// `literal` as a regular expression that matches only itself.
+    private static func escapedPattern(_ literal: String) -> String {
+        let special = Set("\\^$.|?*+()[]{}")
+        return literal.reduce(into: "") { pattern, character in
+            if special.contains(character) {
+                pattern.append("\\")
+            }
+            pattern.append(character)
         }
     }
 }

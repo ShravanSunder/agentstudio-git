@@ -21,10 +21,7 @@ struct GitWorktreeForkRealCheckoutSmokeTests {
         let branch = "agentstudio-fork-smoke-\(suffix)"
         let destination = source.deletingLastPathComponent().appending(path: "\(source.lastPathComponent).\(branch)")
         let git = GitProcess(repositoryPath: source)
-        defer {
-            _ = try? git.run(["worktree", "remove", "--force", destination.path], currentDirectory: source)
-            _ = try? git.run(["branch", "-D", branch], currentDirectory: source)
-        }
+        defer { removeFork(at: destination, branch: branch, source: source, git: git) }
 
         // Act
         let result = try await LibGit2AgentStudioGitLocalClient().forkWorktree(
@@ -44,8 +41,9 @@ struct GitWorktreeForkRealCheckoutSmokeTests {
         let sourceHead = try git.run(["rev-parse", "HEAD"], currentDirectory: source)
         let destinationHead = try git.run(["rev-parse", "HEAD"], currentDirectory: destination)
         #expect(destinationHead == sourceHead)
-        #expect(try git.run(["branch", "--show-current"], currentDirectory: destination)
-            .trimmingCharacters(in: .whitespacesAndNewlines) == branch)
+        #expect(
+            try git.run(["branch", "--show-current"], currentDirectory: destination)
+                .trimmingCharacters(in: .whitespacesAndNewlines) == branch)
         let sourceStatus = try git.run(["status", "--porcelain"], currentDirectory: source)
         let destinationStatus = try git.run(["status", "--porcelain"], currentDirectory: destination)
         #expect(destinationStatus == sourceStatus, "destination status differs from source")
@@ -53,5 +51,36 @@ struct GitWorktreeForkRealCheckoutSmokeTests {
             "real-checkout fork: preservedGitRepositories=\(report.preservedGitRepositoryCount) "
                 + "clonedFiles=\(report.clonedRegularFileCount) bytes=\(report.logicalRegularFileBytes) "
                 + "normalized=\(report.normalizedEntries.count)")
+    }
+
+    /// Removes the fork and its branch, records every step that fails, then proves both are gone, so a
+    /// green run means the real checkout was left as it was found. A failed fork may have rolled back
+    /// already, so each step runs only when its target still exists.
+    private func removeFork(at destination: URL, branch: String, source: URL, git: GitProcess) {
+        if GitWorktreeForkFileProbe.exists(destination) {
+            do {
+                try git.run(["worktree", "remove", "--force", destination.path], currentDirectory: source)
+            } catch {
+                Issue.record("could not remove fork worktree \(destination.path): \(error)")
+            }
+        }
+        if branchExists(branch, source: source, git: git) {
+            do {
+                try git.run(["branch", "-D", branch], currentDirectory: source)
+            } catch {
+                Issue.record("could not delete fork branch \(branch): \(error)")
+            }
+        }
+        #expect(!GitWorktreeForkFileProbe.exists(destination), "fork worktree remains at \(destination.path)")
+        #expect(!branchExists(branch, source: source, git: git), "fork branch \(branch) remains")
+    }
+
+    private func branchExists(_ branch: String, source: URL, git: GitProcess) -> Bool {
+        do {
+            return try git.succeeds("show-ref", "--verify", "--quiet", "refs/heads/\(branch)", currentDirectory: source)
+        } catch {
+            Issue.record("could not query fork branch \(branch): \(error)")
+            return true
+        }
     }
 }
