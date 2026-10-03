@@ -111,6 +111,8 @@ struct WorktreeForkPlanner: Sendable {
                 worktreeName: destination.worktreeName,
                 commonDirectory: gitCapture.commonDirectory,
                 sourceGitDirectory: gitCapture.sourceGitDirectory,
+                homeDirectory: WorktreeForkSourcePathRelocation.canonicalized(
+                    absolutePath: hostFacts.homeDirectory().path),
                 capturedHead: gitCapture.capturedHead,
                 branchIdentity: gitCapture.branchIdentity,
                 materialization: request.materialization,

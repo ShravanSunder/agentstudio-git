@@ -39,22 +39,41 @@ enum WorktreeForkConfigurationIncludes {
         name == "include.path" || (name.hasPrefix("includeif.") && name.hasSuffix(".path"))
     }
 
-    /// The canonical file an include value names, resolved as Git does: `~/` against the home directory,
-    /// a relative path against the directory of the file that holds it.
-    static func target(of value: String, includedFrom file: URL) -> URL {
+    /// How Git reads a configuration value as a path, or nil when it is not one. Any value starting with `/`
+    /// is absolute (a diff driver's regex is never a path); an include value may also be `~/`-relative to
+    /// the home directory or relative to the file holding it. The re-homer, the external walk, and the
+    /// validator all classify through here.
+    enum PathForm: Equatable, Sendable {
+        case absolute
+        case homeRelative
+        case fileRelative
+    }
+
+    static func pathForm(name: String, value: String) -> PathForm? {
+        guard !WorktreeForkConfigurationPatternKeys.holdsPattern(name) else {
+            return nil
+        }
+        if value.hasPrefix("/") {
+            return .absolute
+        }
+        guard isInclude(name) else {
+            return nil
+        }
+        return value.hasPrefix("~/") ? .homeRelative : .fileRelative
+    }
+
+    /// The canonical file a path value names, resolved as Git does: `~/` against `homeDirectory`, a relative
+    /// path against the directory of the file that holds it.
+    static func target(of value: String, includedFrom file: URL, homeDirectory: URL) -> URL {
         let path: String
         if value.hasPrefix("~/") {
-            path = FileManager.default.homeDirectoryForCurrentUser.appending(path: String(value.dropFirst(2))).path
+            path = homeDirectory.appending(path: String(value.dropFirst(2))).path
         } else if value.hasPrefix("/") {
             path = value
         } else {
             path = file.deletingLastPathComponent().appending(path: value).path
         }
         return WorktreeForkSourcePathRelocation.canonicalized(absolutePath: path)
-    }
-
-    static func isRelative(_ value: String) -> Bool {
-        !value.hasPrefix("/") && !value.hasPrefix("~/")
     }
 }
 
@@ -139,7 +158,8 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
                 guard WorktreeForkConfigurationIncludes.isInclude(entry.name) else {
                     continue
                 }
-                let sourceTarget = WorktreeForkConfigurationIncludes.target(of: entry.value, includedFrom: copy.source)
+                let sourceTarget = WorktreeForkConfigurationIncludes.target(
+                    of: entry.value, includedFrom: copy.source, homeDirectory: plan.homeDirectory)
                 switch relocation.counterpart(of: sourceTarget) {
                 case .relocated(let destinationTarget)
                 where WorktreeForkDestinationOwnership.isDestinationOwned(destinationTarget, plan: plan):
@@ -183,15 +203,11 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
         in copy: WorktreeForkConfigurationCopy,
         counterparts: inout WorktreeForkPrivateAdministrationCounterparts
     ) throws(GitWorktreeForkError) -> String? {
-        let isRelativeInclude =
-            WorktreeForkConfigurationIncludes.isInclude(entry.name)
-            && WorktreeForkConfigurationIncludes.isRelative(entry.value)
-        guard entry.value.hasPrefix("/") || isRelativeInclude,
-            !WorktreeForkConfigurationPatternKeys.holdsPattern(entry.name)
-        else {
+        guard let form = WorktreeForkConfigurationIncludes.pathForm(name: entry.name, value: entry.value) else {
             return nil
         }
-        let source = WorktreeForkConfigurationIncludes.target(of: entry.value, includedFrom: copy.source)
+        let source = WorktreeForkConfigurationIncludes.target(
+            of: entry.value, includedFrom: copy.source, homeDirectory: plan.homeDirectory)
         let wanted: URL
         switch relocation.counterpart(of: source) {
         case .outsideSource, .sharedRepository:
@@ -210,10 +226,12 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
             )
         }
         let reachedFromCopy =
-            isRelativeInclude
-            ? WorktreeForkConfigurationIncludes.target(of: entry.value, includedFrom: copy.destination).path
-            : entry.value
-        guard reachedFromCopy != wanted.path, !(entry.value.hasPrefix("/") && wanted == source) else {
+            form == .absolute
+            ? entry.value
+            : WorktreeForkConfigurationIncludes.target(
+                of: entry.value, includedFrom: copy.destination, homeDirectory: plan.homeDirectory
+            ).path
+        guard reachedFromCopy != wanted.path, !(form == .absolute && wanted == source) else {
             return nil
         }
         return wanted.path
@@ -227,7 +245,7 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
         in copy: WorktreeForkConfigurationCopy
     ) throws(GitWorktreeForkError) -> String? {
         guard let condition = WorktreeForkGitDirectoryCondition.parse(includeName: entry.name),
-            let source = condition.location(includedFrom: copy.source)
+            let source = condition.location(includedFrom: copy.source, homeDirectory: plan.homeDirectory)
         else {
             return nil
         }
@@ -251,7 +269,9 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
                 throw unresolvable
             }
             // A `./` pattern that still reaches the counterpart from the copy keeps its text.
-            if condition.location(includedFrom: copy.destination)?.literal.path == destination.path {
+            if condition.location(includedFrom: copy.destination, homeDirectory: plan.homeDirectory)?.literal.path
+                == destination.path
+            {
                 return nil
             }
             return condition.subsection(
@@ -281,7 +301,7 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
         var includes: [PendingFile] = []
         for entry in entries {
             if let condition = WorktreeForkGitDirectoryCondition.parse(includeName: entry.name),
-                let location = condition.location(includedFrom: file),
+                let location = condition.location(includedFrom: file, homeDirectory: plan.homeDirectory),
                 relocation.namesRelocatedSource(location.literal)
             {
                 let pattern = WorktreeForkGitDirectoryCondition.pattern(
@@ -290,13 +310,12 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
                     relativePath: "\(includedBy): includeif.\(condition.prefix)\(pattern).path",
                     reason: .unresolvableGitAdministration, errorNumber: nil)
             }
-            let isInclude = WorktreeForkConfigurationIncludes.isInclude(entry.name)
-            guard entry.value.hasPrefix("/") || isInclude,
-                !WorktreeForkConfigurationPatternKeys.holdsPattern(entry.name)
-            else {
+            guard WorktreeForkConfigurationIncludes.pathForm(name: entry.name, value: entry.value) != nil else {
                 continue
             }
-            let target = WorktreeForkConfigurationIncludes.target(of: entry.value, includedFrom: file)
+            let isInclude = WorktreeForkConfigurationIncludes.isInclude(entry.name)
+            let target = WorktreeForkConfigurationIncludes.target(
+                of: entry.value, includedFrom: file, homeDirectory: plan.homeDirectory)
             if relocation.namesRelocatedSource(target) {
                 throw .entryFailed(
                     relativePath: "\(includedBy): \(entry.name) = \(sourceRelative(target))",
@@ -351,19 +370,18 @@ struct WorktreeForkConfigurationPathValidation: Sendable {
             }
             for entry in entries {
                 if let condition = WorktreeForkGitDirectoryCondition.parse(includeName: entry.name),
-                    let location = condition.location(includedFrom: file),
+                    let location = condition.location(includedFrom: file, homeDirectory: plan.homeDirectory),
                     !WorktreeForkDestinationOwnership.isDestinationOwned(location.literal, plan: plan),
                     relocation.namesRelocatedSource(location.literal)
                 {
                     throw leftover
                 }
-                let isInclude = WorktreeForkConfigurationIncludes.isInclude(entry.name)
-                guard entry.value.hasPrefix("/") || isInclude,
-                    !WorktreeForkConfigurationPatternKeys.holdsPattern(entry.name)
-                else {
+                guard WorktreeForkConfigurationIncludes.pathForm(name: entry.name, value: entry.value) != nil else {
                     continue
                 }
-                let target = WorktreeForkConfigurationIncludes.target(of: entry.value, includedFrom: file)
+                let isInclude = WorktreeForkConfigurationIncludes.isInclude(entry.name)
+                let target = WorktreeForkConfigurationIncludes.target(
+                    of: entry.value, includedFrom: file, homeDirectory: plan.homeDirectory)
                 let destinationOwned = WorktreeForkDestinationOwnership.isDestinationOwned(target, plan: plan)
                 if !destinationOwned, relocation.namesRelocatedSource(target) {
                     throw leftover

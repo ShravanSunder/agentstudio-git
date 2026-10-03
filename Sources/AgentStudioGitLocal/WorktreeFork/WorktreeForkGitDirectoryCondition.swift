@@ -39,10 +39,10 @@ struct WorktreeForkGitDirectoryCondition: Equatable, Sendable {
     /// The pattern's location, resolved as Git does: `~/` against the home directory and `./` against the
     /// directory of the file holding the condition. Nil for any other relative pattern, which Git prefixes
     /// with `**/` so it can match anywhere; that names no location to relocate.
-    func location(includedFrom file: URL) -> Location? {
+    func location(includedFrom file: URL, homeDirectory: URL) -> Location? {
         let expanded: String
         if pattern.hasPrefix("~/") {
-            expanded = FileManager.default.homeDirectoryForCurrentUser.path + "/" + pattern.dropFirst(2)
+            expanded = homeDirectory.path + "/" + pattern.dropFirst(2)
         } else if pattern.hasPrefix("./") {
             expanded = file.deletingLastPathComponent().path + "/" + pattern.dropFirst(2)
         } else if pattern.hasPrefix("/") {
