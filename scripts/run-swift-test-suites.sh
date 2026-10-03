@@ -64,6 +64,7 @@ suites=(
   GitWorktreeForkMetadataFlagsIntegrationTests
   GitWorktreeForkRehomedMetadataIntegrationTests
   GitWorktreeForkNestedConfigurationIntegrationTests
+  GitWorktreeForkNestedIncludeIntegrationTests
   GitWorktreeForkNestedRepositoryIntegrationTests
   GitCommitRangeCountIntegrationTests
   GitBranchIntegrationIntegrationTests
