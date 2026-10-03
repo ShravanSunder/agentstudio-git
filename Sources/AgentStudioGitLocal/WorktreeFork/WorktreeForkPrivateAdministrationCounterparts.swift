@@ -11,6 +11,10 @@ import Foundation
 /// existing one that is not equivalent to it is replaced through the metadata-preserving rewrite. A source
 /// entry that does not exist stays absent, exactly as Git finds nothing in the source either.
 ///
+/// One destination name can stand for two sources: a flattened node's common and private administration both
+/// land in one destination directory. When values require that name from two sources that differ, no single
+/// file serves both, so the fork fails rather than silently giving one reference the other's bytes.
+///
 /// Every traversal is descriptor-relative beneath the two administration roots, so a symlink swapped into
 /// either path fails instead of escaping. Every counterpart lands inside administration the rollback journal
 /// already owns (the destination tree, nested `modules/` administration, or the fork's own administration),
@@ -32,14 +36,19 @@ struct WorktreeForkPrivateAdministrationCounterparts: Sendable {
     /// Directories cloned here; their metadata is reproduced with the rest of the cloned administration.
     private(set) var administrationTrees: [WorktreeForkClonedAdministrationTree] = []
     private(set) var normalizedEntries: [GitWorktreeMaterializationNormalizedEntry] = []
+    /// The source each relocated destination path is required from, keyed by destination path.
+    private var requiredSources: [String: URL] = [:]
 
     init(plan: WorktreeForkPlan, relocation: WorktreeForkSourcePathRelocation) {
         self.plan = plan
         self.relocation = relocation
     }
 
-    /// Realizes the counterpart of `source` (canonical) when it lies in a captured private administration.
-    mutating func materializeCounterpart(of source: URL) throws(GitWorktreeForkError) {
+    /// Records that a value requires `destination` to stand for `source` (canonical), then realizes the
+    /// counterpart when `source` lies in a captured private administration. A destination already required
+    /// from a different, non-equivalent source fails.
+    mutating func materializeCounterpart(of source: URL, at destination: URL) throws(GitWorktreeForkError) {
+        try requireSingleSource(source, at: destination)
         guard let match = relocation.privateAdministrationMatch(of: source),
             !Self.filesWrittenByRehoming.contains(match.remainder)
         else {
@@ -57,6 +66,31 @@ struct WorktreeForkPrivateAdministrationCounterparts: Sendable {
             normalizedEntries += normalized
         case .clonedDirectory(let tree):
             administrationTrees.append(tree)
+        }
+    }
+
+    private mutating func requireSingleSource(_ source: URL, at destination: URL) throws(GitWorktreeForkError) {
+        guard let required = requiredSources[destination.path] else {
+            requiredSources[destination.path] = source
+            return
+        }
+        guard required != source, !Self.sourcesAgree(required, source) else {
+            return
+        }
+        throw .entryFailed(
+            relativePath: WorktreeForkDestinationOwnership.reportLocation(of: destination, plan: plan),
+            reason: .unresolvableGitAdministration, errorNumber: nil)
+    }
+
+    /// Two sources agree when neither exists (Git finds nothing through either) or both are equivalent files.
+    private static func sourcesAgree(_ first: URL, _ second: URL) -> Bool {
+        switch (WorktreeForkDescriptors.lstatPath(first), WorktreeForkDescriptors.lstatPath(second)) {
+        case (.failure, .failure):
+            return true
+        case (.success, .success):
+            return WorktreeForkFileEquivalence.isEquivalent(first, second)
+        default:
+            return false
         }
     }
 

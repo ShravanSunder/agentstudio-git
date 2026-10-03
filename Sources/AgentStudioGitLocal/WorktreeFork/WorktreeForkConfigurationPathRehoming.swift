@@ -197,7 +197,7 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
         case .outsideSource, .sharedRepository:
             wanted = source
         case .relocated(let destination):
-            try counterparts.materializeCounterpart(of: source)
+            try counterparts.materializeCounterpart(of: source, at: destination)
             wanted = destination
         case .unmapped:
             let sourcePath =

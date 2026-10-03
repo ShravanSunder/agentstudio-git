@@ -52,10 +52,11 @@ struct WorktreeForkPrivateCounterpartTests {
         switch side {
         case .source:
             #expect(failure == .sourceChanged(relativePath: "keys", reason: .containmentEscape))
-            #expect(!GitWorktreeForkFileProbe.exists(destinationAdministration.appending(path: "keys")))
+            #expect(try FileManager.default.contentsOfDirectory(atPath: destinationAdministration.path).isEmpty)
         case .destination:
             #expect(
                 failure == .entryFailed(relativePath: "keys", reason: .unresolvableGitAdministration, errorNumber: nil))
+            #expect(try FileManager.default.contentsOfDirectory(atPath: destinationAdministration.path) == ["keys"])
         }
         #expect(try FileManager.default.contentsOfDirectory(atPath: outside.path) == ["allowed_signers"])
         #expect(try String(contentsOf: outside.appending(path: "allowed_signers"), encoding: .utf8) == "outside\n")
