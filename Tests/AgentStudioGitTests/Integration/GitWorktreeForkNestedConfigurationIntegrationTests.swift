@@ -373,6 +373,108 @@ struct GitWorktreeForkNestedConfigurationIntegrationTests {
             try Data(contentsOf: destination.appending(path: ".build/cache.git/config")) == sourceConfiguration)
     }
 
+    @Test("a relative include that climbs out through the source directory's name reaches the destination copy")
+    func relativeIncludeClimbingThroughSourceNameFollowsCopy() async throws {
+        // Arrange: the Advisor's shape; a byte copy of this relative path would still reach the source file.
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-config-climbing-include")
+        defer { fixture.remove() }
+        try ignore("dependency/", fixture: fixture)
+        let dependency = try makeRepository(
+            at: fixture.source.appending(path: "dependency"), file: "tracked.txt", fixture: fixture)
+        let extra = dependency.appending(path: ".git/extra.conf")
+        try "[agentstudio]\n\tmarker = relative-original\n".write(to: extra, atomically: false, encoding: .utf8)
+        let climbing = "../../../\(fixture.source.lastPathComponent)/dependency/.git/extra.conf"
+        try fixture.git.run(["config", "include.path", climbing], currentDirectory: dependency)
+        #expect(try configValue("agentstudio.marker", at: dependency, fixture) == "relative-original")
+        let destination = fixture.destination()
+
+        // Act
+        _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+        try "[agentstudio]\n\tmarker = relative-changed-in-source\n"
+            .write(to: extra, atomically: false, encoding: .utf8)
+
+        // Assert
+        let destinationDependency = destination.appending(path: "dependency")
+        #expect(try configValue("agentstudio.marker", at: destinationDependency, fixture) == "relative-original")
+        #expect(
+            try configuredPath("include.path", at: destinationDependency, fixture)
+                == canonical(destinationDependency.appending(path: ".git/extra.conf")).path)
+    }
+
+    @Test(
+        "an active gitdir condition naming the nested .git stays active at its destination counterpart",
+        arguments: ["gitdir:", "gitdir/i:"]
+    )
+    func gitDirectoryConditionFollowsDestinationAdministration(conditionPrefix: String) async throws {
+        // Arrange: the Advisor's 509b-conditional-gitdir-exact shape.
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-config-conditional")
+        defer { fixture.remove() }
+        try ignore("dependency/", fixture: fixture)
+        let dependency = try makeRepository(
+            at: fixture.source.appending(path: "dependency"), file: "tracked.txt", fixture: fixture)
+        let administration = try canonical(dependency.appending(path: ".git"))
+        let included = administration.appending(path: "conditional.conf")
+        try "[agentstudio]\n\tmarker = conditional-active\n".write(to: included, atomically: false, encoding: .utf8)
+        let configuration = administration.appending(path: "config")
+        try fixture.git.run([
+            "config", "--file", configuration.path,
+            "includeIf.\(conditionPrefix)\(administration.path).path", included.path,
+        ])
+        #expect(try configValue("agentstudio.marker", at: dependency, fixture) == "conditional-active")
+        let sourceConfiguration = try Data(contentsOf: configuration)
+        let destination = fixture.destination()
+
+        // Act
+        _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+
+        // Assert
+        let destinationDependency = destination.appending(path: "dependency")
+        let destinationAdministration = try canonical(destinationDependency.appending(path: ".git"))
+        #expect(try configValue("agentstudio.marker", at: destinationDependency, fixture) == "conditional-active")
+        let conditional = try fixture.git.run(
+            ["config", "--get-regexp", "^includeif\\."], currentDirectory: destinationDependency)
+        #expect(
+            conditional
+                == "includeif.\(conditionPrefix)\(destinationAdministration.path).path "
+                + "\(destinationAdministration.appending(path: "conditional.conf").path)\n")
+        #expect(try Data(contentsOf: configuration) == sourceConfiguration)
+    }
+
+    @Test("a gitdir condition with a glob inside the source-owned part fails instead of guessing its counterpart")
+    func gitDirectoryConditionGlobInSourcePartFails() async throws {
+        // Arrange: `*` could match the nested repository, whose administration relocates on its own.
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-config-conditional-glob")
+        defer { fixture.remove() }
+        try ignore("dependency/", fixture: fixture)
+        let dependency = try makeRepository(
+            at: fixture.source.appending(path: "dependency"), file: "tracked.txt", fixture: fixture)
+        let administration = try canonical(dependency.appending(path: ".git"))
+        let pattern = "\(try canonical(fixture.source).path)/*/.git"
+        try fixture.git.run([
+            "config", "--file", administration.appending(path: "config").path,
+            "includeIf.gitdir:\(pattern).path", administration.appending(path: "conditional.conf").path,
+        ])
+        let branchesBefore = try fixture.branchNames()
+
+        // Act
+        let failure: GitWorktreeForkError?
+        do {
+            _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+            failure = nil
+        } catch {
+            failure = error
+        }
+
+        // Assert
+        #expect(
+            failure
+                == .entryFailed(
+                    relativePath: "dependency/.git/config: includeif.gitdir:*/.git.path",
+                    reason: .unresolvableGitAdministration, errorNumber: nil))
+        #expect(!GitWorktreeForkFileProbe.exists(fixture.destination()))
+        #expect(try fixture.branchNames() == branchesBefore)
+    }
+
     private func ignoreVendorAndStorage(_ fixture: GitWorktreeForkFixture) throws {
         try fixture.write(".gitignore", "vendor/\nlarge-file-store/\n")
         try fixture.git.run("add", ".gitignore")
