@@ -39,6 +39,16 @@ struct GitWorktreeForkRehomedMetadataIntegrationTests {
                 at: fixture.repository.root.appending(path: "library"), file: "library.txt", fixture: fixture)
             try fixture.git.run("submodule", "add", "-q", library.path, file.worktreeRelativePath)
             try fixture.git.run("commit", "-qm", "submodule")
+        case .flattenedLinkedHead:
+            // The worktree's private HEAD carries the protection; the common repository's HEAD stays 0644.
+            let upstream = try makeRepository(
+                at: fixture.repository.root.appending(path: "upstream"), file: "up.txt", fixture: fixture)
+            try fixture.git.run(
+                [
+                    "worktree", "add", "-q", "-b", "linked",
+                    fixture.source.appending(path: file.worktreeRelativePath).path,
+                ],
+                currentDirectory: upstream)
         case .nestedAlternates, .mirrorAlternates:
             // A --shared clone borrows its objects; the mirror case borrows from a store that borrows again.
             var lender = try makeRepository(
@@ -180,6 +190,9 @@ enum RehomedAdministrativeFile: String, CaseIterable, Sendable, CustomStringConv
     case nestedConfiguration
     /// Never copied; written from scratch with the source gitfile as its metadata template.
     case submoduleGitfile
+    /// A gitfile-reached linked worktree's private `HEAD`. Flattening clones the common repository, whose
+    /// `HEAD` is a different source file, so the destination copy is not the template.
+    case flattenedLinkedHead
     /// A `--shared` nested repository's `objects/info/alternates`: never copied, rewritten to name a mirror.
     case nestedAlternates
     /// A mirrored store's own `info/alternates`: cloned with the store, then rewritten to name a mirror.
@@ -195,6 +208,8 @@ enum RehomedAdministrativeFile: String, CaseIterable, Sendable, CustomStringConv
             return ".build/checkouts/dependency"
         case .submoduleGitfile:
             return "deps/library"
+        case .flattenedLinkedHead:
+            return ".build/checkouts/linked"
         case .nestedAlternates, .mirrorAlternates:
             return ".build/checkouts/shared"
         }
@@ -204,6 +219,8 @@ enum RehomedAdministrativeFile: String, CaseIterable, Sendable, CustomStringConv
         switch self {
         case .mirrorAlternates:
             return fixture.repository.root.appending(path: "middle/.git/objects/info/alternates")
+        case .flattenedLinkedHead:
+            return fixture.repository.root.appending(path: "upstream/.git/worktrees/linked/HEAD")
         case .nestedHead, .nestedConfiguration, .submoduleGitfile, .nestedAlternates:
             return fixture.source.appending(path: worktreeRelativePath).appending(path: administrativePath)
         }
@@ -219,14 +236,14 @@ enum RehomedAdministrativeFile: String, CaseIterable, Sendable, CustomStringConv
                 .map { mirrors.appending(path: $0).appending(path: "info/alternates") }
                 .filter(GitWorktreeForkFileProbe.exists)
             return try #require(borrowing.count == 1 ? borrowing.first : nil, "one borrowing mirror")
-        case .nestedHead, .nestedConfiguration, .submoduleGitfile, .nestedAlternates:
+        case .nestedHead, .nestedConfiguration, .submoduleGitfile, .flattenedLinkedHead, .nestedAlternates:
             return fixture.destination().appending(path: worktreeRelativePath).appending(path: administrativePath)
         }
     }
 
     private var administrativePath: String {
         switch self {
-        case .nestedHead:
+        case .nestedHead, .flattenedLinkedHead:
             return ".git/HEAD"
         case .nestedConfiguration:
             return ".git/config"

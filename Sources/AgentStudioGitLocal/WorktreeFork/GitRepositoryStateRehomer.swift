@@ -163,10 +163,12 @@ struct GitRepositoryStateRehomer: Sendable {
                     for: pointer, resolvingFrom: objects, relocation: relocation, outsideMirrors: mirrorByStore,
                     reportPath: alternatesReportPath))
         }
+        let sourceGitDirectory = plan.sourceRoot.appending(path: copied.relativePath)
         if alternateLines != copied.alternates.map(\.line) {
             try writeText(
                 alternateLines.joined(separator: "\n") + "\n",
                 to: gitDirectory.appending(path: alternatesPath),
+                metadataFrom: sourceGitDirectory.appending(path: alternatesPath),
                 reportPath: alternatesReportPath
             )
         }
@@ -178,7 +180,12 @@ struct GitRepositoryStateRehomer: Sendable {
                 for: pointer, resolvingFrom: registration, relocation: relocation, outsideMirrors: nil,
                 reportPath: reportPath)
             if line != pointer.line {
-                try writeText(line + "\n", to: gitDirectory.appending(path: registrationPath), reportPath: reportPath)
+                try writeText(
+                    line + "\n",
+                    to: gitDirectory.appending(path: registrationPath),
+                    metadataFrom: sourceGitDirectory.appending(path: registrationPath),
+                    reportPath: reportPath
+                )
             }
         }
     }
@@ -271,7 +278,13 @@ struct GitRepositoryStateRehomer: Sendable {
         if node.sourceGitDirectory != node.sourceCommonDirectory {
             try overlayPrivateAdministration(node, administration: administration, reportPath: reportPath)
         }
-        try writeText(headContents(node), to: administration.appending(path: "HEAD"), reportPath: reportPath)
+        // The cloned HEAD is the common repository's; a linked worktree's own HEAD is its private one.
+        try writeText(
+            headContents(node),
+            to: administration.appending(path: "HEAD"),
+            metadataFrom: node.sourceGitDirectory.appending(path: "HEAD"),
+            reportPath: reportPath
+        )
         try writeAlternates(node, administration: administration, mirrorByStore: mirrorByStore, reportPath: reportPath)
 
         var configurationEdits: [WorktreeForkConfigurationEdit] = [.setBool("core.bare", false)]
@@ -292,10 +305,9 @@ struct GitRepositoryStateRehomer: Sendable {
             lockTracker: lockTracker
         )
         if case .submodule = node.kind {
-            // The materializer never copies a nested gitfile, so the source gitfile is the metadata template.
             let pointer = "gitdir: \(WorktreeForkRelativePath.from(worktree, to: administration))\n"
-            try writeData(
-                Data(pointer.utf8),
+            try writeText(
+                pointer,
                 to: worktree.appending(path: ".git"),
                 metadataFrom: plan.sourceRoot.appending(path: node.relativePath).appending(path: ".git"),
                 reportPath: reportPath
@@ -392,10 +404,9 @@ struct GitRepositoryStateRehomer: Sendable {
         guard lines.count == direct.count else {
             throw .entryFailed(relativePath: reportPath, reason: .unresolvableGitAdministration, errorNumber: nil)
         }
-        // The cloner never copies this file, so the source alternates file is the metadata template.
         let alternatesPath = WorktreeForkAdministrationCloner.alternatesRelativePath
-        try writeData(
-            Data((lines.joined(separator: "\n") + "\n").utf8),
+        try writeText(
+            lines.joined(separator: "\n") + "\n",
             to: administration.appending(path: alternatesPath),
             metadataFrom: node.sourceCommonDirectory.appending(path: alternatesPath),
             reportPath: reportPath
@@ -429,7 +440,12 @@ struct GitRepositoryStateRehomer: Sendable {
             let direct = try Self.directAlternates(store, "")
             if !direct.isEmpty {
                 let lines = direct.compactMap { mirrorByStore[$0]?.path }.joined(separator: "\n")
-                try writeText(lines + "\n", to: mirror.appending(path: "info/alternates"), reportPath: ".")
+                try writeText(
+                    lines + "\n",
+                    to: mirror.appending(path: "info/alternates"),
+                    metadataFrom: store.appending(path: "info/alternates"),
+                    reportPath: "."
+                )
             }
         }
         return mirrorByStore
@@ -476,16 +492,21 @@ struct GitRepositoryStateRehomer: Sendable {
         }
     }
 
-    private func writeText(_ text: String, to url: URL, reportPath: String) throws(GitWorktreeForkError) {
-        try writeData(Data(text.utf8), to: url, reportPath: reportPath)
+    private func writeText(
+        _ text: String,
+        to url: URL,
+        metadataFrom template: URL,
+        reportPath: String
+    ) throws(GitWorktreeForkError) {
+        try writeData(Data(text.utf8), to: url, metadataFrom: template, reportPath: reportPath)
     }
 
     /// Replaces `url` with `data` on a fresh same-directory inode renamed into place, carrying the metadata of
-    /// `template` or of the replaced file (see `WorktreeForkMetadataPreservingRewrite`).
+    /// `template`, the source file `url` stands for (see `WorktreeForkMetadataPreservingRewrite`).
     private func writeData(
         _ data: Data,
         to url: URL,
-        metadataFrom template: URL? = nil,
+        metadataFrom template: URL,
         reportPath: String
     ) throws(GitWorktreeForkError) {
         let directory = url.deletingLastPathComponent()
@@ -495,8 +516,9 @@ struct GitRepositoryStateRehomer: Sendable {
             throw .entryFailed(
                 relativePath: reportPath, reason: .entryCreationFailed, errorNumber: Self.errorNumber(of: error))
         }
-        try WorktreeForkMetadataPreservingRewrite.rewrite(url, metadataFrom: template, reportPath: reportPath) {
-            () throws(GitWorktreeForkError) in
+        try WorktreeForkMetadataPreservingRewrite.rewrite(
+            url, metadataFrom: .sourceCounterpart(template), reportPath: reportPath
+        ) { () throws(GitWorktreeForkError) in
             let temporary = directory.appending(path: ".\(url.lastPathComponent).agentstudio-\(UUID().uuidString).tmp")
             try Self.writeNewFile(data, at: temporary, reportPath: reportPath)
             guard rename(temporary.path, url.path) == 0 else {
@@ -600,7 +622,7 @@ enum WorktreeForkConfigurationFile {
         reportPath: String,
         lockTracker: WorktreeForkLockTracker? = nil
     ) throws(GitWorktreeForkError) {
-        try WorktreeForkMetadataPreservingRewrite.rewrite(path, reportPath: reportPath) {
+        try WorktreeForkMetadataPreservingRewrite.rewrite(path, metadataFrom: .editedFile, reportPath: reportPath) {
             () throws(GitWorktreeForkError) in
             try applyThroughLibGit2(edits, to: path, lockTracker: lockTracker)
         }

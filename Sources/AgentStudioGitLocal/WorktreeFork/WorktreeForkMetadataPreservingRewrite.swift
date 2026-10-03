@@ -8,26 +8,35 @@ import Foundation
 /// entry forbids the swap itself. The specification makes loss of ACL access semantics, extended attributes,
 /// or file flags a failure, so every such rewrite goes through here.
 enum WorktreeForkMetadataPreservingRewrite {
+    /// Where a rewritten file's metadata comes from. Each caller names it: a destination copy can stand for a
+    /// different source file than the one being written (a flattened linked worktree's cloned `HEAD` is the
+    /// common repository's), so the file being replaced is never a fallback.
+    enum MetadataSource {
+        /// The source file this destination file stands for. When it is not a regular file, the new file
+        /// keeps the swap's own mode and nothing is reported.
+        case sourceCounterpart(URL)
+        /// The file being edited in place (a libgit2 configuration edit): its metadata before the edit.
+        case editedFile
+    }
+
     /// Runs `swapInReplacement`, which leaves a new regular file at `url`, then gives that file the mode,
-    /// extended attributes, ACL, and flags of `template` (a source counterpart whose destination copy was
-    /// removed or never existed), falling back to the file being replaced. With neither, the new file keeps
-    /// the swap's own mode and is reported as nothing. Protection on the replaced file is lifted only from our
-    /// own clone; every replaced file is a per-file clone made by this fork, so that never reaches another path.
-    /// A swap may also leave the original in place (libgit2 skips an edit that changes nothing); then only the
-    /// lifted protection goes back.
+    /// extended attributes, ACL, and flags `metadataSource` names. Protection on the replaced file is lifted
+    /// only from our own clone so the swap can rename over it; every replaced file is a per-file clone made by
+    /// this fork, so that never reaches another path. A swap may also leave the original in place (libgit2
+    /// skips an edit that changes nothing); then only the lifted protection goes back.
     static func rewrite(
         _ url: URL,
-        metadataFrom template: URL? = nil,
+        metadataFrom metadataSource: MetadataSource,
         reportPath: String,
         swapInReplacement: () throws(GitWorktreeForkError) -> Void
     ) throws(GitWorktreeForkError) {
         let protection = try WorktreeForkReplacementProtection.lift(at: url, reportPath: reportPath)
         do throws(GitWorktreeForkError) {
-            var metadata: WorktreeForkFileMetadata?
-            if let template {
+            let metadata: WorktreeForkFileMetadata?
+            switch metadataSource {
+            case .sourceCounterpart(let template):
                 metadata = try WorktreeForkFileMetadata.capture(from: template, reportPath: reportPath)
-            }
-            if metadata == nil {
+            case .editedFile:
                 metadata = try protection?.originalMetadata(at: url, reportPath: reportPath)
             }
             try swapInReplacement()
