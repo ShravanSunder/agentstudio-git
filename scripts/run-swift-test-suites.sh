@@ -61,6 +61,7 @@ suites=(
   GitWorktreeForkTrackedStateIntegrationTests
   GitWorktreeForkChangesOnlyFilterIntegrationTests
   GitWorktreeForkCleanAdoptionIntegrationTests
+  GitWorktreeForkMetadataFlagsIntegrationTests
   GitCommitRangeCountIntegrationTests
   GitBranchIntegrationIntegrationTests
   GitBranchIntegrationHistoryIntegrationTests

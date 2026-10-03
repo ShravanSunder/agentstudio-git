@@ -10,6 +10,23 @@ struct WorktreeForkRehomedNode: Sendable {
     let destinationAdministration: URL
 }
 
+/// Re-homed nodes plus every administration tree cloned for them. The trees' directory metadata is
+/// reproduced only after the last administration write (re-homing and index builds) has landed.
+struct WorktreeForkRehomeOutcome: Sendable {
+    var nodes: [WorktreeForkRehomedNode] = []
+    var administrationTrees: [WorktreeForkClonedAdministrationTree] = []
+
+    /// Child trees (nested submodule administration, created later) are finalized before their parents.
+    func finalizeAdministrationDirectories() throws(GitWorktreeForkError) -> [GitWorktreeMaterializationNormalizedEntry]
+    {
+        var normalized: [GitWorktreeMaterializationNormalizedEntry] = []
+        for tree in administrationTrees.reversed() {
+            normalized += try tree.finalizeDirectories()
+        }
+        return normalized
+    }
+}
+
 /// Gives every initialized nested Git node destination-owned administration: submodules beneath the fork's
 /// own `$GIT_DIR/modules/...` (as Git lays out a linked worktree's submodules), independent repositories as
 /// embedded `.git` directories, and every object alternate a destination-owned CoW mirror. No administrative
@@ -33,14 +50,15 @@ struct GitRepositoryStateRehomer: Sendable {
         plan.commonDirectory.appending(path: "worktrees").appending(path: plan.worktreeName)
     }
 
-    func rehome(journal: inout WorktreeForkRollbackJournal) throws(GitWorktreeForkError) -> [WorktreeForkRehomedNode] {
+    func rehome(journal: inout WorktreeForkRollbackJournal) throws(GitWorktreeForkError) -> WorktreeForkRehomeOutcome {
         let topology = plan.gitTopology
         if let rootSparse = topology.rootSparse {
             try writeSparseState(rootSparse, administration: rootAdministration, reportPath: ".")
         }
-        let mirrorByStore = try mirrorObjectStores(topology.mirroredObjectStores, journal: &journal)
+        var outcome = WorktreeForkRehomeOutcome()
+        let mirrorByStore = try mirrorObjectStores(
+            topology.mirroredObjectStores, journal: &journal, trees: &outcome.administrationTrees)
         var administrationByNode: [String: URL] = [:]
-        var rehomed: [WorktreeForkRehomedNode] = []
         for node in topology.nodes {
             try cancellation.throwIfCancelled()
             let destinationWorktree = plan.destinationRoot.appending(path: node.relativePath)
@@ -55,16 +73,17 @@ struct GitRepositoryStateRehomer: Sendable {
                         identity: nil
                     ))
             }
-            try rehome(
+            let tree = try rehome(
                 node, worktree: destinationWorktree, administration: administration, mirrorByStore: mirrorByStore
             ) { identity in
                 journal.confirmNestedAdministration(at: administration, identity: identity)
             }
-            rehomed.append(
+            outcome.administrationTrees.append(tree)
+            outcome.nodes.append(
                 WorktreeForkRehomedNode(
                     node: node, destinationWorktree: destinationWorktree, destinationAdministration: administration))
         }
-        return rehomed
+        return outcome
     }
 
     /// Defense in depth behind the planner's name rule: destination administration must sit beneath the
@@ -101,11 +120,11 @@ struct GitRepositoryStateRehomer: Sendable {
         administration: URL,
         mirrorByStore: [URL: URL],
         created: (WorktreeForkEntryIdentity) -> Void
-    ) throws(GitWorktreeForkError) {
+    ) throws(GitWorktreeForkError) -> WorktreeForkClonedAdministrationTree {
         let reportPath = "\(node.relativePath)/.git"
         var cloner = WorktreeForkAdministrationCloner(reportPath: reportPath)
         cloner.symlinkTargets = try symlinkTargets(node, administration: administration, mirrorByStore: mirrorByStore)
-        try cloner.cloneTree(from: node.sourceCommonDirectory, to: administration, created: created)
+        let tree = try cloner.cloneTree(from: node.sourceCommonDirectory, to: administration, created: created)
         if node.sourceGitDirectory != node.sourceCommonDirectory {
             try overlayPrivateAdministration(node, administration: administration, reportPath: reportPath)
         }
@@ -137,6 +156,7 @@ struct GitRepositoryStateRehomer: Sendable {
             try writeSparseState(sparse, administration: administration, reportPath: reportPath)
         }
         try sanitizeWorktreeConfiguration(in: administration, reportPath: reportPath)
+        return tree
     }
 
     /// Destination link text for each classified administrative symlink: internal links point at the
@@ -234,7 +254,8 @@ struct GitRepositoryStateRehomer: Sendable {
     /// mirror's own alternates at the corresponding mirrors so the closure never leaves destination state.
     private func mirrorObjectStores(
         _ stores: [URL],
-        journal: inout WorktreeForkRollbackJournal
+        journal: inout WorktreeForkRollbackJournal,
+        trees: inout [WorktreeForkClonedAdministrationTree]
     ) throws(GitWorktreeForkError) -> [URL: URL] {
         var mirrorByStore: [URL: URL] = [:]
         for (index, store) in stores.enumerated() {
@@ -243,9 +264,10 @@ struct GitRepositoryStateRehomer: Sendable {
             journal.record(.nestedAdministration(path: mirror, reportLocation: location, identity: nil))
             var cloner = WorktreeForkAdministrationCloner(reportPath: location)
             cloner.symlinkTargets = plan.gitTopology.mirroredStoreSymlinks[store] ?? [:]
-            try cloner.cloneTree(from: store, to: mirror) { identity in
+            let tree = try cloner.cloneTree(from: store, to: mirror) { identity in
                 journal.confirmNestedAdministration(at: mirror, identity: identity)
             }
+            trees.append(tree)
             mirrorByStore[store] = mirror
         }
         for store in stores {
