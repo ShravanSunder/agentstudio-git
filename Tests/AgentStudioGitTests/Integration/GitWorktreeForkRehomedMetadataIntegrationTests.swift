@@ -152,6 +152,68 @@ struct GitWorktreeForkRehomedMetadataIntegrationTests {
         }
     }
 
+    @Test(
+        "a rewrite input that shares its inode with another path fails typed before any change",
+        arguments: HardLinkedRewriteInput.allCases)
+    func hardLinkedRewriteInputFailsBeforeAnyChange(input: HardLinkedRewriteInput) async throws {
+        // Arrange: a copied bare store's file needs relocation and shares one user-immutable inode with a second
+        // in-tree path. Rewriting one name would split the hard-link group, and the other path may need
+        // different text, so the fork refuses instead.
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-linked-rewrite")
+        let repositories = fixture.source.appending(path: ".build/repositories")
+        let sourceFile = repositories.appending(path: input.storeRelativePath)
+        let sourceAlias = fixture.source.appending(path: ".build/alias")
+        defer {
+            _ = lchflags(sourceFile.path, 0)
+            fixture.remove()
+        }
+        try fixture.write(".gitignore", ".build/\n")
+        try fixture.git.run("add", ".gitignore")
+        try fixture.git.run("commit", "-qm", "ignore build")
+        let upstream = try makeRepository(
+            at: fixture.repository.root.appending(path: "upstream"), file: "up.txt", fixture: fixture)
+        let base = repositories.appending(path: "base.git")
+        try fixture.git.run(["clone", "-q", "--bare", upstream.path, base.path])
+        try fixture.git.run([
+            "clone", "-q", "--bare", "--shared", base.path, repositories.appending(path: "shared.git").path,
+        ])
+        if input == .configuration {
+            try fixture.git.run([
+                "config", "--file", sourceFile.path, "core.hooksPath",
+                fixture.source.appending(path: ".build/hooks").path,
+            ])
+        }
+        try #require(link(sourceFile.path, sourceAlias.path) == 0)
+        try #require(lchflags(sourceFile.path, UInt32(UF_IMMUTABLE)) == 0)
+        let sourceBytes = try Data(contentsOf: sourceFile)
+        let sourceInfoBefore = try #require(GitWorktreeForkFileProbe.info(sourceFile))
+        let branchesBefore = try fixture.branchNames()
+
+        // Act
+        let failure: GitWorktreeForkError?
+        do {
+            _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+            failure = nil
+        } catch {
+            failure = error
+        }
+
+        // Assert
+        #expect(
+            failure
+                == .entryFailed(
+                    relativePath: ".build/repositories/\(input.storeRelativePath)", reason: .metadataNotReproducible,
+                    errorNumber: nil))
+        #expect(!GitWorktreeForkFileProbe.exists(fixture.destination()))
+        #expect(try fixture.branchNames() == branchesBefore)
+        #expect(try Data(contentsOf: sourceFile) == sourceBytes)
+        let sourceInfo = try #require(GitWorktreeForkFileProbe.info(sourceFile))
+        let aliasInfo = try #require(GitWorktreeForkFileProbe.info(sourceAlias))
+        #expect(sourceInfo.st_ino == sourceInfoBefore.st_ino && aliasInfo.st_ino == sourceInfo.st_ino)
+        #expect(sourceInfo.st_nlink == 2)
+        #expect(aliasInfo.st_flags & UInt32(UF_IMMUTABLE) != 0, "the shared inode keeps its protection")
+    }
+
     private func makeSparseTree(at path: URL, fixture: GitWorktreeForkFixture) throws {
         try makeRepository(at: path, file: "kept/one.txt", fixture: fixture)
         try fixture.write("dropped/two.txt", "dropped\n", in: path)
@@ -251,6 +313,27 @@ enum RehomedAdministrativeFile: String, CaseIterable, Sendable, CustomStringConv
             return ".git"
         case .nestedAlternates, .mirrorAlternates:
             return ".git/objects/info/alternates"
+        }
+    }
+}
+
+/// A copied bare store file re-homing rewrites, by its path beneath `.build/repositories`.
+enum HardLinkedRewriteInput: String, CaseIterable, Sendable, CustomStringConvertible {
+    /// `config` naming an absolute in-tree path; edited through libgit2's lock-file rename.
+    case configuration
+    /// `objects/info/alternates` of a `--shared` clone of an in-tree store; rewritten by re-homing.
+    case alternates
+
+    var description: String {
+        rawValue
+    }
+
+    var storeRelativePath: String {
+        switch self {
+        case .configuration:
+            return "shared.git/config"
+        case .alternates:
+            return "shared.git/objects/info/alternates"
         }
     }
 }

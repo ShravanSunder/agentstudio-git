@@ -21,15 +21,23 @@ enum WorktreeForkMetadataPreservingRewrite {
 
     /// Runs `swapInReplacement`, which leaves a new regular file at `url`, then gives that file the mode,
     /// extended attributes, ACL, and flags `metadataSource` names. Protection on the replaced file is lifted
-    /// only from our own clone so the swap can rename over it; every replaced file is a per-file clone made by
-    /// this fork, so that never reaches another path. A swap may also leave the original in place (libgit2
-    /// skips an edit that changes nothing); then only the lifted protection goes back.
+    /// only from our own destination copy so the swap can rename over it. A swap may also leave the original in
+    /// place (libgit2 skips an edit that changes nothing); then only the lifted protection goes back.
+    ///
+    /// A replaced file with other hard links (a copied store's file the materializer linked to an alias) is
+    /// refused before anything changes: swapping one name would split the destination hard-link group, and the
+    /// other names may need different pointer text, so neither a split nor an in-place edit is faithful.
     static func rewrite(
         _ url: URL,
         metadataFrom metadataSource: MetadataSource,
         reportPath: String,
         swapInReplacement: () throws(GitWorktreeForkError) -> Void
     ) throws(GitWorktreeForkError) {
+        if case .success(let info) = WorktreeForkDescriptors.lstatPath(url), info.st_mode & S_IFMT == S_IFREG,
+            info.st_nlink > 1
+        {
+            throw .entryFailed(relativePath: reportPath, reason: .metadataNotReproducible, errorNumber: nil)
+        }
         let protection = try WorktreeForkReplacementProtection.lift(at: url, reportPath: reportPath)
         do throws(GitWorktreeForkError) {
             let metadata: WorktreeForkFileMetadata?
