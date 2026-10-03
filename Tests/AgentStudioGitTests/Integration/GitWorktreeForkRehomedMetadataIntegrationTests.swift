@@ -19,11 +19,11 @@ struct GitWorktreeForkRehomedMetadataIntegrationTests {
     ) async throws {
         // Arrange
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-file-metadata")
-        let sourceFile = fixture.source.appending(path: file.relativePath)
-        let destinationFile = fixture.destination().appending(path: file.relativePath)
+        let sourceFile = file.sourceFile(in: fixture)
+        var protectedDestinationFile: URL?
         defer {
             clearProtection(sourceFile)
-            clearProtection(destinationFile)
+            protectedDestinationFile.map(clearProtection)
             fixture.remove()
         }
         try fixture.write(".gitignore", ".build/\n")
@@ -39,17 +39,37 @@ struct GitWorktreeForkRehomedMetadataIntegrationTests {
                 at: fixture.repository.root.appending(path: "library"), file: "library.txt", fixture: fixture)
             try fixture.git.run("submodule", "add", "-q", library.path, file.worktreeRelativePath)
             try fixture.git.run("commit", "-qm", "submodule")
+        case .nestedAlternates, .mirrorAlternates:
+            // A --shared clone borrows its objects; the mirror case borrows from a store that borrows again.
+            var lender = try makeRepository(
+                at: fixture.repository.root.appending(path: "upstream"), file: "up.txt", fixture: fixture)
+            if file == .mirrorAlternates {
+                let middle = fixture.repository.root.appending(path: "middle")
+                try fixture.git.run(["clone", "-q", "--shared", lender.path, middle.path])
+                lender = middle
+            }
+            try fixture.git.run([
+                "clone", "-q", "--shared", lender.path,
+                fixture.source.appending(path: file.worktreeRelativePath).path,
+            ])
         }
         try metadata.apply(to: sourceFile)
 
         // Act
         _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+        let destinationFile = try file.destinationFile(in: fixture)
+        protectedDestinationFile = destinationFile
 
         // Assert
         let sourceWorktree = fixture.source.appending(path: file.worktreeRelativePath)
         let destinationWorktree = fixture.destination().appending(path: file.worktreeRelativePath)
         #expect(try fixture.blobID("HEAD", at: destinationWorktree) == fixture.blobID("HEAD", at: sourceWorktree))
         #expect(try fixture.statusLines(at: destinationWorktree).isEmpty)
+        if file == .nestedAlternates || file == .mirrorAlternates {
+            #expect(
+                try fixture.git.succeeds("cat-file", "-e", "HEAD:up.txt", currentDirectory: destinationWorktree),
+                "objects still resolve through the rewritten alternates")
+        }
         #expect(metadata.isCarried(by: destinationFile), "\(metadata) on the rewritten \(file)")
         let sourceInfo = try #require(GitWorktreeForkFileProbe.info(sourceFile))
         let destinationInfo = try #require(GitWorktreeForkFileProbe.info(destinationFile))
@@ -160,6 +180,10 @@ enum RehomedAdministrativeFile: String, CaseIterable, Sendable, CustomStringConv
     case nestedConfiguration
     /// Never copied; written from scratch with the source gitfile as its metadata template.
     case submoduleGitfile
+    /// A `--shared` nested repository's `objects/info/alternates`: never copied, rewritten to name a mirror.
+    case nestedAlternates
+    /// A mirrored store's own `info/alternates`: cloned with the store, then rewritten to name a mirror.
+    case mirrorAlternates
 
     var description: String {
         rawValue
@@ -171,17 +195,45 @@ enum RehomedAdministrativeFile: String, CaseIterable, Sendable, CustomStringConv
             return ".build/checkouts/dependency"
         case .submoduleGitfile:
             return "deps/library"
+        case .nestedAlternates, .mirrorAlternates:
+            return ".build/checkouts/shared"
         }
     }
 
-    var relativePath: String {
+    func sourceFile(in fixture: GitWorktreeForkFixture) -> URL {
+        switch self {
+        case .mirrorAlternates:
+            return fixture.repository.root.appending(path: "middle/.git/objects/info/alternates")
+        case .nestedHead, .nestedConfiguration, .submoduleGitfile, .nestedAlternates:
+            return fixture.source.appending(path: worktreeRelativePath).appending(path: administrativePath)
+        }
+    }
+
+    /// The destination file standing for `sourceFile(in:)`. A mirror's index is the planner's choice, so
+    /// the mirror case finds the only mirror that borrows from another.
+    func destinationFile(in fixture: GitWorktreeForkFixture) throws -> URL {
+        switch self {
+        case .mirrorAlternates:
+            let mirrors = fixture.linkedWorktreeAdministration().appending(path: "agentstudio-object-mirrors")
+            let borrowing = try FileManager.default.contentsOfDirectory(atPath: mirrors.path)
+                .map { mirrors.appending(path: $0).appending(path: "info/alternates") }
+                .filter(GitWorktreeForkFileProbe.exists)
+            return try #require(borrowing.count == 1 ? borrowing.first : nil, "one borrowing mirror")
+        case .nestedHead, .nestedConfiguration, .submoduleGitfile, .nestedAlternates:
+            return fixture.destination().appending(path: worktreeRelativePath).appending(path: administrativePath)
+        }
+    }
+
+    private var administrativePath: String {
         switch self {
         case .nestedHead:
-            return "\(worktreeRelativePath)/.git/HEAD"
+            return ".git/HEAD"
         case .nestedConfiguration:
-            return "\(worktreeRelativePath)/.git/config"
+            return ".git/config"
         case .submoduleGitfile:
-            return "\(worktreeRelativePath)/.git"
+            return ".git"
+        case .nestedAlternates, .mirrorAlternates:
+            return ".git/objects/info/alternates"
         }
     }
 }

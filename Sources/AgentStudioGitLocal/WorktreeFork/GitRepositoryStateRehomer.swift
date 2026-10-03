@@ -376,9 +376,12 @@ struct GitRepositoryStateRehomer: Sendable {
         guard lines.count == direct.count else {
             throw .entryFailed(relativePath: reportPath, reason: .unresolvableGitAdministration, errorNumber: nil)
         }
-        try writeText(
-            lines.joined(separator: "\n") + "\n",
-            to: administration.appending(path: WorktreeForkAdministrationCloner.alternatesRelativePath),
+        // The cloner never copies this file, so the source alternates file is the metadata template.
+        let alternatesPath = WorktreeForkAdministrationCloner.alternatesRelativePath
+        try writeData(
+            Data((lines.joined(separator: "\n") + "\n").utf8),
+            to: administration.appending(path: alternatesPath),
+            metadataFrom: node.sourceCommonDirectory.appending(path: alternatesPath),
             reportPath: reportPath
         )
     }
