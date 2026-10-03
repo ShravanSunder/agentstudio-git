@@ -85,61 +85,37 @@ struct GitRepositoryStateRehomer: Sendable {
                     node: node, destinationWorktree: destinationWorktree, destinationAdministration: administration))
         }
         let relocation = WorktreeForkSourcePathRelocation(plan: plan, administrationByNode: administrationByNode)
-        for node in outcome.nodes {
-            try cancellation.throwIfCancelled()
-            try rehomeConfigurationPaths(
-                in: node.destinationAdministration, reportPath: "\(node.node.relativePath)/.git",
-                relocation: relocation)
-        }
         for copied in topology.copiedGitDirectories {
             try cancellation.throwIfCancelled()
             try rehomeCopiedPointers(copied, relocation: relocation, mirrorByStore: mirrorByStore)
-            try rehomeConfigurationPaths(
-                in: plan.destinationRoot.appending(path: copied.relativePath), reportPath: copied.relativePath,
-                relocation: relocation)
         }
+        try cancellation.throwIfCancelled()
+        try WorktreeForkConfigurationPathRehomer(plan: plan, relocation: relocation, lockTracker: lockTracker)
+            .rehome(Self.configurationRoots(plan: plan, nodes: outcome.nodes))
         return outcome
     }
 
-    /// Re-aims every absolute path a repository's own configuration records (`include.path`, `lfs.storage`,
-    /// `core.hooksPath`, a local remote URL, any key) at its destination counterpart. Paths outside the
-    /// relocated locations keep their target; a path with no counterpart fails rather than being guessed.
-    private func rehomeConfigurationPaths(
-        in administration: URL,
-        reportPath: String,
-        relocation: WorktreeForkSourcePathRelocation
-    ) throws(GitWorktreeForkError) {
-        for fileName in WorktreeForkConfigurationFile.repositoryFileNames {
-            let file = administration.appending(path: fileName)
-            guard case .success = WorktreeForkDescriptors.lstatPath(file) else {
-                continue
-            }
-            var edits: [WorktreeForkConfigurationEdit] = []
-            for entry in try WorktreeForkConfigurationFile.absolutePathEntries(in: file) {
-                let source = WorktreeForkSourcePathRelocation.canonicalized(absolutePath: entry.value)
-                switch relocation.counterpart(of: source) {
-                case .outsideSource, .sharedRepository:
-                    continue
-                case .relocated(let destination) where destination.path != entry.value:
-                    edits.append(.replaceValue(entry.name, matching: entry.value, with: destination.path))
-                case .relocated:
-                    continue
-                case .unmapped:
-                    let sourcePath =
-                        WorktreeForkAdministrativeSymlinks.relativeComponents(of: source, beneath: plan.sourceRoot)
-                        ?? source.lastPathComponent
-                    throw .entryFailed(
-                        relativePath: "\(reportPath)/\(fileName): \(entry.name) = \(sourcePath)",
-                        reason: .unresolvableGitAdministration,
-                        errorNumber: nil
-                    )
-                }
-            }
-            if !edits.isEmpty {
-                try WorktreeForkConfigurationFile.apply(
-                    edits, to: file, reportPath: "\(reportPath)/\(fileName)", lockTracker: lockTracker)
-            }
+    /// The configuration files each re-homed node and each copied Git directory owns in the destination,
+    /// paired with their source files; the starting points of every include closure.
+    static func configurationRoots(
+        plan: WorktreeForkPlan,
+        nodes: [WorktreeForkRehomedNode]
+    ) -> [WorktreeForkConfigurationCopy] {
+        let nodeFiles = nodes.flatMap { rehomed in
+            WorktreeForkConfigurationCopy.repositoryFiles(
+                sourceCommonDirectory: rehomed.node.sourceCommonDirectory,
+                sourceGitDirectory: rehomed.node.sourceGitDirectory,
+                destinationAdministration: rehomed.destinationAdministration,
+                reportPath: "\(rehomed.node.relativePath)/.git")
         }
+        let copiedFiles = plan.gitTopology.copiedGitDirectories.flatMap { copied in
+            WorktreeForkConfigurationCopy.repositoryFiles(
+                sourceCommonDirectory: plan.sourceRoot.appending(path: copied.relativePath),
+                sourceGitDirectory: plan.sourceRoot.appending(path: copied.relativePath),
+                destinationAdministration: plan.destinationRoot.appending(path: copied.relativePath),
+                reportPath: copied.relativePath)
+        }
+        return nodeFiles + copiedFiles
     }
 
     /// Rewrites each pointer in a copied Git directory's alternates and linked-worktree registrations that

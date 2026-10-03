@@ -241,6 +241,150 @@ struct GitWorktreeForkNestedConfigurationIntegrationTests {
         #expect(try configValue("agentstudio.marker", at: destinationTool, fixture) == "shared")
     }
 
+    @Test("configuration reached through nested includes is re-homed at every level")
+    func includedConfigurationIsRehomedAtEveryLevel() async throws {
+        // Arrange: config includes extra.conf, which includes deeper.conf and names the source's LFS storage.
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-config-include-chain")
+        defer { fixture.remove() }
+        try ignoreVendorAndStorage(fixture)
+        let tool = try makeRepository(
+            at: fixture.source.appending(path: "vendor/tool"), file: "tool.txt", fixture: fixture)
+        let administration = try canonical(tool.appending(path: ".git"))
+        let storage = try canonical(fixture.source.appending(path: "large-file-store"))
+        let extra = administration.appending(path: "extra.conf")
+        let deeper = administration.appending(path: "deeper.conf")
+        try "[include]\n\tpath = \(deeper.path)\n[lfs]\n\tstorage = \(storage.path)\n"
+            .write(to: extra, atomically: false, encoding: .utf8)
+        try "[agentstudio]\n\tmarker = original\n".write(to: deeper, atomically: false, encoding: .utf8)
+        try fixture.git.run(["config", "include.path", extra.path], currentDirectory: tool)
+        let destination = fixture.destination()
+
+        // Act
+        _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+        try "[agentstudio]\n\tmarker = changed-in-source\n".write(to: deeper, atomically: false, encoding: .utf8)
+
+        // Assert
+        let destinationTool = destination.appending(path: "vendor/tool")
+        let destinationAdministration = try canonical(destinationTool.appending(path: ".git"))
+        #expect(
+            try configValues("include.path", at: destinationTool, fixture)
+                == [
+                    destinationAdministration.appending(path: "extra.conf").path,
+                    destinationAdministration.appending(path: "deeper.conf").path,
+                ])
+        #expect(
+            try configuredPath("lfs.storage", at: destinationTool, fixture)
+                == canonical(destination.appending(path: "large-file-store")).path)
+        #expect(try configValue("agentstudio.marker", at: destinationTool, fixture) == "original")
+    }
+
+    @Test("a relative include inside an included file reaches a re-homed file whose source paths are re-homed")
+    func relativeInnerIncludeIsRehomed() async throws {
+        // Arrange: extra.conf includes deeper.conf by a relative path; deeper.conf names the source storage.
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-config-include-relative")
+        defer { fixture.remove() }
+        try ignoreVendorAndStorage(fixture)
+        let tool = try makeRepository(
+            at: fixture.source.appending(path: "vendor/tool"), file: "tool.txt", fixture: fixture)
+        let administration = try canonical(tool.appending(path: ".git"))
+        let storage = try canonical(fixture.source.appending(path: "large-file-store"))
+        let extra = administration.appending(path: "extra.conf")
+        try "[include]\n\tpath = deeper.conf\n".write(to: extra, atomically: false, encoding: .utf8)
+        try "[lfs]\n\tstorage = \(storage.path)\n"
+            .write(to: administration.appending(path: "deeper.conf"), atomically: false, encoding: .utf8)
+        try fixture.git.run(["config", "include.path", extra.path], currentDirectory: tool)
+        let destination = fixture.destination()
+
+        // Act
+        _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+
+        // Assert
+        let destinationTool = destination.appending(path: "vendor/tool")
+        #expect(
+            try configuredPath("lfs.storage", at: destinationTool, fixture)
+                == canonical(destination.appending(path: "large-file-store")).path)
+        #expect(
+            try String(contentsOf: destinationTool.appending(path: ".git/extra.conf"), encoding: .utf8)
+                == "[include]\n\tpath = deeper.conf\n")
+    }
+
+    @Test("an include cycle in nested configuration finishes with a typed failure and leaves nothing behind")
+    func includeCycleFailsWithoutLooping() async throws {
+        // Arrange: config includes a.conf, a.conf includes b.conf, and b.conf includes a.conf again.
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-config-include-cycle")
+        defer { fixture.remove() }
+        try ignore("vendor/", fixture: fixture)
+        let tool = try makeRepository(
+            at: fixture.source.appending(path: "vendor/tool"), file: "tool.txt", fixture: fixture)
+        let administration = try canonical(tool.appending(path: ".git"))
+        try "[include]\n\tpath = b.conf\n"
+            .write(to: administration.appending(path: "a.conf"), atomically: false, encoding: .utf8)
+        try "[include]\n\tpath = a.conf\n"
+            .write(to: administration.appending(path: "b.conf"), atomically: false, encoding: .utf8)
+        try fixture.git.run(
+            [
+                "config", "--file", administration.appending(path: "config").path, "include.path",
+                administration.appending(path: "a.conf").path,
+            ])
+        let branchesBefore = try fixture.branchNames()
+
+        // Act
+        let failure: GitWorktreeForkError?
+        do {
+            _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+            failure = nil
+        } catch {
+            failure = error
+        }
+
+        // Assert
+        #expect(
+            failure
+                == .entryFailed(
+                    relativePath: "vendor/tool/.git", reason: .unresolvableGitAdministration, errorNumber: nil))
+        #expect(!GitWorktreeForkFileProbe.exists(fixture.destination()))
+        #expect(try fixture.branchNames() == branchesBefore)
+    }
+
+    @Test("a bare cache whose configuration includes cycle is one Git cannot open, so it is copied as content")
+    func copiedGitDirectoryIncludeCycleIsOrdinaryContent() async throws {
+        // Arrange: Git itself refuses this directory, so the fork must neither loop nor treat it as a repository.
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-config-copied-cycle")
+        defer { fixture.remove() }
+        try ignore(".build/", fixture: fixture)
+        let upstream = try makeRepository(
+            at: fixture.repository.root.appending(path: "upstream"), file: "up.txt", fixture: fixture)
+        let cache = fixture.source.appending(path: ".build/cache.git")
+        try fixture.git.run(["clone", "-q", "--bare", upstream.path, cache.path])
+        try "[include]\n\tpath = b.conf\n".write(
+            to: cache.appending(path: "a.conf"), atomically: false, encoding: .utf8)
+        try "[include]\n\tpath = a.conf\n".write(
+            to: cache.appending(path: "b.conf"), atomically: false, encoding: .utf8)
+        try fixture.git.run(["config", "--file", cache.appending(path: "config").path, "include.path", "a.conf"])
+        #expect(!(try fixture.git.succeeds("rev-parse", "--git-dir", currentDirectory: cache)))
+        let sourceConfiguration = try Data(contentsOf: cache.appending(path: "config"))
+        let destination = fixture.destination()
+
+        // Act
+        _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+
+        // Assert
+        #expect(
+            try Data(contentsOf: destination.appending(path: ".build/cache.git/config")) == sourceConfiguration)
+    }
+
+    private func ignoreVendorAndStorage(_ fixture: GitWorktreeForkFixture) throws {
+        try fixture.write(".gitignore", "vendor/\nlarge-file-store/\n")
+        try fixture.git.run("add", ".gitignore")
+        try fixture.git.run("commit", "-qm", "ignore vendor and storage")
+        try fixture.write("large-file-store/objects/placeholder", "stored\n")
+    }
+
+    private func configValues(_ key: String, at worktree: URL, _ fixture: GitWorktreeForkFixture) throws -> [String] {
+        try fixture.git.run(["config", "--get-all", key], currentDirectory: worktree)
+            .split(separator: "\n").map { try canonical(URL(fileURLWithPath: String($0))).path }
+    }
+
     private func ignore(_ pattern: String, fixture: GitWorktreeForkFixture) throws {
         try fixture.write(".gitignore", "\(pattern)\n")
         try fixture.git.run("add", ".gitignore")

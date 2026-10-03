@@ -20,9 +20,9 @@ enum WorktreeForkConfigurationFile {
     /// The configuration files a repository's administration owns: shared, then worktree-scoped.
     static let repositoryFileNames = ["config", "config.worktree"]
 
-    /// Entries written in this file itself, not reached through an include, whose value is an absolute path;
-    /// each distinct name and value once.
-    static func absolutePathEntries(in path: URL) throws(GitWorktreeForkError) -> [WorktreeForkConfigurationEntry] {
+    /// Entries written in this file itself, not reached through an include; each distinct name and value once.
+    /// libgit2 still reads the file's includes, so a file whose includes cycle or nest too deeply fails here.
+    static func ownEntries(in path: URL) throws(GitWorktreeForkError) -> [WorktreeForkConfigurationEntry] {
         var configuration: OpaquePointer?
         let openResult = path.path.withCString { git_config_open_ondisk(&configuration, $0) }
         guard openResult >= 0, let configuration else {
@@ -49,7 +49,7 @@ enum WorktreeForkConfigurationFile {
                 continue
             }
             let candidate = WorktreeForkConfigurationEntry(name: String(cString: name), value: String(cString: value))
-            if candidate.value.hasPrefix("/"), !entries.contains(candidate) {
+            if !entries.contains(candidate) {
                 entries.append(candidate)
             }
         }

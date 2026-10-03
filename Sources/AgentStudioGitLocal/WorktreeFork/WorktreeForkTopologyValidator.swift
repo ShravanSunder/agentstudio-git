@@ -32,16 +32,13 @@ struct WorktreeForkTopologyValidator: Sendable {
             administrationByNode: Dictionary(
                 uniqueKeysWithValues: rehomed.map { ($0.node.relativePath, $0.destinationAdministration) })
         )
-        for node in rehomed {
-            try validateConfigurationPaths(
-                in: node.destinationAdministration, reportPath: node.node.relativePath, relocation: relocation)
-        }
         for copied in plan.gitTopology.copiedGitDirectories {
             try validateCopiedAlternates(copied, relocation: relocation)
-            try validateConfigurationPaths(
-                in: plan.destinationRoot.appending(path: copied.relativePath), reportPath: copied.relativePath,
-                relocation: relocation)
         }
+        try WorktreeForkConfigurationPathValidation(plan: plan, relocation: relocation).validate(
+            GitRepositoryStateRehomer.configurationRoots(plan: plan, nodes: rehomed).map {
+                ($0.destination, $0.reportPath)
+            })
     }
 
     /// Every alternate a copied Git directory holds must resolve to destination-owned state (the destination
@@ -68,44 +65,6 @@ struct WorktreeForkTopologyValidator: Sendable {
             else {
                 throw .validationFailed(reason: .sourceAdministrationReference, relativePath: copied.relativePath)
             }
-        }
-    }
-
-    /// A configuration value that still names the source tree or a source administration the fork re-homed
-    /// would keep the destination reading, or writing, source state. Values outside the source, and values in
-    /// the shared repository (the same path the fork itself sees), are accepted.
-    private func validateConfigurationPaths(
-        in administration: URL,
-        reportPath: String,
-        relocation: WorktreeForkSourcePathRelocation
-    ) throws(GitWorktreeForkError) {
-        for fileName in WorktreeForkConfigurationFile.repositoryFileNames {
-            let file = administration.appending(path: fileName)
-            guard case .success = WorktreeForkDescriptors.lstatPath(file) else {
-                continue
-            }
-            for entry in try WorktreeForkConfigurationFile.absolutePathEntries(in: file) {
-                let path = WorktreeForkSourcePathRelocation.canonicalized(absolutePath: entry.value)
-                let destinationOwned = allowedPrefixes.contains { (path.path + "/").hasPrefix($0) }
-                if !destinationOwned, Self.namesRelocatedSource(relocation.counterpart(of: path), path: path) {
-                    throw .validationFailed(reason: .sourceAdministrationReference, relativePath: reportPath)
-                }
-            }
-        }
-    }
-
-    /// True when `path` is a source location the fork relocates to somewhere else, or one with no counterpart.
-    private static func namesRelocatedSource(
-        _ counterpart: WorktreeForkSourcePathRelocation.Counterpart,
-        path: URL
-    ) -> Bool {
-        switch counterpart {
-        case .outsideSource, .sharedRepository:
-            false
-        case .relocated(let destination):
-            destination.path != path.path
-        case .unmapped:
-            true
         }
     }
 
