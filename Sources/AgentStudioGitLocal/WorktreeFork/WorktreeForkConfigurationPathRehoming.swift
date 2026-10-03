@@ -75,8 +75,10 @@ enum WorktreeForkConfigurationPatternKeys {
 
 /// Re-aims the absolute paths that a repository's configuration records, across its whole include closure,
 /// at their destination counterparts. Every reached file the fork owns a copy of (inside the destination
-/// tree or the fork's own administration) is edited; files outside those places (outside the source, or in
-/// the shared repository) are read for their includes only when the fork owns them, and never edited.
+/// tree or the fork's own administration) is edited. A reached file the fork does not own (outside the
+/// source, or in the shared repository) is never edited: it is read, with its own includes, and a value or
+/// `gitdir` condition there naming a relocated source location refuses the fork, because the destination
+/// would keep reading source state through it.
 struct WorktreeForkConfigurationPathRehomer: Sendable {
     let plan: WorktreeForkPlan
     let relocation: WorktreeForkSourcePathRelocation
@@ -90,8 +92,25 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
     ) throws(GitWorktreeForkError) -> [URL] {
         var edited: [URL] = []
         var visited = Set<String>()
-        var pending = roots.map { (copy: $0, depth: 0) }
-        while let (copy, depth) = pending.popLast() {
+        var pending = roots.map { (file: PendingFile.owned($0), depth: 0) }
+        while let (file, depth) = pending.popLast() {
+            let copy: WorktreeForkConfigurationCopy
+            switch file {
+            case .owned(let owned):
+                copy = owned
+            case .external(let external, let includedBy):
+                guard visited.insert(external.path).inserted,
+                    case .success = WorktreeForkDescriptors.lstatPath(external)
+                else {
+                    continue
+                }
+                guard depth <= WorktreeForkConfigurationIncludes.maximumDepth else {
+                    throw .entryFailed(
+                        relativePath: includedBy, reason: .unresolvableGitAdministration, errorNumber: nil)
+                }
+                pending += try externalIncludes(of: external, includedBy: includedBy).map { ($0, depth + 1) }
+                continue
+            }
             guard visited.insert(copy.destination.path).inserted,
                 case .success = WorktreeForkDescriptors.lstatPath(copy.destination)
             else {
@@ -114,17 +133,22 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
                     continue
                 }
                 let sourceTarget = WorktreeForkConfigurationIncludes.target(of: entry.value, includedFrom: copy.source)
-                if case .relocated(let destinationTarget) = relocation.counterpart(of: sourceTarget),
-                    WorktreeForkDestinationOwnership.isDestinationOwned(destinationTarget, plan: plan)
-                {
+                switch relocation.counterpart(of: sourceTarget) {
+                case .relocated(let destinationTarget)
+                where WorktreeForkDestinationOwnership.isDestinationOwned(destinationTarget, plan: plan):
                     pending.append(
                         (
-                            WorktreeForkConfigurationCopy(
-                                source: sourceTarget, destination: destinationTarget,
-                                reportPath: WorktreeForkDestinationOwnership.reportLocation(
-                                    of: destinationTarget, plan: plan)),
+                            .owned(
+                                WorktreeForkConfigurationCopy(
+                                    source: sourceTarget, destination: destinationTarget,
+                                    reportPath: WorktreeForkDestinationOwnership.reportLocation(
+                                        of: destinationTarget, plan: plan))),
                             depth + 1
                         ))
+                case .outsideSource, .sharedRepository:
+                    pending.append((.external(sourceTarget, includedBy: copy.reportPath), depth + 1))
+                case .relocated, .unmapped:
+                    continue
                 }
             }
             if !edits.isEmpty {
@@ -221,6 +245,61 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
         }
     }
 
+    /// A reached configuration file and whether the fork owns a copy of it. An external file is read in
+    /// place; `includedBy` is the report path of the owned file whose include chain reached it.
+    private enum PendingFile {
+        case owned(WorktreeForkConfigurationCopy)
+        case external(URL, includedBy: String)
+    }
+
+    /// Reads one external file read-only and refuses the fork when any path value or `gitdir` condition in
+    /// it names a relocated source location; returns its own includes to read next.
+    private func externalIncludes(
+        of file: URL,
+        includedBy: String
+    ) throws(GitWorktreeForkError) -> [PendingFile] {
+        let entries: [WorktreeForkConfigurationEntry]
+        do {
+            entries = try WorktreeForkConfigurationFile.ownEntries(in: file)
+        } catch {
+            throw .entryFailed(relativePath: includedBy, reason: .unresolvableGitAdministration, errorNumber: nil)
+        }
+        var includes: [PendingFile] = []
+        for entry in entries {
+            if let condition = WorktreeForkGitDirectoryCondition.parse(includeName: entry.name),
+                let location = condition.location(includedFrom: file),
+                relocation.namesRelocatedSource(location.literal)
+            {
+                let pattern = WorktreeForkGitDirectoryCondition.pattern(
+                    literal: sourceRelative(location.literal), following: location)
+                throw .entryFailed(
+                    relativePath: "\(includedBy): includeif.\(condition.prefix)\(pattern).path",
+                    reason: .unresolvableGitAdministration, errorNumber: nil)
+            }
+            let isInclude = WorktreeForkConfigurationIncludes.isInclude(entry.name)
+            guard entry.value.hasPrefix("/") || isInclude,
+                !WorktreeForkConfigurationPatternKeys.holdsPattern(entry.name)
+            else {
+                continue
+            }
+            let target = WorktreeForkConfigurationIncludes.target(of: entry.value, includedFrom: file)
+            if relocation.namesRelocatedSource(target) {
+                throw .entryFailed(
+                    relativePath: "\(includedBy): \(entry.name) = \(sourceRelative(target))",
+                    reason: .unresolvableGitAdministration, errorNumber: nil)
+            }
+            if isInclude {
+                includes.append(.external(target, includedBy: includedBy))
+            }
+        }
+        return includes
+    }
+
+    private func sourceRelative(_ path: URL) -> String {
+        WorktreeForkAdministrativeSymlinks.relativeComponents(of: path, beneath: plan.sourceRoot)
+            ?? path.lastPathComponent
+    }
+
     private static func ownEntries(
         of copy: WorktreeForkConfigurationCopy
     ) throws(GitWorktreeForkError) -> [WorktreeForkConfigurationEntry] {
@@ -233,9 +312,10 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
     }
 }
 
-/// Walks the destination include closure the re-homer edited and rejects any value that still names a
-/// source location the fork relocates elsewhere, or one with no counterpart, and any value naming a missing
-/// destination file whose private-administration source exists (Git would silently read nothing).
+/// Walks the destination include closure the re-homer edited, external files included, and rejects any value
+/// that still names a source location the fork relocates elsewhere, or one with no counterpart, and any value
+/// naming a missing destination file whose private-administration source exists (Git would silently read
+/// nothing).
 struct WorktreeForkConfigurationPathValidation: Sendable {
     let plan: WorktreeForkPlan
     let relocation: WorktreeForkSourcePathRelocation
@@ -259,7 +339,7 @@ struct WorktreeForkConfigurationPathValidation: Sendable {
                 if let condition = WorktreeForkGitDirectoryCondition.parse(includeName: entry.name),
                     let location = condition.location(includedFrom: file),
                     !WorktreeForkDestinationOwnership.isDestinationOwned(location.literal, plan: plan),
-                    namesRelocatedSource(location.literal)
+                    relocation.namesRelocatedSource(location.literal)
                 {
                     throw leftover
                 }
@@ -271,7 +351,7 @@ struct WorktreeForkConfigurationPathValidation: Sendable {
                 }
                 let target = WorktreeForkConfigurationIncludes.target(of: entry.value, includedFrom: file)
                 let destinationOwned = WorktreeForkDestinationOwnership.isDestinationOwned(target, plan: plan)
-                if !destinationOwned, namesRelocatedSource(target) {
+                if !destinationOwned, relocation.namesRelocatedSource(target) {
                     throw leftover
                 }
                 if destinationOwned, case .failure = WorktreeForkDescriptors.lstatPath(target),
@@ -281,7 +361,8 @@ struct WorktreeForkConfigurationPathValidation: Sendable {
                 {
                     throw .validationFailed(reason: .nestedRepositoryUnusable, relativePath: reportPath)
                 }
-                if isInclude, destinationOwned {
+                // External includes are walked too: they are never edited, so a leftover there is a leak.
+                if isInclude {
                     pending.append(
                         (
                             target, WorktreeForkDestinationOwnership.reportLocation(of: target, plan: plan),
@@ -292,9 +373,12 @@ struct WorktreeForkConfigurationPathValidation: Sendable {
         }
     }
 
+}
+
+extension WorktreeForkSourcePathRelocation {
     /// True when `path` is a source location the fork relocates to somewhere else, or one with no counterpart.
-    private func namesRelocatedSource(_ path: URL) -> Bool {
-        switch relocation.counterpart(of: path) {
+    func namesRelocatedSource(_ path: URL) -> Bool {
+        switch counterpart(of: path) {
         case .outsideSource, .sharedRepository:
             false
         case .relocated(let destination):

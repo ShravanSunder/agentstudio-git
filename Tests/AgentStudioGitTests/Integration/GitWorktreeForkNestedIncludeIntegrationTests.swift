@@ -279,6 +279,70 @@ struct GitWorktreeForkNestedIncludeIntegrationTests {
                 == canonical(fixture.linkedWorktreeAdministration()).appending(path: "hooks").path)
     }
 
+    @Test("a shared include naming a captured worktree's private administration refuses the fork, unedited")
+    func sharedIncludeEscapingIntoCapturedPrivateAdministrationRefuses() async throws {
+        // Arrange: the shared repository config includes a common-directory file whose core.hooksPath names
+        // the private administration of a nested linked worktree the fork captures. The fork may not edit
+        // that shared file, and keeping it would leave the destination reading source-private state.
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-include-shared-escape")
+        defer { fixture.remove() }
+        try ignore(".claude/", fixture: fixture)
+        let agent = fixture.source.appending(path: ".claude/worktrees/agent")
+        try fixture.git.run("worktree", "add", "-q", "-b", "agent", agent.path)
+        let common = try canonical(fixture.source.appending(path: ".git"))
+        let sharedInclude = common.appending(path: "shared-hooks.conf")
+        try "[core]\n\thooksPath = \(common.path)/worktrees/agent/hooks\n"
+            .write(to: sharedInclude, atomically: false, encoding: .utf8)
+        try fixture.git.run("config", "include.path", sharedInclude.path)
+        let sharedBytes = try Data(contentsOf: sharedInclude)
+        let branchesBefore = try fixture.branchNames()
+
+        // Act
+        let failure: GitWorktreeForkError?
+        do {
+            _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+            failure = nil
+        } catch {
+            failure = error
+        }
+
+        // Assert
+        #expect(
+            failure
+                == .entryFailed(
+                    relativePath: ".claude/worktrees/agent/.git/config: core.hookspath = .git/worktrees/agent/hooks",
+                    reason: .unresolvableGitAdministration, errorNumber: nil))
+        #expect(!GitWorktreeForkFileProbe.exists(fixture.destination()))
+        #expect(try fixture.branchNames() == branchesBefore)
+        #expect(try Data(contentsOf: sharedInclude) == sharedBytes)
+    }
+
+    @Test("an include outside the source holding only outside paths is read, left unedited, and the fork succeeds")
+    func outsideIncludeWithOutsideValuesIsAccepted() async throws {
+        // Arrange
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-include-outside-values")
+        defer { fixture.remove() }
+        try ignore("vendor/", fixture: fixture)
+        let tool = try makeRepository(
+            at: fixture.source.appending(path: "vendor/tool"), file: "tool.txt", fixture: fixture)
+        let root = try canonical(fixture.repository.root)
+        let outsideInclude = root.appending(path: "outside.conf")
+        let outsideHooks = root.appending(path: "outside-hooks").path
+        try "[core]\n\thooksPath = \(outsideHooks)\n".write(to: outsideInclude, atomically: false, encoding: .utf8)
+        try fixture.git.run(["config", "include.path", outsideInclude.path], currentDirectory: tool)
+        let outsideBytes = try Data(contentsOf: outsideInclude)
+        let destination = fixture.destination()
+
+        // Act
+        _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+
+        // Assert
+        let destinationTool = destination.appending(path: "vendor/tool")
+        #expect(try configValue("include.path", at: destinationTool, fixture) == outsideInclude.path)
+        #expect(try configValue("core.hooksPath", at: destinationTool, fixture) == outsideHooks)
+        #expect(try Data(contentsOf: outsideInclude) == outsideBytes)
+    }
+
     private func ignoreVendorAndStorage(_ fixture: GitWorktreeForkFixture) throws {
         try fixture.write(".gitignore", "vendor/\nlarge-file-store/\n")
         try fixture.git.run("add", ".gitignore")
