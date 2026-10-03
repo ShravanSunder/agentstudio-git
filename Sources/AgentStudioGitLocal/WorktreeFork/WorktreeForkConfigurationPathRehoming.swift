@@ -58,6 +58,21 @@ enum WorktreeForkConfigurationIncludes {
     }
 }
 
+/// Keys whose values Git reads as regular expressions, not paths, so a value that happens to start with `/`
+/// must not be relocated or validated as one: a diff driver's `xfuncname`, `funcname`, and `wordRegex`
+/// (Git's `userdiff_config`). The re-homer and the validator both consult this one list.
+enum WorktreeForkConfigurationPatternKeys {
+    private static let diffDriverPatternVariables: Set<String> = ["xfuncname", "funcname", "wordregex"]
+
+    static func holdsPattern(_ name: String) -> Bool {
+        let parts = name.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count >= 3, parts.first?.lowercased() == "diff", let variable = parts.last else {
+            return false
+        }
+        return diffDriverPatternVariables.contains(variable.lowercased())
+    }
+}
+
 /// Re-aims the absolute paths that a repository's configuration records, across its whole include closure,
 /// at their destination counterparts. Every reached file the fork owns a copy of (inside the destination
 /// tree or the fork's own administration) is edited; files outside those places (outside the source, or in
@@ -85,8 +100,11 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
             }
             var edits: [WorktreeForkConfigurationEdit] = []
             for entry in try Self.ownEntries(of: copy) {
-                if let edit = try edit(for: entry, in: copy) {
-                    edits.append(edit)
+                let value = try relocatedValue(for: entry, in: copy)
+                if let name = try relocatedConditionName(for: entry, in: copy) {
+                    edits.append(.moveValue(entry.name, matching: entry.value, to: name, value: value ?? entry.value))
+                } else if let value {
+                    edits.append(.replaceValue(entry.name, matching: entry.value, with: value))
                 }
                 guard WorktreeForkConfigurationIncludes.isInclude(entry.name) else {
                     continue
@@ -114,17 +132,20 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
         return edited
     }
 
-    /// An absolute value is re-aimed at its relocated counterpart. A relative include is re-aimed only when,
-    /// read from the copy, it no longer reaches what it reached from the source. Values outside the source or
-    /// in the shared repository keep their target; a source path with no counterpart fails.
-    private func edit(
+    /// The new value for an entry, or nil to keep it. An absolute value is re-aimed at its relocated
+    /// counterpart. A relative include is re-aimed only when, read from the copy, it no longer reaches what it
+    /// reached from the source. Values outside the source or in the shared repository keep their target; a
+    /// source path with no counterpart fails.
+    private func relocatedValue(
         for entry: WorktreeForkConfigurationEntry,
         in copy: WorktreeForkConfigurationCopy
-    ) throws(GitWorktreeForkError) -> WorktreeForkConfigurationEdit? {
+    ) throws(GitWorktreeForkError) -> String? {
         let isRelativeInclude =
             WorktreeForkConfigurationIncludes.isInclude(entry.name)
             && WorktreeForkConfigurationIncludes.isRelative(entry.value)
-        guard entry.value.hasPrefix("/") || isRelativeInclude else {
+        guard entry.value.hasPrefix("/") || isRelativeInclude,
+            !WorktreeForkConfigurationPatternKeys.holdsPattern(entry.name)
+        else {
             return nil
         }
         let source = WorktreeForkConfigurationIncludes.target(of: entry.value, includedFrom: copy.source)
@@ -151,7 +172,47 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
         guard reachedFromCopy != wanted.path, !(entry.value.hasPrefix("/") && wanted == source) else {
             return nil
         }
-        return .replaceValue(entry.name, matching: entry.value, with: wanted.path)
+        return wanted.path
+    }
+
+    /// The new key for a `gitdir` conditional include whose pattern names a relocated location, or nil to keep
+    /// it. Patterns outside the source or in the shared repository keep their target. A glob that could
+    /// match beneath a location that relocates differently has no exact counterpart, so it fails.
+    private func relocatedConditionName(
+        for entry: WorktreeForkConfigurationEntry,
+        in copy: WorktreeForkConfigurationCopy
+    ) throws(GitWorktreeForkError) -> String? {
+        guard let condition = WorktreeForkGitDirectoryCondition.parse(includeName: entry.name),
+            let source = condition.location(includedFrom: copy.source)
+        else {
+            return nil
+        }
+        let sourceLiteral =
+            WorktreeForkAdministrativeSymlinks.relativeComponents(of: source.literal, beneath: plan.sourceRoot)
+            ?? source.literal.lastPathComponent
+        let displayedPattern = WorktreeForkGitDirectoryCondition.pattern(literal: sourceLiteral, following: source)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let unresolvable = GitWorktreeForkError.entryFailed(
+            relativePath: "\(copy.reportPath): includeif.\(condition.prefix)\(displayedPattern).path",
+            reason: .unresolvableGitAdministration,
+            errorNumber: nil
+        )
+        switch relocation.counterpart(of: source.literal) {
+        case .outsideSource, .sharedRepository:
+            return nil
+        case .unmapped:
+            throw unresolvable
+        case .relocated(let destination):
+            if source.matchesBeneathLiteral, relocation.hasRelocation(strictlyBeneath: source.literal) {
+                throw unresolvable
+            }
+            // A `./` pattern that still reaches the counterpart from the copy keeps its text.
+            if condition.location(includedFrom: copy.destination)?.literal.path == destination.path {
+                return nil
+            }
+            return condition.includeName(
+                withPattern: WorktreeForkGitDirectoryCondition.pattern(literal: destination.path, following: source))
+        }
     }
 
     private static func ownEntries(
@@ -188,8 +249,17 @@ struct WorktreeForkConfigurationPathValidation: Sendable {
                 throw leftover
             }
             for entry in entries {
+                if let condition = WorktreeForkGitDirectoryCondition.parse(includeName: entry.name),
+                    let location = condition.location(includedFrom: file),
+                    !WorktreeForkDestinationOwnership.isDestinationOwned(location.literal, plan: plan),
+                    namesRelocatedSource(location.literal)
+                {
+                    throw leftover
+                }
                 let isInclude = WorktreeForkConfigurationIncludes.isInclude(entry.name)
-                guard entry.value.hasPrefix("/") || isInclude else {
+                guard entry.value.hasPrefix("/") || isInclude,
+                    !WorktreeForkConfigurationPatternKeys.holdsPattern(entry.name)
+                else {
                     continue
                 }
                 let target = WorktreeForkConfigurationIncludes.target(of: entry.value, includedFrom: file)

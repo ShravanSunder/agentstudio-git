@@ -8,6 +8,9 @@ enum WorktreeForkConfigurationEdit: Sendable {
     case delete(String)
     /// Replaces every value of a (possibly multi-valued) key that equals `matching` exactly.
     case replaceValue(String, matching: String, with: String)
+    /// Removes the value equal to `matching` from one key and adds `value` to another, as a condition in a
+    /// section name changes.
+    case moveValue(String, matching: String, to: String, value: String)
 }
 
 struct WorktreeForkConfigurationEntry: Equatable, Sendable {
@@ -98,6 +101,14 @@ enum WorktreeForkConfigurationFile {
                 result = deleteResult == GIT_ENOTFOUND.rawValue ? 0 : deleteResult
             case .replaceValue(let name, let matching, let value):
                 result = git_config_set_multivar(configuration, name, "^\(Self.escapedPattern(matching))$", value)
+            case .moveValue(let name, let matching, let destinationName, let value):
+                let deleteResult = git_config_delete_multivar(
+                    configuration, name, "^\(Self.escapedPattern(matching))$")
+                result =
+                    deleteResult < 0
+                    ? deleteResult
+                    : git_config_set_multivar(
+                        configuration, destinationName, "^\(Self.escapedPattern(value))$", value)
             }
             let systemErrorCode = errno
             guard result >= 0 else {
