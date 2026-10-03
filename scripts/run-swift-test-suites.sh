@@ -66,6 +66,7 @@ suites=(
   GitWorktreeForkNestedConfigurationIntegrationTests
   GitWorktreeForkNestedIncludeIntegrationTests
   GitWorktreeForkNestedRepositoryIntegrationTests
+  GitWorktreeForkPrivateAdminIntegrationTests
   GitCommitRangeCountIntegrationTests
   GitBranchIntegrationIntegrationTests
   GitBranchIntegrationHistoryIntegrationTests

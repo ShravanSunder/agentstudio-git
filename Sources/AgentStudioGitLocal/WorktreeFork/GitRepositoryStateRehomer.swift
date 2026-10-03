@@ -20,11 +20,13 @@ struct WorktreeForkRehomeOutcome: Sendable {
     /// adoption must hash them instead of trusting the clone's stat. A re-homed node's own administration and
     /// gitfile are omitted: Git never tracks a `.git` path, so no index holds them.
     var rewrittenWorktreePaths: Set<String> = []
+    /// Ownership or setuid/setgid normalization of private administration files cloned on demand.
+    var normalizedEntries: [GitWorktreeMaterializationNormalizedEntry] = []
 
     /// Child trees (nested submodule administration, created later) are finalized before their parents.
     func finalizeAdministrationDirectories() throws(GitWorktreeForkError) -> [GitWorktreeMaterializationNormalizedEntry]
     {
-        var normalized: [GitWorktreeMaterializationNormalizedEntry] = []
+        var normalized = normalizedEntries
         for tree in administrationTrees.reversed() {
             normalized += try tree.finalizeDirectories()
         }
@@ -96,10 +98,13 @@ struct GitRepositoryStateRehomer: Sendable {
             rewrittenFiles += try rehomeCopiedPointers(copied, relocation: relocation, mirrorByStore: mirrorByStore)
         }
         try cancellation.throwIfCancelled()
+        var counterparts = WorktreeForkPrivateAdministrationCounterparts(plan: plan, relocation: relocation)
         rewrittenFiles += try WorktreeForkConfigurationPathRehomer(
             plan: plan, relocation: relocation, lockTracker: lockTracker
         )
-        .rehome(Self.configurationRoots(plan: plan, nodes: outcome.nodes))
+        .rehome(Self.configurationRoots(plan: plan, nodes: outcome.nodes), counterparts: &counterparts)
+        outcome.administrationTrees += counterparts.administrationTrees
+        outcome.normalizedEntries += counterparts.normalizedEntries
         outcome.rewrittenWorktreePaths = Set(
             rewrittenFiles.compactMap {
                 WorktreeForkAdministrativeSymlinks.relativeComponents(of: $0, beneath: plan.destinationRoot)

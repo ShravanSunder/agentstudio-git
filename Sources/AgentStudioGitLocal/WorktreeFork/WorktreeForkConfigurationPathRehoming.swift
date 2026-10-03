@@ -82,8 +82,12 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
     let relocation: WorktreeForkSourcePathRelocation
     let lockTracker: WorktreeForkLockTracker
 
-    /// Returns the destination files it edited.
-    func rehome(_ roots: [WorktreeForkConfigurationCopy]) throws(GitWorktreeForkError) -> [URL] {
+    /// Returns the destination files it edited. Every relocated value that names a captured private
+    /// administration gets its counterpart cloned through `counterparts` before an include there is followed.
+    func rehome(
+        _ roots: [WorktreeForkConfigurationCopy],
+        counterparts: inout WorktreeForkPrivateAdministrationCounterparts
+    ) throws(GitWorktreeForkError) -> [URL] {
         var edited: [URL] = []
         var visited = Set<String>()
         var pending = roots.map { (copy: $0, depth: 0) }
@@ -100,7 +104,7 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
             }
             var edits: [WorktreeForkConfigurationEdit] = []
             for entry in try Self.ownEntries(of: copy) {
-                let value = try relocatedValue(for: entry, in: copy)
+                let value = try relocatedValue(for: entry, in: copy, counterparts: &counterparts)
                 if let name = try relocatedConditionName(for: entry, in: copy) {
                     edits.append(.moveValue(entry.name, matching: entry.value, to: name, value: value ?? entry.value))
                 } else if let value {
@@ -138,7 +142,8 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
     /// source path with no counterpart fails.
     private func relocatedValue(
         for entry: WorktreeForkConfigurationEntry,
-        in copy: WorktreeForkConfigurationCopy
+        in copy: WorktreeForkConfigurationCopy,
+        counterparts: inout WorktreeForkPrivateAdministrationCounterparts
     ) throws(GitWorktreeForkError) -> String? {
         let isRelativeInclude =
             WorktreeForkConfigurationIncludes.isInclude(entry.name)
@@ -154,6 +159,7 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
         case .outsideSource, .sharedRepository:
             wanted = source
         case .relocated(let destination):
+            try counterparts.materializeCounterpart(of: source)
             wanted = destination
         case .unmapped:
             let sourcePath =
@@ -228,7 +234,8 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
 }
 
 /// Walks the destination include closure the re-homer edited and rejects any value that still names a
-/// source location the fork relocates elsewhere, or one with no counterpart.
+/// source location the fork relocates elsewhere, or one with no counterpart, and any value naming a missing
+/// destination file whose private-administration source exists (Git would silently read nothing).
 struct WorktreeForkConfigurationPathValidation: Sendable {
     let plan: WorktreeForkPlan
     let relocation: WorktreeForkSourcePathRelocation
@@ -266,6 +273,13 @@ struct WorktreeForkConfigurationPathValidation: Sendable {
                 let destinationOwned = WorktreeForkDestinationOwnership.isDestinationOwned(target, plan: plan)
                 if !destinationOwned, namesRelocatedSource(target) {
                     throw leftover
+                }
+                if destinationOwned, case .failure = WorktreeForkDescriptors.lstatPath(target),
+                    relocation.privateAdministrationSources(ofDestination: target).contains(where: {
+                        if case .success = WorktreeForkDescriptors.lstatPath($0) { true } else { false }
+                    })
+                {
+                    throw .validationFailed(reason: .nestedRepositoryUnusable, relativePath: reportPath)
                 }
                 if isInclude, destinationOwned {
                     pending.append(

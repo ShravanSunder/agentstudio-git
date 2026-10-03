@@ -34,6 +34,18 @@ struct WorktreeForkSourcePathRelocation: Sendable {
     private struct Relocation: Sendable {
         let source: URL
         let disposition: Disposition
+        /// A worktree's private administration (its own `HEAD`, index, and private files), as opposed to a
+        /// repository's common administration. Only a few private files are written for the destination, so
+        /// anything else a value names there must be cloned on demand.
+        var isPrivateAdministration = false
+    }
+
+    /// A source path inside a captured worktree's private administration, split at that administration.
+    struct PrivateAdministrationMatch: Equatable, Sendable {
+        let sourceAdministration: URL
+        let destinationAdministration: URL
+        /// `/`-separated path beneath both administrations; never empty.
+        let remainder: String
     }
 
     private let relocations: [Relocation]
@@ -47,7 +59,9 @@ struct WorktreeForkSourcePathRelocation: Sendable {
             let forkAdministration = plan.commonDirectory.appending(path: "worktrees").appending(
                 path: plan.worktreeName)
             relocations.append(
-                Relocation(source: plan.sourceGitDirectory, disposition: .administration(forkAdministration)))
+                Relocation(
+                    source: plan.sourceGitDirectory, disposition: .administration(forkAdministration),
+                    isPrivateAdministration: true))
         }
         for node in plan.gitTopology.nodes {
             guard let administration = administrationByNode[node.relativePath] else {
@@ -58,7 +72,10 @@ struct WorktreeForkSourcePathRelocation: Sendable {
             for sourceAdministration in Set([node.sourceCommonDirectory, node.sourceGitDirectory])
             where sourceAdministration != plan.commonDirectory {
                 relocations.append(
-                    Relocation(source: sourceAdministration, disposition: .administration(administration)))
+                    Relocation(
+                        source: sourceAdministration, disposition: .administration(administration),
+                        isPrivateAdministration: sourceAdministration == node.sourceGitDirectory
+                            && node.sourceGitDirectory != node.sourceCommonDirectory))
             }
         }
         self.relocations = relocations
@@ -66,14 +83,7 @@ struct WorktreeForkSourcePathRelocation: Sendable {
 
     /// `path` must be canonical (see `canonicalized(absolutePath:)`).
     func counterpart(of path: URL) -> Counterpart {
-        let match =
-            relocations
-            .compactMap { relocation -> (relocation: Relocation, remainder: String)? in
-                WorktreeForkAdministrativeSymlinks.relativeComponents(of: path, beneath: relocation.source)
-                    .map { (relocation, $0) }
-            }
-            .max { $0.relocation.source.pathComponents.count < $1.relocation.source.pathComponents.count }
-        guard let match else {
+        guard let match = longestMatch(of: path) else {
             return .outsideSource
         }
         let destination: URL
@@ -89,6 +99,44 @@ struct WorktreeForkSourcePathRelocation: Sendable {
             destination = administration
         }
         return .relocated(match.remainder.isEmpty ? destination : destination.appending(path: match.remainder))
+    }
+
+    /// The private administration `path` lies beneath when that is the location deciding its counterpart.
+    /// `path` must be canonical.
+    func privateAdministrationMatch(of path: URL) -> PrivateAdministrationMatch? {
+        guard let match = longestMatch(of: path), match.relocation.isPrivateAdministration, !match.remainder.isEmpty,
+            case .administration(let destinationAdministration) = match.relocation.disposition
+        else {
+            return nil
+        }
+        return PrivateAdministrationMatch(
+            sourceAdministration: match.relocation.source, destinationAdministration: destinationAdministration,
+            remainder: match.remainder)
+    }
+
+    /// The source private-administration paths whose counterpart is `destination`. A flattened node's
+    /// destination administration holds both its common and private copies, so only private sources count.
+    func privateAdministrationSources(ofDestination destination: URL) -> [URL] {
+        relocations.compactMap { relocation in
+            guard relocation.isPrivateAdministration,
+                case .administration(let administration) = relocation.disposition,
+                let remainder = WorktreeForkAdministrativeSymlinks.relativeComponents(
+                    of: destination, beneath: administration),
+                !remainder.isEmpty
+            else {
+                return nil
+            }
+            return relocation.source.appending(path: remainder)
+        }
+    }
+
+    private func longestMatch(of path: URL) -> (relocation: Relocation, remainder: String)? {
+        relocations
+            .compactMap { relocation -> (relocation: Relocation, remainder: String)? in
+                WorktreeForkAdministrativeSymlinks.relativeComponents(of: path, beneath: relocation.source)
+                    .map { (relocation, $0) }
+            }
+            .max { $0.relocation.source.pathComponents.count < $1.relocation.source.pathComponents.count }
     }
 
     /// True when some relocated location lies strictly beneath `path`, so a pattern matching below `path` could
