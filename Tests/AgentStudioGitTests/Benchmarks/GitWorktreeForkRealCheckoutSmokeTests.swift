@@ -29,7 +29,8 @@ struct GitWorktreeForkRealCheckoutSmokeTests {
                 sourceWorktreePath: source,
                 destinationPath: destination,
                 mode: .newBranch(name: branch),
-                materialization: .copyOnWrite
+                materialization: .copyOnWrite,
+                copyRules: GitWorktreeCopyRules(ignoredPaths: .copyAll)
             ))
 
         // Assert

@@ -408,7 +408,10 @@ struct LibGit2WorktreeForkWriter: Sendable {
             skippedEntries: plan.filesystem.skippedEntries,
             normalizedEntries: observations.normalizedEntries.sorted {
                 ($0.relativePath, $0.attribute.rawValue) < ($1.relativePath, $1.attribute.rawValue)
-            }
+            },
+            ignoredIncludedPatterns: plan.ignoredIncludedPatterns,
+            ignoredExcludedCount: plan.ignoredExcludedCount,
+            nestedWorktreesSkipped: plan.nestedWorktreesSkipped
         )
     }
 }

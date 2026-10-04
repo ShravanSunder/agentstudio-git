@@ -18,6 +18,9 @@ struct WorktreeForkPlan: Sendable {
     let branchIdentity: WorktreeForkBranchIdentity
     let materialization: GitWorktreeForkMaterialization
     let filesystem: WorktreeForkFilesystemPlan
+    let ignoredIncludedPatterns: [String]
+    let ignoredExcludedCount: Int
+    let nestedWorktreesSkipped: [String]
     let changesOnly: WorktreeForkChangesOnlyPlan?
     let gitTopology: WorktreeForkGitTopology
 }

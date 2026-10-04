@@ -21,6 +21,143 @@ public enum GitWorktreeForkMaterialization: String, Codable, CaseIterable, Hasha
     case changesOnly
 }
 
+public enum GitPathPatternError: Error, Equatable, Hashable, Sendable {
+    case empty
+    case negationNotSupported
+    case malformed
+}
+
+/// A positive gitignore-style path pattern used by copy and lock policies.
+public struct GitPathPattern: Codable, Equatable, Hashable, Sendable {
+    public let rawValue: String
+    private let directoryOnly: Bool
+    private let anchored: Bool
+    private let matchesBasenameOnly: Bool
+    private let anchoredSingleComponent: Bool
+    private let expression: String
+
+    public init(_ rawValue: String) throws(GitPathPatternError) {
+        guard !rawValue.isEmpty else { throw .empty }
+        guard !rawValue.hasPrefix("!") else { throw .negationNotSupported }
+        var body = rawValue
+        directoryOnly = body.hasSuffix("/")
+        if directoryOnly { body.removeLast() }
+        anchored = body.hasPrefix("/")
+        let hadLeadingSlash = anchored
+        if anchored { body.removeFirst() }
+        guard !body.isEmpty, !body.contains("\n") else { throw .malformed }
+        self.rawValue = rawValue
+        matchesBasenameOnly = !anchored && !body.contains("/")
+        anchoredSingleComponent = hadLeadingSlash && !body.contains("/")
+        expression = Self.regex(from: body)
+    }
+
+    public func matches(_ path: String, isDirectory: Bool) -> Bool {
+        guard !directoryOnly || isDirectory else { return false }
+        guard !(anchoredSingleComponent && path.contains("/")) else { return false }
+        let subject =
+            matchesBasenameOnly
+            ? path.split(separator: "/").last.map(String.init) ?? path
+            : path
+        guard let regex = try? NSRegularExpression(pattern: "^(?:\(expression))$") else {
+            return false
+        }
+        let range = NSRange(subject.startIndex..<subject.endIndex, in: subject)
+        return regex.firstMatch(in: subject, range: range) != nil
+    }
+
+    public init(from decoder: Decoder) throws {
+        try self.init(decoder.singleValueContainer().decode(String.self))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
+    private static func regex(from pattern: String) -> String {
+        var result = ""
+        let characters = Array(pattern)
+        var index = 0
+        while index < characters.count {
+            let character = characters[index]
+            if character == "*", index + 1 < characters.count, characters[index + 1] == "*" {
+                let followedBySlash = index + 2 < characters.count && characters[index + 2] == "/"
+                result += followedBySlash ? "(?:.*/)?" : ".*"
+                index += followedBySlash ? 3 : 2
+            } else if character == "*" {
+                result += "[^/]*"
+                index += 1
+            } else if character == "?" {
+                result += "[^/]"
+                index += 1
+            } else {
+                result += NSRegularExpression.escapedPattern(for: String(character))
+                index += 1
+            }
+        }
+        return result
+    }
+}
+
+/// Controls which ignored roots a copy-on-write fork carries from its source worktree.
+public enum GitIgnoredPathPolicy: Equatable, Hashable, Sendable {
+    case copyAll
+    case copyMatching([GitPathPattern])
+}
+
+extension GitIgnoredPathPolicy: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case kind
+        case patterns
+    }
+
+    private enum Kind: String, Codable {
+        case copyAll
+        case copyMatching
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(Kind.self, forKey: .kind) {
+        case .copyAll:
+            guard Set(container.allKeys) == [.kind] else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(codingPath: decoder.codingPath, debugDescription: "copyAll has no patterns")
+                )
+            }
+            self = .copyAll
+        case .copyMatching:
+            guard Set(container.allKeys) == [.kind, .patterns] else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(
+                        codingPath: decoder.codingPath, debugDescription: "copyMatching requires patterns")
+                )
+            }
+            self = .copyMatching(try container.decode([GitPathPattern].self, forKey: .patterns))
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .copyAll:
+            try container.encode(Kind.copyAll, forKey: .kind)
+        case .copyMatching(let patterns):
+            try container.encode(Kind.copyMatching, forKey: .kind)
+            try container.encode(patterns, forKey: .patterns)
+        }
+    }
+}
+
+public struct GitWorktreeCopyRules: Codable, Equatable, Hashable, Sendable {
+    public let ignoredPaths: GitIgnoredPathPolicy
+
+    public init(ignoredPaths: GitIgnoredPathPolicy) {
+        self.ignoredPaths = ignoredPaths
+    }
+}
+
 extension GitForkWorktreeMode: Codable {
     private enum CodingKeys: String, CodingKey {
         case kind
@@ -74,17 +211,20 @@ public struct GitForkWorktreeRequest: Codable, Equatable, Hashable, Sendable {
     public let destinationPath: URL
     public let mode: GitForkWorktreeMode
     public let materialization: GitWorktreeForkMaterialization
+    public let copyRules: GitWorktreeCopyRules
 
     public init(
         sourceWorktreePath: URL,
         destinationPath: URL,
         mode: GitForkWorktreeMode,
-        materialization: GitWorktreeForkMaterialization
+        materialization: GitWorktreeForkMaterialization,
+        copyRules: GitWorktreeCopyRules
     ) {
         self.sourceWorktreePath = sourceWorktreePath
         self.destinationPath = destinationPath
         self.mode = mode
         self.materialization = materialization
+        self.copyRules = copyRules
     }
 }
 
@@ -116,6 +256,9 @@ extension GitWorktreeMaterializationResult: Codable {
         case logicalRegularFileBytes
         case skippedEntries
         case normalizedEntries
+        case ignoredIncludedPatterns
+        case ignoredExcludedCount
+        case nestedWorktreesSkipped
         case trackedChanges
         case untrackedFiles
         case ignoredExcluded
@@ -134,7 +277,8 @@ extension GitWorktreeMaterializationResult: Codable {
             let expectedKeys: Set<CodingKeys> = [
                 .kind, .clonedRegularFileCount, .createdDirectoryCount, .recreatedSymbolicLinkCount,
                 .preservedHardLinkCount, .preservedGitRepositoryCount, .recreatedFIFOCount,
-                .logicalRegularFileBytes, .skippedEntries, .normalizedEntries,
+                .logicalRegularFileBytes, .skippedEntries, .normalizedEntries, .ignoredIncludedPatterns,
+                .ignoredExcludedCount, .nestedWorktreesSkipped,
             ]
             guard Set(container.allKeys) == expectedKeys else {
                 throw Self.invalidPayload(decoder)
@@ -151,7 +295,12 @@ extension GitWorktreeMaterializationResult: Codable {
                     skippedEntries: try container.decode(
                         [GitWorktreeMaterializationSkippedEntry].self, forKey: .skippedEntries),
                     normalizedEntries: try container.decode(
-                        [GitWorktreeMaterializationNormalizedEntry].self, forKey: .normalizedEntries)
+                        [GitWorktreeMaterializationNormalizedEntry].self, forKey: .normalizedEntries),
+                    ignoredIncludedPatterns: try container.decode(
+                        [String].self, forKey: .ignoredIncludedPatterns),
+                    ignoredExcludedCount: try container.decode(Int.self, forKey: .ignoredExcludedCount),
+                    nestedWorktreesSkipped: try container.decode(
+                        [String].self, forKey: .nestedWorktreesSkipped)
                 )
             )
         case .changesOnly:
@@ -192,6 +341,9 @@ extension GitWorktreeMaterializationResult: Codable {
             try container.encode(report.logicalRegularFileBytes, forKey: .logicalRegularFileBytes)
             try container.encode(report.skippedEntries, forKey: .skippedEntries)
             try container.encode(report.normalizedEntries, forKey: .normalizedEntries)
+            try container.encode(report.ignoredIncludedPatterns, forKey: .ignoredIncludedPatterns)
+            try container.encode(report.ignoredExcludedCount, forKey: .ignoredExcludedCount)
+            try container.encode(report.nestedWorktreesSkipped, forKey: .nestedWorktreesSkipped)
         case .changesOnly(let report):
             try container.encode(Kind.changesOnly, forKey: .kind)
             try container.encode(report.trackedChanges, forKey: .trackedChanges)
@@ -283,6 +435,9 @@ public struct GitWorktreeMaterializationReport: Codable, Equatable, Hashable, Se
     public let logicalRegularFileBytes: Int64
     public let skippedEntries: [GitWorktreeMaterializationSkippedEntry]
     public let normalizedEntries: [GitWorktreeMaterializationNormalizedEntry]
+    public let ignoredIncludedPatterns: [String]
+    public let ignoredExcludedCount: Int
+    public let nestedWorktreesSkipped: [String]
 
     public init(
         clonedRegularFileCount: Int,
@@ -293,7 +448,10 @@ public struct GitWorktreeMaterializationReport: Codable, Equatable, Hashable, Se
         recreatedFIFOCount: Int,
         logicalRegularFileBytes: Int64,
         skippedEntries: [GitWorktreeMaterializationSkippedEntry],
-        normalizedEntries: [GitWorktreeMaterializationNormalizedEntry]
+        normalizedEntries: [GitWorktreeMaterializationNormalizedEntry],
+        ignoredIncludedPatterns: [String],
+        ignoredExcludedCount: Int,
+        nestedWorktreesSkipped: [String]
     ) {
         self.clonedRegularFileCount = clonedRegularFileCount
         self.createdDirectoryCount = createdDirectoryCount
@@ -304,6 +462,9 @@ public struct GitWorktreeMaterializationReport: Codable, Equatable, Hashable, Se
         self.logicalRegularFileBytes = logicalRegularFileBytes
         self.skippedEntries = skippedEntries
         self.normalizedEntries = normalizedEntries
+        self.ignoredIncludedPatterns = ignoredIncludedPatterns
+        self.ignoredExcludedCount = ignoredExcludedCount
+        self.nestedWorktreesSkipped = nestedWorktreesSkipped
     }
 }
 

@@ -51,6 +51,27 @@ struct SparseCheckoutMatcher: Sendable {
         }
     }
 
+    /// Evaluates an allowlist of gitignore-style patterns against a path and its ancestors. This is
+    /// used by copy-on-write filtering, where a matching ignored directory carries its whole subtree.
+    func matchesAnyAncestor(_ path: String, isDirectory: Bool) -> Bool {
+        guard case .patterns(let patterns) = mode else {
+            return false
+        }
+        var candidates = [path]
+        var ancestor = WorktreeForkDescriptors.splitParent(path).parent
+        while !ancestor.isEmpty {
+            candidates.append(ancestor)
+            ancestor = WorktreeForkDescriptors.splitParent(ancestor).parent
+        }
+        for candidate in candidates {
+            let candidateIsDirectory = candidate == path ? isDirectory : true
+            if patternDecision(patterns, path: candidate, isDirectory: candidateIsDirectory) == true {
+                return true
+            }
+        }
+        return false
+    }
+
     /// Non-cone rule: the last matching pattern decides; an undecided path inherits its nearest decided
     /// parent directory; with nothing decided the path is outside the checkout.
     private func inheritedDecision(_ patterns: [SparsePattern], _ path: String) -> Bool {

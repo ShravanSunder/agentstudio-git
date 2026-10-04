@@ -27,13 +27,15 @@ struct GitWorktreeForkFixture {
     func request(
         destination: URL? = nil,
         mode: GitForkWorktreeMode = .newBranch(name: "fork"),
-        materialization: GitWorktreeForkMaterialization = .copyOnWrite
+        materialization: GitWorktreeForkMaterialization = .copyOnWrite,
+        copyRules: GitWorktreeCopyRules = GitWorktreeCopyRules(ignoredPaths: .copyAll)
     ) -> GitForkWorktreeRequest {
         GitForkWorktreeRequest(
             sourceWorktreePath: source,
             destinationPath: destination ?? self.destination(),
             mode: mode,
-            materialization: materialization
+            materialization: materialization,
+            copyRules: copyRules
         )
     }
 

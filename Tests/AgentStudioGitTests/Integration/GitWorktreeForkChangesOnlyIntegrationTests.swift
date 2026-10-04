@@ -47,7 +47,8 @@ struct GitWorktreeForkChangesOnlyIntegrationTests {
             sourceWorktreePath: fixture.source,
             destinationPath: destination,
             mode: .newBranch(name: "fork-changes-only"),
-            materialization: .changesOnly
+            materialization: .changesOnly,
+            copyRules: GitWorktreeCopyRules(ignoredPaths: .copyAll)
         )
 
         // Act
