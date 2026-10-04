@@ -70,7 +70,11 @@ struct GitWorktreeForkStorageIntegrationTests {
         try FileManager.default.createSymbolicLink(
             atPath: source.appending(path: "link-out").path, withDestinationPath: "/etc/hosts")
         try fixture.write("bin/tool", "#!/bin/sh\n")
-        #expect(chmod(source.appending(path: "bin/tool").path, 0o4755) == 0)
+        // The host sandbox can silently strip setuid while chmod returns success. Verify the source
+        // precondition here so a restricted fixture is not misdiagnosed as missing clone evidence.
+        try #require(chmod(source.appending(path: "bin/tool").path, 0o4755) == 0)
+        let sourceTool = try #require(GitWorktreeForkFileProbe.info(source.appending(path: "bin/tool")))
+        try #require(sourceTool.st_mode & S_ISUID != 0)
         try fixture.write("linked/a.txt", "shared inode\n")
         #expect(link(source.appending(path: "linked/a.txt").path, source.appending(path: "b.txt").path) == 0)
         try fixture.write("sealed/inner.txt", "inside read-only directory\n")
@@ -105,10 +109,15 @@ struct GitWorktreeForkStorageIntegrationTests {
         #expect(
             try FileManager.default.destinationOfSymbolicLink(atPath: destination.appending(path: "link-in").path)
                 == "README.md")
+        // clonefile may retain setuid on this host. A loss is permitted only when the report names it;
+        // retaining the bit must not be reported as a loss.
+        let destinationTool = try #require(GitWorktreeForkFileProbe.info(destination.appending(path: "bin/tool")))
+        #expect(destinationTool.st_mode & 0o1777 == sourceTool.st_mode & 0o1777)
         #expect(
             report.normalizedEntries.contains(
                 GitWorktreeMaterializationNormalizedEntry(
-                    relativePath: "bin/tool", attribute: .setUserIDBit, reason: .clearedByCopyOnWriteClone)))
+                    relativePath: "bin/tool", attribute: .setUserIDBit, reason: .clearedByCopyOnWriteClone))
+                == (destinationTool.st_mode & S_ISUID == 0))
         #expect(report.preservedHardLinkCount == 1)
         let destinationA = try #require(GitWorktreeForkFileProbe.info(destination.appending(path: "linked/a.txt")))
         let destinationB = try #require(GitWorktreeForkFileProbe.info(destination.appending(path: "b.txt")))

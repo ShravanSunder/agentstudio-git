@@ -264,31 +264,45 @@ struct GitWorktreeForkNestedRepositoryIntegrationTests {
         #expect(try fixture.blobID("HEAD", at: destinationLibrary) == fixture.blobID("HEAD", at: sourceLibrary))
     }
 
-    @Test("a linked worktree of the source repository nested inside the source is re-homed as its own repository")
-    func nestedLinkedWorktreeOfSourceRepositoryIsRehomed() async throws {
+    @Test(
+        "a linked worktree of the source repository is skipped without changing its registration or working state",
+        arguments: [".worktrees", "tracked"], [GitIgnoredPathPolicy.copyAll, .copyMatching([])])
+    func nestedLinkedWorktreeOfSourceRepositoryIsSkipped(folder: String, policy: GitIgnoredPathPolicy) async throws {
         // Arrange: the `.worktrees/<name>` layout, whose administration lives in the source's own `.git/worktrees`.
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-own-linked-worktree")
         defer { fixture.remove() }
         try ignore(".worktrees/", fixture: fixture)
-        let sourceInner = fixture.source.appending(path: ".worktrees/inner")
+        try fixture.write("tracked/marker.txt", "tracked folder\n")
+        try fixture.git.run("add", "tracked/marker.txt")
+        try fixture.git.run("commit", "-qm", "tracked folder")
+        let relativeInner = "\(folder)/inner"
+        let sourceInner = fixture.source.appending(path: relativeInner)
         try fixture.git.run("worktree", "add", "-q", "-b", "inner", sourceInner.path)
         try fixture.write("inner.txt", "untracked in nested worktree\n", in: sourceInner)
         let innerStatus = try fixture.statusLines(at: sourceInner)
+        let innerHead = try fixture.blobID("HEAD", at: sourceInner)
+        let sourceGitfile = try Data(contentsOf: sourceInner.appending(path: ".git"))
+        let registration = fixture.linkedWorktreeAdministration("inner")
+        let registeredGitfile = try Data(contentsOf: registration.appending(path: "gitdir"))
+        let registeredCommon = try Data(contentsOf: registration.appending(path: "commondir"))
         let destination = fixture.destination()
 
         // Act
-        _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+        let result = try await LibGit2AgentStudioGitLocalClient().forkWorktree(
+            fixture.request(copyRules: GitWorktreeCopyRules(ignoredPaths: policy)))
 
         // Assert
-        let destinationInner = destination.appending(path: ".worktrees/inner")
-        #expect(try fixture.statusLines(at: destinationInner) == innerStatus)
-        #expect(try fixture.blobID("HEAD", at: destinationInner) == fixture.blobID("HEAD", at: sourceInner))
-        #expect(
-            try absoluteGitDirectory(destinationInner, fixture)
-                == canonical(destinationInner.appending(path: ".git")).path)
-        let innerWorktrees = try fixture.git.run(
-            ["worktree", "list", "--porcelain"], currentDirectory: destinationInner)
-        #expect(innerWorktrees.split(separator: "\n").filter { $0.hasPrefix("worktree ") }.count == 1)
+        #expect(!GitWorktreeForkFileProbe.exists(destination.appending(path: relativeInner)))
+        guard case .copyOnWrite(let report) = result.materialization else {
+            Issue.record("expected copy-on-write result")
+            return
+        }
+        #expect(report.nestedWorktreesSkipped == [relativeInner])
+        #expect(try fixture.statusLines(at: sourceInner) == innerStatus)
+        #expect(try fixture.blobID("HEAD", at: sourceInner) == innerHead)
+        #expect(try Data(contentsOf: sourceInner.appending(path: ".git")) == sourceGitfile)
+        #expect(try Data(contentsOf: registration.appending(path: "gitdir")) == registeredGitfile)
+        #expect(try Data(contentsOf: registration.appending(path: "commondir")) == registeredCommon)
         let sourceWorktrees = try fixture.git.run("worktree", "list", "--porcelain")
         #expect(sourceWorktrees.split(separator: "\n").filter { $0.hasPrefix("worktree ") }.count == 3)
     }

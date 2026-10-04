@@ -106,6 +106,18 @@ struct GitWorktreeForkFixture {
     func remove() {
         repository.remove()
     }
+
+    /// An independent repository whose linked worktrees must still be re-homed by the fork. It is
+    /// outside the copied tree, so only its nested linked working trees enter the filesystem plan.
+    func makeIndependentWorktreeRepository() throws -> URL {
+        let origin = repository.root.appending(path: "nested-origin")
+        try FileManager.default.createDirectory(at: origin, withIntermediateDirectories: true)
+        try git.run(["init", "-q"], currentDirectory: origin)
+        try write("nested.txt", "independent repository\n", in: origin)
+        try git.run(["add", "."], currentDirectory: origin)
+        try git.run(["commit", "-qm", "independent initial"], currentDirectory: origin)
+        return origin
+    }
 }
 
 struct GitIndexStatOracle: Equatable {

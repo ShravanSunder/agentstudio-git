@@ -6,6 +6,32 @@ import Testing
 /// destination counterpart (re-homed administration first, then the destination tree); outside they stay.
 @Suite("Git worktree fork nested configuration integration", .serialized)
 struct GitWorktreeForkNestedConfigurationIntegrationTests {
+    @Test("a same-repository nested worktree's private paths are skipped and reported")
+    func sameRepositoryPrivatePathsAreSkipped() async throws {
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-config-skipped")
+        defer { fixture.remove() }
+        try ignore(".claude/", fixture: fixture)
+        let relativePath = ".claude/worktrees/agent"
+        try fixture.git.run("worktree", "add", "-q", "-b", "agent", fixture.source.appending(path: relativePath).path)
+        let signers = fixture.linkedWorktreeAdministration("agent").appending(path: "allowed_signers")
+        try "original signers\n".write(to: signers, atomically: false, encoding: .utf8)
+        try fixture.git.run("config", "gpg.ssh.allowedSignersFile", signers.path)
+        let config = fixture.source.appending(path: ".git/config")
+        let configBytes = try Data(contentsOf: config)
+        let signerBytes = try Data(contentsOf: signers)
+
+        let result = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+
+        guard case .copyOnWrite(let report) = result.materialization else {
+            Issue.record("expected copy-on-write result")
+            return
+        }
+        #expect(report.nestedWorktreesSkipped == [relativePath])
+        #expect(!GitWorktreeForkFileProbe.exists(fixture.destination().appending(path: relativePath)))
+        #expect(try Data(contentsOf: config) == configBytes)
+        #expect(try Data(contentsOf: signers) == signerBytes)
+    }
+
     @Test("an absolute include into a nested repository's source .git follows the re-homed administration")
     func nestedIncludeFollowsRehomedAdministration() async throws {
         // Arrange
@@ -142,6 +168,7 @@ struct GitWorktreeForkNestedConfigurationIntegrationTests {
         // Arrange: the real-checkout shape. Agent worktrees of the source repository live in an ignored folder,
         // and the shared repository config names a file in a third worktree's private administration.
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-config-other-worktree")
+        let nestedOrigin = try fixture.makeIndependentWorktreeRepository()
         defer { fixture.remove() }
         try ignore(".claude/", fixture: fixture)
         let other = fixture.repository.root.appending(path: "other-worktree")
@@ -149,9 +176,9 @@ struct GitWorktreeForkNestedConfigurationIntegrationTests {
         let signers = try canonical(fixture.source.appending(path: ".git/worktrees/other-worktree"))
             .appending(path: "allowed_signers")
         try "signers\n".write(to: signers, atomically: false, encoding: .utf8)
-        try fixture.git.run("config", "gpg.ssh.allowedSignersFile", signers.path)
+        try fixture.git.run(["config", "gpg.ssh.allowedSignersFile", signers.path], currentDirectory: nestedOrigin)
         let agent = fixture.source.appending(path: ".claude/worktrees/agent")
-        try fixture.git.run("worktree", "add", "-q", "-b", "agent", agent.path)
+        try fixture.git.run(["worktree", "add", "-q", "-b", "agent", agent.path], currentDirectory: nestedOrigin)
         let destination = fixture.destination()
 
         // Act
@@ -169,13 +196,14 @@ struct GitWorktreeForkNestedConfigurationIntegrationTests {
     func nestedWorktreePrivatePathFollowsDestinationAdministration() async throws {
         // Arrange
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-config-own-private")
+        let nestedOrigin = try fixture.makeIndependentWorktreeRepository()
         defer { fixture.remove() }
         try ignore(".claude/", fixture: fixture)
         let agent = fixture.source.appending(path: ".claude/worktrees/agent")
-        try fixture.git.run("worktree", "add", "-q", "-b", "agent", agent.path)
-        let signers = try canonical(fixture.source.appending(path: ".git/worktrees/agent"))
+        try fixture.git.run(["worktree", "add", "-q", "-b", "agent", agent.path], currentDirectory: nestedOrigin)
+        let signers = try canonical(nestedOrigin.appending(path: ".git/worktrees/agent"))
             .appending(path: "allowed_signers")
-        try fixture.git.run("config", "gpg.ssh.allowedSignersFile", signers.path)
+        try fixture.git.run(["config", "gpg.ssh.allowedSignersFile", signers.path], currentDirectory: nestedOrigin)
         let destination = fixture.destination()
 
         // Act

@@ -12,29 +12,63 @@ import Testing
 struct GitWorktreeForkPrivateAdminIntegrationTests {
     private static let probeAttributeName = "com.example.forklab"
 
+    @Test("same-repository nested worktrees are skipped before private includes or signer files are re-homed")
+    func sameRepositoryPrivateAdministrationIsSkipped() async throws {
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-private-skipped")
+        defer { fixture.remove() }
+        try ignore(".claude/", fixture: fixture)
+        let relativePath = ".claude/worktrees/agent"
+        let agent = fixture.source.appending(path: relativePath)
+        try fixture.git.run("worktree", "add", "-q", "-b", "agent", agent.path)
+        let administration = fixture.linkedWorktreeAdministration("agent")
+        let signers = administration.appending(path: "allowed_signers")
+        try #require(mkfifo(signers.path, 0o644) == 0)
+        let extra = administration.appending(path: "extra.conf")
+        try "[agentstudio]\n\tmarker = private-original\n".write(to: extra, atomically: false, encoding: .utf8)
+        try fixture.git.run("config", "gpg.ssh.allowedSignersFile", signers.path)
+        try fixture.git.run("config", "include.path", extra.path)
+        let sourceConfig = try Data(contentsOf: fixture.source.appending(path: ".git/config"))
+        let privateBytes = try Data(contentsOf: extra)
+        let sourceGitfile = try Data(contentsOf: agent.appending(path: ".git"))
+
+        let result = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+
+        guard case .copyOnWrite(let report) = result.materialization else {
+            Issue.record("expected copy-on-write result")
+            return
+        }
+        #expect(report.nestedWorktreesSkipped == [relativePath])
+        #expect(!GitWorktreeForkFileProbe.exists(fixture.destination().appending(path: relativePath)))
+        #expect(try Data(contentsOf: fixture.source.appending(path: ".git/config")) == sourceConfig)
+        #expect(try Data(contentsOf: extra) == privateBytes)
+        #expect(try Data(contentsOf: agent.appending(path: ".git")) == sourceGitfile)
+        #expect(try configValue("agentstudio.marker", at: agent, fixture) == "private-original")
+    }
+
     @Test("files a nested worktree's config names in its private administration are cloned with their metadata")
     func privateAdministrationTargetsAreClonedWithMetadata() async throws {
         // Arrange
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-private-targets")
+        let nestedOrigin = try fixture.makeIndependentWorktreeRepository()
         let agent = fixture.source.appending(path: ".claude/worktrees/agent")
         let destinationAgent = fixture.destination().appending(path: ".claude/worktrees/agent")
         defer {
-            for administration in [fixture.source.appending(path: ".git/worktrees/agent"), destinationAgent] {
+            for administration in [nestedOrigin.appending(path: ".git/worktrees/agent"), destinationAgent] {
                 _ = chmod(administration.appending(path: "allowed_signers").path, 0o644)
             }
             fixture.remove()
         }
         try ignore(".claude/", fixture: fixture)
-        try fixture.git.run("worktree", "add", "-q", "-b", "agent", agent.path)
-        let privateAdministration = try canonical(fixture.source.appending(path: ".git/worktrees/agent"))
+        try fixture.git.run(["worktree", "add", "-q", "-b", "agent", agent.path], currentDirectory: nestedOrigin)
+        let privateAdministration = try canonical(nestedOrigin.appending(path: ".git/worktrees/agent"))
         let signers = privateAdministration.appending(path: "allowed_signers")
         let extra = privateAdministration.appending(path: "extra.conf")
         try "agent@example.com ssh-ed25519 AAAAexample\n".write(to: signers, atomically: false, encoding: .utf8)
         try "[agentstudio]\n\tprobe = from-private\n".write(to: extra, atomically: false, encoding: .utf8)
         try #require(setxattr(signers.path, Self.probeAttributeName, "x", 1, 0, XATTR_NOFOLLOW) == 0)
         try #require(chmod(signers.path, 0o444) == 0)
-        try fixture.git.run("config", "gpg.ssh.allowedSignersFile", signers.path)
-        try fixture.git.run("config", "include.path", extra.path)
+        try fixture.git.run(["config", "gpg.ssh.allowedSignersFile", signers.path], currentDirectory: nestedOrigin)
+        try fixture.git.run(["config", "include.path", extra.path], currentDirectory: nestedOrigin)
 
         // Act
         _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
@@ -66,17 +100,18 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
         // Arrange: the flattened node's administration is cloned from the common directory, which holds its own
         // extra.conf and allowed_signers. Git reads the worktree-private files the config names.
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-private-wins")
+        let nestedOrigin = try fixture.makeIndependentWorktreeRepository()
         let agent = fixture.source.appending(path: ".claude/worktrees/agent")
         let destinationAgent = fixture.destination().appending(path: ".claude/worktrees/agent")
         defer {
-            for administration in [fixture.source.appending(path: ".git/worktrees/agent"), destinationAgent] {
+            for administration in [nestedOrigin.appending(path: ".git/worktrees/agent"), destinationAgent] {
                 _ = chmod(administration.appending(path: "allowed_signers").path, 0o644)
             }
             fixture.remove()
         }
         try ignore(".claude/", fixture: fixture)
-        try fixture.git.run("worktree", "add", "-q", "-b", "agent", agent.path)
-        let commonAdministration = try canonical(fixture.source.appending(path: ".git"))
+        try fixture.git.run(["worktree", "add", "-q", "-b", "agent", agent.path], currentDirectory: nestedOrigin)
+        let commonAdministration = try canonical(nestedOrigin.appending(path: ".git"))
         try "common@example.com ssh-ed25519 AAAAcommon\n".write(
             to: commonAdministration.appending(path: "allowed_signers"), atomically: false, encoding: .utf8)
         try "[agentstudio]\n\tprobe = from-common\n".write(
@@ -88,8 +123,8 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
         try "[agentstudio]\n\tprobe = from-private\n".write(to: extra, atomically: false, encoding: .utf8)
         try #require(setxattr(signers.path, Self.probeAttributeName, "x", 1, 0, XATTR_NOFOLLOW) == 0)
         try #require(chmod(signers.path, 0o444) == 0)
-        try fixture.git.run("config", "gpg.ssh.allowedSignersFile", signers.path)
-        try fixture.git.run("config", "include.path", extra.path)
+        try fixture.git.run(["config", "gpg.ssh.allowedSignersFile", signers.path], currentDirectory: nestedOrigin)
+        try fixture.git.run(["config", "include.path", extra.path], currentDirectory: nestedOrigin)
 
         // Act
         _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
@@ -111,16 +146,17 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
         // Arrange: the root .git/extra.conf says common-file; the nested worktree's private extra.conf says
         // private-file, and the shared config includes the private one.
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-a58-02")
+        let nestedOrigin = try fixture.makeIndependentWorktreeRepository()
         defer { fixture.remove() }
         try ignore(".claude/", fixture: fixture)
         let agent = fixture.source.appending(path: ".claude/worktrees/agent")
-        try fixture.git.run("worktree", "add", "-q", "-b", "agent", agent.path)
-        let commonAdministration = try canonical(fixture.source.appending(path: ".git"))
+        try fixture.git.run(["worktree", "add", "-q", "-b", "agent", agent.path], currentDirectory: nestedOrigin)
+        let commonAdministration = try canonical(nestedOrigin.appending(path: ".git"))
         try "[agentstudio]\n\tmarker = common-file\n".write(
             to: commonAdministration.appending(path: "extra.conf"), atomically: false, encoding: .utf8)
         let privateExtra = commonAdministration.appending(path: "worktrees/agent/extra.conf")
         try "[agentstudio]\n\tmarker = private-file\n".write(to: privateExtra, atomically: false, encoding: .utf8)
-        try fixture.git.run("config", "include.path", privateExtra.path)
+        try fixture.git.run(["config", "include.path", privateExtra.path], currentDirectory: nestedOrigin)
         #expect(try configValue("agentstudio.marker", at: agent, fixture) == "private-file")
         let sourceConfiguration = try Data(contentsOf: commonAdministration.appending(path: "config"))
 
@@ -197,21 +233,22 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
         // Arrange: private extra.conf includes private deeper.conf by absolute source path and names a source-tree
         // lfs.storage, so its destination copy must differ from its source by exactly those relocations.
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-private-rewritten")
+        let nestedOrigin = try fixture.makeIndependentWorktreeRepository()
         defer { fixture.remove() }
         try fixture.write(".gitignore", ".claude/\nlarge-file-store/\n")
         try fixture.git.run("add", ".gitignore")
         try fixture.git.run("commit", "-qm", "ignore agents and storage")
         try fixture.write("large-file-store/objects/placeholder", "stored\n")
         let agent = fixture.source.appending(path: ".claude/worktrees/agent")
-        try fixture.git.run("worktree", "add", "-q", "-b", "agent", agent.path)
-        let privateAdministration = try canonical(fixture.source.appending(path: ".git/worktrees/agent"))
+        try fixture.git.run(["worktree", "add", "-q", "-b", "agent", agent.path], currentDirectory: nestedOrigin)
+        let privateAdministration = try canonical(nestedOrigin.appending(path: ".git/worktrees/agent"))
         let extra = privateAdministration.appending(path: "extra.conf")
         let deeper = privateAdministration.appending(path: "deeper.conf")
         let storage = try canonical(fixture.source.appending(path: "large-file-store"))
         try "[agentstudio]\n\tmarker = private-original\n".write(to: deeper, atomically: false, encoding: .utf8)
         try "[include]\n\tpath = \(deeper.path)\n[lfs]\n\tstorage = \(storage.path)\n".write(
             to: extra, atomically: false, encoding: .utf8)
-        try fixture.git.run("config", "include.path", extra.path)
+        try fixture.git.run(["config", "include.path", extra.path], currentDirectory: nestedOrigin)
         #expect(try configValue("agentstudio.marker", at: agent, fixture) == "private-original")
         let extraBytes = try Data(contentsOf: extra)
 
@@ -233,19 +270,20 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
     func repeatedRelocatedValueKeepsOrderAndMultiplicity() async throws {
         // Arrange: private extra.conf lists one source-tree path, an outside path, and the source-tree path again.
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-private-repeated")
+        let nestedOrigin = try fixture.makeIndependentWorktreeRepository()
         defer { fixture.remove() }
         try fixture.write(".gitignore", ".claude/\nlarge-file-store/\n")
         try fixture.git.run("add", ".gitignore")
         try fixture.git.run("commit", "-qm", "ignore agents and storage")
         try fixture.write("large-file-store/objects/placeholder", "stored\n")
         let agent = fixture.source.appending(path: ".claude/worktrees/agent")
-        try fixture.git.run("worktree", "add", "-q", "-b", "agent", agent.path)
-        let extra = try canonical(fixture.source.appending(path: ".git/worktrees/agent")).appending(path: "extra.conf")
+        try fixture.git.run(["worktree", "add", "-q", "-b", "agent", agent.path], currentDirectory: nestedOrigin)
+        let extra = try canonical(nestedOrigin.appending(path: ".git/worktrees/agent")).appending(path: "extra.conf")
         let storage = try canonical(fixture.source.appending(path: "large-file-store")).path
         let outside = try canonical(fixture.repository.root).appending(path: "outside-store").path
         try "[agentstudio]\n\tstore = \(storage)\n\tstore = \(outside)\n\tstore = \(storage)\n".write(
             to: extra, atomically: false, encoding: .utf8)
-        try fixture.git.run("config", "include.path", extra.path)
+        try fixture.git.run(["config", "include.path", extra.path], currentDirectory: nestedOrigin)
 
         // Act
         _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
@@ -264,6 +302,7 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
         // Arrange: worktrees a and b share the common config, which includes a's private extra.conf; that file
         // names a source-tree lfs.storage the re-homer must relocate in the realized copy.
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-private-twice")
+        let nestedOrigin = try fixture.makeIndependentWorktreeRepository()
         defer { fixture.remove() }
         try fixture.write(".gitignore", ".claude/\nlarge-file-store/\n")
         try fixture.git.run("add", ".gitignore")
@@ -271,12 +310,16 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
         try fixture.write("large-file-store/objects/placeholder", "stored\n")
         for name in ["a", "b"] {
             try fixture.git.run(
-                "worktree", "add", "-q", "-b", name, fixture.source.appending(path: ".claude/worktrees/\(name)").path)
+                [
+                    "worktree", "add", "-q", "-b", name,
+                    fixture.source.appending(path: ".claude/worktrees/\(name)").path,
+                ],
+                currentDirectory: nestedOrigin)
         }
-        let extra = try canonical(fixture.source.appending(path: ".git/worktrees/a")).appending(path: "extra.conf")
+        let extra = try canonical(nestedOrigin.appending(path: ".git/worktrees/a")).appending(path: "extra.conf")
         let storage = try canonical(fixture.source.appending(path: "large-file-store"))
         try "[lfs]\n\tstorage = \(storage.path)\n".write(to: extra, atomically: false, encoding: .utf8)
-        try fixture.git.run("config", "include.path", extra.path)
+        try fixture.git.run(["config", "include.path", extra.path], currentDirectory: nestedOrigin)
 
         // Act
         _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
@@ -335,19 +378,20 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
     func tamperedPrivateCounterpartFailsValidation(tampering: TamperedCounterpart) async throws {
         // Arrange: re-homing clones both private files; a fault then breaks one before validation runs.
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-private-tampered")
+        let nestedOrigin = try fixture.makeIndependentWorktreeRepository()
         defer { fixture.remove() }
         try ignore(".claude/", fixture: fixture)
         let agent = fixture.source.appending(path: ".claude/worktrees/agent")
-        try fixture.git.run("worktree", "add", "-q", "-b", "agent", agent.path)
-        let privateAdministration = try canonical(fixture.source.appending(path: ".git/worktrees/agent"))
+        try fixture.git.run(["worktree", "add", "-q", "-b", "agent", agent.path], currentDirectory: nestedOrigin)
+        let privateAdministration = try canonical(nestedOrigin.appending(path: ".git/worktrees/agent"))
         let signers = privateAdministration.appending(path: "allowed_signers")
         let extra = privateAdministration.appending(path: "extra.conf")
         try "agent@example.com ssh-ed25519 AAAAexample\n".write(to: signers, atomically: false, encoding: .utf8)
         // A repeated key: Git's effective value is the last occurrence, so dropping it changes behavior.
         try "[agentstudio]\n\tprobe = one\n\tprobe = two\n\tprobe = one\n".write(
             to: extra, atomically: false, encoding: .utf8)
-        try fixture.git.run("config", "gpg.ssh.allowedSignersFile", signers.path)
-        try fixture.git.run("config", "include.path", extra.path)
+        try fixture.git.run(["config", "gpg.ssh.allowedSignersFile", signers.path], currentDirectory: nestedOrigin)
+        try fixture.git.run(["config", "include.path", extra.path], currentDirectory: nestedOrigin)
         let destinationAdministration = fixture.destination().appending(path: ".claude/worktrees/agent/.git")
         let faults = WorktreeForkFaultInjector { point throws(GitWorktreeForkError) in
             guard point == .afterGitStateRehomed else {
@@ -451,14 +495,15 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
     func uncloneablePrivateAdministrationTargetFails() async throws {
         // Arrange: the named signer file is a FIFO, which has no CoW payload to give the destination.
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-private-special")
+        let nestedOrigin = try fixture.makeIndependentWorktreeRepository()
         defer { fixture.remove() }
         try ignore(".claude/", fixture: fixture)
         let agent = fixture.source.appending(path: ".claude/worktrees/agent")
-        try fixture.git.run("worktree", "add", "-q", "-b", "agent", agent.path)
-        let signers = try canonical(fixture.source.appending(path: ".git/worktrees/agent"))
+        try fixture.git.run(["worktree", "add", "-q", "-b", "agent", agent.path], currentDirectory: nestedOrigin)
+        let signers = try canonical(nestedOrigin.appending(path: ".git/worktrees/agent"))
             .appending(path: "allowed_signers")
         try #require(mkfifo(signers.path, 0o644) == 0)
-        try fixture.git.run("config", "gpg.ssh.allowedSignersFile", signers.path)
+        try fixture.git.run(["config", "gpg.ssh.allowedSignersFile", signers.path], currentDirectory: nestedOrigin)
         let branchesBefore = try fixture.branchNames()
 
         // Act

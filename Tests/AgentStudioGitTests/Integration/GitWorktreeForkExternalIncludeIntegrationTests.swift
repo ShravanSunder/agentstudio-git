@@ -8,21 +8,50 @@ import Testing
 /// `~/`): never edited, read with their own includes, and refused when they still name relocated source state.
 @Suite("Git worktree fork external include integration", .serialized)
 struct GitWorktreeForkExternalIncludeIntegrationTests {
+    @Test("a shared include naming a skipped same-repository worktree remains unchanged")
+    func sharedIncludeNamingSkippedWorktreeIsUnchanged() async throws {
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-include-skipped")
+        defer { fixture.remove() }
+        try ignore(".claude/", fixture: fixture)
+        let relativePath = ".claude/worktrees/agent"
+        try fixture.git.run("worktree", "add", "-q", "-b", "agent", fixture.source.appending(path: relativePath).path)
+        let common = try canonical(fixture.source.appending(path: ".git"))
+        let first = common.appending(path: "a.conf")
+        let second = common.appending(path: "b.conf")
+        try "[include]\n\tpath = b.conf\n".write(to: first, atomically: false, encoding: .utf8)
+        try "[core]\n\thooksPath = \(common.path)/worktrees/agent/hooks\n"
+            .write(to: second, atomically: false, encoding: .utf8)
+        try fixture.git.run("config", "include.path", first.path)
+        let before = [try Data(contentsOf: first), try Data(contentsOf: second)]
+
+        let result = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+
+        guard case .copyOnWrite(let report) = result.materialization else {
+            Issue.record("expected copy-on-write result")
+            return
+        }
+        #expect(report.nestedWorktreesSkipped == [relativePath])
+        #expect(!GitWorktreeForkFileProbe.exists(fixture.destination().appending(path: relativePath)))
+        #expect([try Data(contentsOf: first), try Data(contentsOf: second)] == before)
+    }
+
     @Test("a shared include naming a captured worktree's private administration refuses the fork, unedited")
     func sharedIncludeEscapingIntoCapturedPrivateAdministrationRefuses() async throws {
         // Arrange: the shared repository config includes a common-directory file whose core.hooksPath names
         // the private administration of a nested linked worktree the fork captures. The fork may not edit
         // that shared file, and keeping it would leave the destination reading source-private state.
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-include-shared-escape")
+        let nestedOrigin = try fixture.makeIndependentWorktreeRepository()
         defer { fixture.remove() }
         try ignore(".claude/", fixture: fixture)
         let agent = fixture.source.appending(path: ".claude/worktrees/agent")
-        try fixture.git.run("worktree", "add", "-q", "-b", "agent", agent.path)
+        try fixture.git.run(["worktree", "add", "-q", "-b", "agent", agent.path], currentDirectory: nestedOrigin)
         let common = try canonical(fixture.source.appending(path: ".git"))
+        let agentPrivate = try canonical(nestedOrigin.appending(path: ".git/worktrees/agent"))
         let sharedInclude = common.appending(path: "shared-hooks.conf")
-        try "[core]\n\thooksPath = \(common.path)/worktrees/agent/hooks\n"
+        try "[core]\n\thooksPath = \(agentPrivate.path)/hooks\n"
             .write(to: sharedInclude, atomically: false, encoding: .utf8)
-        try fixture.git.run("config", "include.path", sharedInclude.path)
+        try fixture.git.run(["config", "include.path", sharedInclude.path], currentDirectory: nestedOrigin)
         let sharedBytes = try Data(contentsOf: sharedInclude)
         let branchesBefore = try fixture.branchNames()
 
@@ -39,7 +68,7 @@ struct GitWorktreeForkExternalIncludeIntegrationTests {
         #expect(
             failure
                 == .entryFailed(
-                    relativePath: ".claude/worktrees/agent/.git/config: core.hookspath = .git/worktrees/agent/hooks",
+                    relativePath: ".claude/worktrees/agent/.git/config: core.hookspath = hooks",
                     reason: .unresolvableGitAdministration, errorNumber: nil))
         #expect(!GitWorktreeForkFileProbe.exists(fixture.destination()))
         #expect(try fixture.branchNames() == branchesBefore)
@@ -80,18 +109,21 @@ struct GitWorktreeForkExternalIncludeIntegrationTests {
         // Arrange: the shared repository config includes a.conf, which includes b.conf by a relative path, and
         // b.conf points core.hooksPath into a captured nested worktree's private administration.
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-include-chain-escape")
+        let nestedOrigin = try fixture.makeIndependentWorktreeRepository()
         defer { fixture.remove() }
         try ignore(".claude/", fixture: fixture)
         try fixture.git.run(
-            "worktree", "add", "-q", "-b", "agent", fixture.source.appending(path: ".claude/worktrees/agent").path)
+            ["worktree", "add", "-q", "-b", "agent", fixture.source.appending(path: ".claude/worktrees/agent").path],
+            currentDirectory: nestedOrigin)
         let common = try canonical(fixture.source.appending(path: ".git"))
+        let agentPrivate = try canonical(nestedOrigin.appending(path: ".git/worktrees/agent"))
         let directory = location == .sharedRepository ? common : try canonical(fixture.repository.root)
         let first = directory.appending(path: "a.conf")
         let second = directory.appending(path: "b.conf")
         try "[include]\n\tpath = b.conf\n".write(to: first, atomically: false, encoding: .utf8)
-        try "[core]\n\thooksPath = \(common.path)/worktrees/agent/hooks\n"
+        try "[core]\n\thooksPath = \(agentPrivate.path)/hooks\n"
             .write(to: second, atomically: false, encoding: .utf8)
-        try fixture.git.run("config", "include.path", first.path)
+        try fixture.git.run(["config", "include.path", first.path], currentDirectory: nestedOrigin)
         let externalBytes = [try Data(contentsOf: first), try Data(contentsOf: second)]
         let branchesBefore = try fixture.branchNames()
 
@@ -108,7 +140,7 @@ struct GitWorktreeForkExternalIncludeIntegrationTests {
         #expect(
             failure
                 == .entryFailed(
-                    relativePath: ".claude/worktrees/agent/.git/config: core.hookspath = .git/worktrees/agent/hooks",
+                    relativePath: ".claude/worktrees/agent/.git/config: core.hookspath = hooks",
                     reason: .unresolvableGitAdministration, errorNumber: nil))
         #expect(!GitWorktreeForkFileProbe.exists(fixture.destination()))
         #expect(try fixture.branchNames() == branchesBefore)
