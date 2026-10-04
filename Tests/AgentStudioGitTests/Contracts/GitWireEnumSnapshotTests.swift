@@ -248,6 +248,7 @@ struct GitWireEnumSnapshotTests {
                 "clientCapabilityUnavailable", "unsupportedOperatingSystem", "sourceFilesystemNotAPFS",
                 "destinationFilesystemNotAPFS", "crossDevice", "cloneCapabilityUnavailable",
                 "administrativeStoreOnDifferentDevice", "sourceNotWorktreeRoot", "sourceIndexUnreadable",
+                "sourceIndexUnsupported",
                 "sourceHeadUnavailable",
                 "invalidDestinationPath", "destinationParentMissing", "destinationExists", "overlappingRoots",
                 "linkedWorktreeNameInUse", "invalidBranchName", "branchNotFound", "branchAlreadyExists",

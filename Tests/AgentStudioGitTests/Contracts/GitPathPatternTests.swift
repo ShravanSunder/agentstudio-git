@@ -32,3 +32,26 @@ struct GitPathPatternTests {
         }
     }
 }
+
+@Suite("Git path pattern review grammar")
+struct GitPathPatternReviewTests {
+    @Test("brackets, escapes, middle slash, and wildcard component boundaries match Git")
+    func extendedGrammar() throws {
+        #expect(try GitPathPattern("*.[oa]").matches("build/file.o", isDirectory: false))
+        #expect(try GitPathPattern("Build[0-9]/").matches("Build7", isDirectory: true))
+        #expect(try GitPathPattern("[!x].txt").matches("a.txt", isDirectory: false))
+        #expect(!(try GitPathPattern("[!x].txt").matches("x.txt", isDirectory: false)))
+        #expect(try GitPathPattern("a/b").matches("a/b", isDirectory: true))
+        #expect(!(try GitPathPattern("a/b").matches("other/a/b", isDirectory: true)))
+        #expect(try GitPathPattern("a/**").matches("a/b/c", isDirectory: false))
+        #expect(try GitPathPattern("**/x").matches("x", isDirectory: false))
+        #expect(try GitPathPattern("**/x").matches("a/b/x", isDirectory: false))
+        #expect(!(try GitPathPattern("foo**bar").matches("foo/a/bar", isDirectory: false)))
+        #expect(try GitPathPattern(#"literal\*.txt"#).matches("literal*.txt", isDirectory: false))
+        #expect(try GitPathPattern("name   ").matches("name", isDirectory: false))
+        #expect(throws: GitPathPatternError.malformed) { _ = try GitPathPattern("/") }
+        let mixedCase = try GitPathPattern("Frameworks/")
+        #expect(!mixedCase.matches("frameworks", isDirectory: true))
+        #expect(mixedCase.matches("frameworks", isDirectory: true, ignoreCase: true))
+    }
+}

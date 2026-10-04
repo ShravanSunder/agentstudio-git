@@ -81,14 +81,14 @@ struct WorktreeForkPlanner: Sendable {
                 let walkedFilesystem = try WorktreeForkSourceWalker(cancellation: cancellation)
                     .walk(sourceRootDescriptor: sourceRootDescriptor)
                 let filtered = try WorktreeForkCopyFilter(cancellation: cancellation).apply(
-                    filesystem: walkedFilesystem,
-                    sourceRoot: sourceRoot,
-                    sourceCommonDirectory: gitCapture.commonDirectory,
-                    sourceIndex: WorktreeForkCleanEntryAdoption.captureSourceIndex(
-                        gitDirectory: gitCapture.sourceGitDirectory),
-                    capturedHead: gitCapture.capturedHead,
-                    copyRules: request.copyRules
-                )
+                    .init(
+                        filesystem: walkedFilesystem,
+                        sourceRoot: sourceRoot,
+                        sourceCommonDirectory: gitCapture.commonDirectory,
+                        sourceGitDirectory: gitCapture.sourceGitDirectory,
+                        capturedHead: gitCapture.capturedHead,
+                        copyRules: request.copyRules
+                    ))
                 filesystem = filtered.filesystem
                 ignoredIncludedPatterns = filtered.ignoredIncludedPatterns
                 ignoredExcludedCount = filtered.ignoredExcludedCount

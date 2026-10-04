@@ -21,85 +21,6 @@ public enum GitWorktreeForkMaterialization: String, Codable, CaseIterable, Hasha
     case changesOnly
 }
 
-public enum GitPathPatternError: Error, Equatable, Hashable, Sendable {
-    case empty
-    case negationNotSupported
-    case malformed
-}
-
-/// A positive gitignore-style path pattern used by copy and lock policies.
-public struct GitPathPattern: Codable, Equatable, Hashable, Sendable {
-    public let rawValue: String
-    private let directoryOnly: Bool
-    private let anchored: Bool
-    private let matchesBasenameOnly: Bool
-    private let anchoredSingleComponent: Bool
-    private let expression: String
-
-    public init(_ rawValue: String) throws(GitPathPatternError) {
-        guard !rawValue.isEmpty else { throw .empty }
-        guard !rawValue.hasPrefix("!") else { throw .negationNotSupported }
-        var body = rawValue
-        directoryOnly = body.hasSuffix("/")
-        if directoryOnly { body.removeLast() }
-        anchored = body.hasPrefix("/")
-        let hadLeadingSlash = anchored
-        if anchored { body.removeFirst() }
-        guard !body.isEmpty, !body.contains("\n") else { throw .malformed }
-        self.rawValue = rawValue
-        matchesBasenameOnly = !anchored && !body.contains("/")
-        anchoredSingleComponent = hadLeadingSlash && !body.contains("/")
-        expression = Self.regex(from: body)
-    }
-
-    public func matches(_ path: String, isDirectory: Bool) -> Bool {
-        guard !directoryOnly || isDirectory else { return false }
-        guard !(anchoredSingleComponent && path.contains("/")) else { return false }
-        let subject =
-            matchesBasenameOnly
-            ? path.split(separator: "/").last.map(String.init) ?? path
-            : path
-        guard let regex = try? NSRegularExpression(pattern: "^(?:\(expression))$") else {
-            return false
-        }
-        let range = NSRange(subject.startIndex..<subject.endIndex, in: subject)
-        return regex.firstMatch(in: subject, range: range) != nil
-    }
-
-    public init(from decoder: Decoder) throws {
-        try self.init(decoder.singleValueContainer().decode(String.self))
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
-        try container.encode(rawValue)
-    }
-
-    private static func regex(from pattern: String) -> String {
-        var result = ""
-        let characters = Array(pattern)
-        var index = 0
-        while index < characters.count {
-            let character = characters[index]
-            if character == "*", index + 1 < characters.count, characters[index + 1] == "*" {
-                let followedBySlash = index + 2 < characters.count && characters[index + 2] == "/"
-                result += followedBySlash ? "(?:.*/)?" : ".*"
-                index += followedBySlash ? 3 : 2
-            } else if character == "*" {
-                result += "[^/]*"
-                index += 1
-            } else if character == "?" {
-                result += "[^/]"
-                index += 1
-            } else {
-                result += NSRegularExpression.escapedPattern(for: String(character))
-                index += 1
-            }
-        }
-        return result
-    }
-}
-
 /// Controls which ignored roots a copy-on-write fork carries from its source worktree.
 public enum GitIgnoredPathPolicy: Equatable, Hashable, Sendable {
     case copyAll
@@ -121,14 +42,19 @@ extension GitIgnoredPathPolicy: Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         switch try container.decode(Kind.self, forKey: .kind) {
         case .copyAll:
-            guard Set(container.allKeys) == [.kind] else {
+            guard Set(try decoder.container(keyedBy: CopyRulePayloadKey.self).allKeys.map(\.stringValue)) == ["kind"]
+            else {
                 throw DecodingError.dataCorrupted(
                     DecodingError.Context(codingPath: decoder.codingPath, debugDescription: "copyAll has no patterns")
                 )
             }
             self = .copyAll
         case .copyMatching:
-            guard Set(container.allKeys) == [.kind, .patterns] else {
+            guard
+                Set(try decoder.container(keyedBy: CopyRulePayloadKey.self).allKeys.map(\.stringValue)) == [
+                    "kind", "patterns",
+                ]
+            else {
                 throw DecodingError.dataCorrupted(
                     DecodingError.Context(
                         codingPath: decoder.codingPath, debugDescription: "copyMatching requires patterns")
@@ -436,6 +362,7 @@ public struct GitWorktreeMaterializationReport: Codable, Equatable, Hashable, Se
     public let skippedEntries: [GitWorktreeMaterializationSkippedEntry]
     public let normalizedEntries: [GitWorktreeMaterializationNormalizedEntry]
     public let ignoredIncludedPatterns: [String]
+    /// Number of excluded walked paths, including directories and hard-link members, excluding sockets.
     public let ignoredExcludedCount: Int
     public let nestedWorktreesSkipped: [String]
 
@@ -578,4 +505,12 @@ extension GitWorktreeForkEligibility: Codable {
             try container.encode(reason, forKey: .reason)
         }
     }
+}
+
+/// Dynamic keys ensure unknown payload keys are rejected, rather than hidden by an enum container.
+private struct CopyRulePayloadKey: CodingKey {
+    let stringValue: String
+    var intValue: Int? { nil }
+    init?(stringValue: String) { self.stringValue = stringValue }
+    init?(intValue: Int) { nil }
 }

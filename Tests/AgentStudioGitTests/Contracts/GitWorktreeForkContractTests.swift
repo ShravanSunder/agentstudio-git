@@ -81,9 +81,9 @@ struct GitWorktreeForkContractTests {
                     reason: .ownershipNotAssignable
                 ),
             ],
-            ignoredIncludedPatterns: [],
-            ignoredExcludedCount: 0,
-            nestedWorktreesSkipped: []
+            ignoredIncludedPatterns: [".build*/", "Frameworks/"],
+            ignoredExcludedCount: 42,
+            nestedWorktreesSkipped: [".claude/worktrees/agent"]
         )
         let result = GitForkWorktreeResult(
             worktree: worktreeSnapshot(), materialization: .copyOnWrite(report))

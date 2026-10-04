@@ -154,8 +154,8 @@ struct GitWorktreeForkCopyRulesIntegrationTests {
         #expect(GitWorktreeForkFileProbe.exists(fixture.destination().appending(path: "forced.txt")))
     }
 
-    @Test("an unreadable source index is refused before mutation")
-    func unreadableSourceIndexIsRefused() async throws {
+    @Test("a missing source index is treated as empty")
+    func missingSourceIndexIsEmpty() async throws {
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-copy-index")
         defer { fixture.remove() }
         let index = fixture.source.appending(path: ".git/index")
@@ -163,14 +163,10 @@ struct GitWorktreeForkCopyRulesIntegrationTests {
         try FileManager.default.moveItem(at: index, to: hiddenIndex)
         defer { try? FileManager.default.moveItem(at: hiddenIndex, to: index) }
 
-        do {
-            _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(
-                fixture.request(copyRules: GitWorktreeCopyRules(ignoredPaths: .copyMatching([]))))
-            Issue.record("expected source index refusal")
-        } catch let error {
-            #expect(error == .rejected(reason: .sourceIndexUnreadable))
-            #expect(!GitWorktreeForkFileProbe.exists(fixture.destination()))
-        }
+        _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(
+            fixture.request(copyRules: GitWorktreeCopyRules(ignoredPaths: .copyMatching([]))))
+        #expect(GitWorktreeForkFileProbe.exists(fixture.destination().appending(path: "README.md")))
+
     }
 
     @Test("a same-repository nested linked worktree is skipped and its registry is unchanged")
@@ -209,15 +205,16 @@ struct GitWorktreeForkCopyRulesIntegrationTests {
         try fixture.git.run(["commit", "-qm", "dependency"], currentDirectory: dependency)
 
         _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(
-            fixture.request(copyRules: GitWorktreeCopyRules(ignoredPaths: .copyMatching([]))))
+            fixture.request(
+                copyRules: GitWorktreeCopyRules(ignoredPaths: .copyMatching([try GitPathPattern("dependency/")]))))
 
         let destinationDependency = fixture.destination().appending(path: "dependency")
         #expect(GitWorktreeForkFileProbe.exists(destinationDependency.appending(path: ".git")))
         #expect(GitWorktreeForkFileProbe.exists(destinationDependency.appending(path: "dependency.txt")))
     }
 
-    @Test("an excluded hard-link primary with a kept secondary fails typed")
-    func excludedHardLinkPrimaryFailsTyped() async throws {
+    @Test("an excluded hard-link primary elects a kept secondary")
+    func excludedHardLinkPrimaryElectsKeptSecondary() async throws {
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-copy-hardlink")
         defer { fixture.remove() }
         try fixture.write("ignored.bin", "same\n")
@@ -230,16 +227,22 @@ struct GitWorktreeForkCopyRulesIntegrationTests {
         try FileManager.default.removeItem(at: fixture.source.appending(path: "kept.bin"))
         try FileManager.default.linkItem(
             at: fixture.source.appending(path: "ignored.bin"), to: fixture.source.appending(path: "kept.bin"))
+        try FileManager.default.linkItem(
+            at: fixture.source.appending(path: "ignored.bin"), to: fixture.source.appending(path: "zz-kept.bin"))
+        try fixture.git.run("add", "kept.bin")
 
-        do {
-            _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(
-                fixture.request(copyRules: GitWorktreeCopyRules(ignoredPaths: .copyMatching([]))))
-            Issue.record("expected hard-link exclusion failure")
-        } catch let error {
-            #expect(
-                error
-                    == .entryFailed(
-                        relativePath: "ignored.bin", reason: .unresolvableGitAdministration, errorNumber: nil))
+        let result = try await LibGit2AgentStudioGitLocalClient().forkWorktree(
+            fixture.request(copyRules: GitWorktreeCopyRules(ignoredPaths: .copyMatching([]))))
+        #expect(!GitWorktreeForkFileProbe.exists(fixture.destination().appending(path: "ignored.bin")))
+        #expect(try String(contentsOf: fixture.destination().appending(path: "kept.bin"), encoding: .utf8) == "same\n")
+        let primary = try #require(GitWorktreeForkFileProbe.info(fixture.destination().appending(path: "kept.bin")))
+        let secondary = try #require(
+            GitWorktreeForkFileProbe.info(fixture.destination().appending(path: "zz-kept.bin")))
+        #expect(primary.st_ino == secondary.st_ino)
+        guard case .copyOnWrite(let report) = result.materialization else {
+            Issue.record("expected copy report")
+            return
         }
+        #expect(report.preservedHardLinkCount == 1)
     }
 }

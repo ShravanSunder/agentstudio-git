@@ -145,48 +145,75 @@ struct WorktreeForkFilesystemPlan: Sendable {
     }
 
     static func isPath(_ path: String, within subtree: String) -> Bool {
-        path == subtree || path.hasPrefix(subtree + "/")
+        path == subtree || (path.utf8.starts(with: subtree.utf8) && path.utf8.dropFirst(subtree.utf8.count).first == 47)
     }
 
-    /// The plan with every entry inside `subtrees` left out, so it is never materialized and the validator
-    /// expects it absent. A hard-link group keeps its paths outside the subtrees; a group whose cloned
-    /// primary is inside one while other paths are outside cannot be realized without that clone, so it
-    /// fails instead of silently changing which paths share an inode.
-    func excludingSubtrees(_ subtrees: [String]) throws(GitWorktreeForkError) -> Self {
-        guard !subtrees.isEmpty else {
-            return self
-        }
-        func isExcluded(_ path: String) -> Bool {
-            subtrees.contains { Self.isPath(path, within: $0) }
-        }
-        var keptGroups: [WorktreeForkHardLinkGroup] = []
-        for group in hardLinkGroups {
-            let secondaries = group.secondaryRelativePaths.filter { !isExcluded($0) }
-            if isExcluded(group.primaryRelativePath) {
-                guard secondaries.isEmpty else {
-                    throw .entryFailed(
-                        relativePath: group.primaryRelativePath, reason: .unresolvableGitAdministration,
-                        errorNumber: nil)
+    /// Every path in the walk, before the walker separates hard-link secondaries from clone leaves.
+    var allPlannedLeaves: [WorktreeForkPlannedLeaf] {
+        let primaries = Dictionary(uniqueKeysWithValues: leafBatches.flatMap(\.leaves).map { ($0.relativePath, $0) })
+        return Array(primaries.values)
+            + hardLinkGroups.flatMap { group -> [WorktreeForkPlannedLeaf] in
+                guard let template = primaries[group.primaryRelativePath] else { return [] }
+                return group.secondaryRelativePaths.map { path in
+                    Self.relocatedLeaf(template, to: path)
                 }
-            } else if !secondaries.isEmpty {
-                keptGroups.append(
-                    WorktreeForkHardLinkGroup(
-                        identity: group.identity, primaryRelativePath: group.primaryRelativePath,
-                        secondaryRelativePaths: secondaries))
+            }
+    }
+
+    private static func relocatedLeaf(_ template: WorktreeForkPlannedLeaf, to path: String) -> WorktreeForkPlannedLeaf {
+        WorktreeForkPlannedLeaf(
+            name: WorktreeForkDescriptors.splitParent(path).name, relativePath: path,
+            kind: template.kind, identity: template.identity, plannedStat: template.plannedStat)
+    }
+
+    /// Excludes subtrees once. Hard-link groups retain their kept members and elect a kept member as
+    /// the clone source when necessary; exclusion never changes inode sharing among retained paths.
+    func excludingSubtrees(_ subtrees: [String]) throws(GitWorktreeForkError) -> Self {
+        guard !subtrees.isEmpty else { return self }
+        let excluded = Set(subtrees.map { $0[...] })
+        func isExcluded(_ path: String) -> Bool {
+            var candidate = path[...]
+            while true {
+                if excluded.contains(candidate) { return true }
+                guard let slash = candidate.lastIndex(of: "/") else { return false }
+                candidate = candidate[..<slash]
             }
         }
+        let primaryLeaves = Dictionary(
+            uniqueKeysWithValues: leafBatches.flatMap(\.leaves).map { ($0.relativePath, $0) })
+        var keptGroups: [WorktreeForkHardLinkGroup] = []
+        var electedLeaves: [WorktreeForkPlannedLeaf] = []
+        for group in hardLinkGroups {
+            let kept = ([group.primaryRelativePath] + group.secondaryRelativePaths).filter { !isExcluded($0) }
+            guard let primary = kept.first else { continue }
+            if primary != group.primaryRelativePath {
+                guard let template = primaryLeaves[group.primaryRelativePath] else {
+                    throw .validationFailed(reason: .hardLinkGroupBroken, relativePath: primary)
+                }
+                electedLeaves.append(Self.relocatedLeaf(template, to: primary))
+            }
+            if kept.count > 1 {
+                keptGroups.append(
+                    WorktreeForkHardLinkGroup(
+                        identity: group.identity,
+                        primaryRelativePath: primary, secondaryRelativePaths: Array(kept.dropFirst())))
+            }
+        }
+        var batches = leafBatches.compactMap { batch -> WorktreeForkLeafBatch? in
+            let leaves = batch.leaves.filter { !isExcluded($0.relativePath) }
+            return leaves.isEmpty
+                ? nil : WorktreeForkLeafBatch(directoryRelativePath: batch.directoryRelativePath, leaves: leaves)
+        }
+        batches += electedLeaves.map { leaf in
+            WorktreeForkLeafBatch(
+                directoryRelativePath: WorktreeForkDescriptors.splitParent(leaf.relativePath).parent,
+                leaves: [leaf])
+        }
         return Self(
-            directories: directories.filter { !isExcluded($0.relativePath) },
-            leafBatches: leafBatches.compactMap { batch in
-                let leaves = batch.leaves.filter { !isExcluded($0.relativePath) }
-                return leaves.isEmpty
-                    ? nil : WorktreeForkLeafBatch(directoryRelativePath: batch.directoryRelativePath, leaves: leaves)
-            },
-            hardLinkGroups: keptGroups,
-            skippedEntries: skippedEntries.filter { !isExcluded($0.relativePath) },
+            directories: directories.filter { !isExcluded($0.relativePath) }, leafBatches: batches,
+            hardLinkGroups: keptGroups, skippedEntries: skippedEntries.filter { !isExcluded($0.relativePath) },
             nestedGitEntryPaths: nestedGitEntryPaths.filter { !isExcluded($0) },
-            gitDirectoryCandidatePaths: gitDirectoryCandidatePaths.filter { !isExcluded($0) }
-        )
+            gitDirectoryCandidatePaths: gitDirectoryCandidatePaths.filter { !isExcluded($0) })
     }
 
     func leafCount(of kind: WorktreeForkLeafKind) -> Int {

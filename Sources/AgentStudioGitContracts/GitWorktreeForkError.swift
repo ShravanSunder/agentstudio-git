@@ -30,6 +30,7 @@ public enum GitWorktreeForkRejectionReason: String, Codable, CaseIterable, Senda
     case administrativeStoreOnDifferentDevice
     case sourceNotWorktreeRoot
     case sourceIndexUnreadable
+    case sourceIndexUnsupported
     case sourceHeadUnavailable
     case invalidDestinationPath
     case destinationParentMissing

@@ -63,6 +63,7 @@ struct WorktreeForkIndexBuilder: Sendable {
                     systemErrorCode: writeErrorNumber
                 ))
         }
+        let capturedPaths = capturedPathSpellings(index)
         let refreshPaths = trackedPathsNeedingRefresh(index, excluding: adoptedPaths)
         let unrefreshed =
             refreshPaths.isEmpty
@@ -74,7 +75,52 @@ struct WorktreeForkIndexBuilder: Sendable {
                 indexLockFact: indexLockFact,
                 lockTracker: lockTracker
             )
+        try restoreCapturedPathSpellings(capturedPaths, index: index, lockFact: indexLockFact, lockTracker: lockTracker)
         return WorktreeForkIndexRefreshEvidence(unrefreshedPaths: unrefreshed, adoptedPaths: adoptedPaths)
+    }
+
+    /// libgit2 refreshes with the workdir spelling under core.ignorecase. The destination index must
+    /// still name captured HEAD exactly, so retain that spelling while preserving refreshed stats.
+    private func capturedPathSpellings(_ index: OpaquePointer) -> [String: String] {
+        guard git_index_caps(index) & GIT_INDEX_CAPABILITY_IGNORE_CASE.rawValue != 0 else { return [:] }
+        var spellings: [String: String] = [:]
+        for position in 0..<git_index_entrycount(index) {
+            guard let path = git_index_get_byindex(index, position)?.pointee.path else { continue }
+            let text = String(cString: path)
+            spellings[text.lowercased()] = text
+        }
+        return spellings
+    }
+
+    private func restoreCapturedPathSpellings(
+        _ spellings: [String: String], index: OpaquePointer,
+        lockFact: GitLockFact, lockTracker: WorktreeForkLockTracker?
+    ) throws(GitWorktreeForkError) {
+        guard !spellings.isEmpty else { return }
+        var replacements: [(String, String)] = []
+        for position in 0..<git_index_entrycount(index) {
+            guard let pointer = git_index_get_byindex(index, position)?.pointee.path else { continue }
+            let path = String(cString: pointer)
+            if let captured = spellings[path.lowercased()], path != captured {
+                replacements.append((path, captured))
+            }
+        }
+        guard !replacements.isEmpty else { return }
+        for (currentPath, capturedPath) in replacements {
+            guard var entry = currentPath.withCString({ git_index_get_bypath(index, $0, 0) })?.pointee else {
+                throw .validationFailed(reason: .indexTreeMismatch, relativePath: capturedPath)
+            }
+            let result = capturedPath.withCString { pointer in
+                entry.path = pointer
+                return git_index_add(index, &entry)
+            }
+            try check(result)
+        }
+        lockTracker?.beginAttempt(for: [lockFact])
+        errno = 0
+        let result = git_index_write(index)
+        let errorNumber = errno
+        try checkStatRefresh(result, systemErrorCode: errorNumber, lockFact: lockFact, lockTracker: lockTracker)
     }
 
     /// Gives each provably clean entry the clone's own `lstat` data. The source index only proves
