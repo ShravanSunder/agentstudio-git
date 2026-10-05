@@ -1,5 +1,6 @@
 // Altered Swift bytecode port of Git-derived wildmatch (Rich Salz / Wayne Davison).
-// Reference: vendor/libgit2/src/util/wildmatch.c; WM_PATHNAME is always enabled.
+// References: vendor/libgit2/src/util/wildmatch.c and Git dir.c match_pathname's literal-prefix split.
+// WM_PATHNAME is always enabled.
 // Copyright Rich Salz. All rights reserved.
 // Redistribution and use in any form are permitted provided that the following restrictions are are met:
 // 1. Source distributions must retain this entire copyright notice and comment.
@@ -35,8 +36,10 @@ struct GitWildmatchPattern: Sendable {
     init(bytes: [UInt8]) throws(GitPathPatternError) {
         var instructions: [Instruction] = []
         var cursor = 0
+        var globByteSeen = false
         while cursor < bytes.count {
-            switch bytes[cursor] {
+            let byte = bytes[cursor]
+            switch byte {
             case 92:
                 guard cursor + 1 < bytes.count else { throw .malformed }
                 instructions.append(.escapedLiteral(bytes[cursor + 1]))
@@ -48,7 +51,7 @@ struct GitWildmatchPattern: Sendable {
                 var end = cursor + 1
                 while end < bytes.count, bytes[end] == 42 { end += 1 }
                 let recursive =
-                    end - cursor >= 2 && (cursor == 0 || bytes[cursor - 1] == 47)
+                    end - cursor >= 2 && (cursor == 0 || bytes[cursor - 1] == 47 || !globByteSeen)
                     && (end == bytes.count || bytes[end] == 47
                         || (bytes[end] == 92 && end + 1 < bytes.count && bytes[end + 1] == 47))
                 let kind: StarKind =
@@ -68,6 +71,7 @@ struct GitWildmatchPattern: Sendable {
                 instructions.append(.literal(bytes[cursor]))
                 cursor += 1
             }
+            if byte == 42 || byte == 63 || byte == 91 || byte == 92 { globByteSeen = true }
         }
         self.instructions = instructions
     }

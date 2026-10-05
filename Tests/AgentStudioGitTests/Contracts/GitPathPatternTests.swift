@@ -31,6 +31,19 @@ struct GitPathPatternTests {
             _ = try GitPathPattern("")
         }
     }
+
+    @Test("malformed public includes still reject trailing escapes and unknown POSIX classes")
+    func malformedIncludesRemainTypedErrors() {
+        #expect(throws: GitPathPatternError.malformed) { _ = try GitPathPattern("trailing\\") }
+        #expect(throws: GitPathPatternError.malformed) { _ = try GitPathPattern("[[:unknown:]]") }
+    }
+
+    @Test("public includes reject unescaped comment markers and accept a literal escaped hash")
+    func commentMarkersAreTypedErrors() throws {
+        #expect(throws: GitPathPatternError.malformed) { _ = try GitPathPattern("#*") }
+        #expect(throws: GitPathPatternError.malformed) { _ = try GitPathPattern("#foo") }
+        #expect(try GitPathPattern("\\#foo").matches("#foo", isDirectory: false))
+    }
 }
 
 @Suite("Git path pattern review grammar")

@@ -83,6 +83,15 @@ struct GitPathPatternNativeParityTests {
         .init(pattern: "/\u{0301}name", path: "\u{0301}name"),
         .init(pattern: "a/\u{0301}name", path: "a/\u{0301}name"),
         .init(pattern: #"\!́name"#, path: "!\u{0301}name"),
+        .init(pattern: "foo**/bar", path: "foox/y/bar"),
+        .init(pattern: "x/foo**/bar", path: "x/fooq/r/bar"),
+        .init(pattern: #"foo**\/bar"#, path: "foox/y/bar"),
+        .init(pattern: "a?b**/c", path: "axbq/r/c"),
+        .init(pattern: #"\!**/foo"#, path: "!x/y/foo"),
+        .init(pattern: "x[[:space:]]y", path: "x\u{000B}y"),
+        .init(pattern: "x[[:space:]]y", path: "x\u{000C}y"),
+        .init(pattern: "x[[:space:]]y", path: "x\ty"),
+        .init(pattern: "\\#foo", path: "#foo"),
     ]
 
     @Test("compiled positive patterns agree with git check-ignore --no-index", arguments: cases)
@@ -131,6 +140,11 @@ struct SparseCheckoutMatcherNativeParityTests {
         .init(rules: "/*\n!\u{0301}name\n", paths: ["\u{0301}name", "visible.txt"]),
         .init(rules: "/*\n!!\u{0301}name\n", paths: ["!\u{0301}name", "visible.txt"]),
         .init(rules: "/cache/\n", paths: ["cache/\u{0301}file", "other/file"]),
+        .init(rules: "/foo**/bar\n", paths: ["foox/y/bar", "foobar", "foo/bar"]),
+        .init(rules: "/*\n!!**/foo\n", paths: ["!x/y/foo", "visible.txt"]),
+        .init(rules: "b\n?/\\/\n", paths: ["b/c", "b", "other/c"]),
+        .init(rules: "b\n[[:unknown:]]\n", paths: ["b/c", "b", "other/c"]),
+        .init(rules: "/*\n!#foo\n", paths: ["#foo", "bar"]),
     ]
 
     @Test("sparse policy agrees with git sparse-checkout check-rules --no-cone", arguments: cases)

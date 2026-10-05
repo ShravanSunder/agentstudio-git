@@ -37,7 +37,8 @@ struct GitWildmatchCharacterClass: Sendable {
             let upper = byte >= 65 && byte <= 90
             let digit = byte >= 48 && byte <= 57
             let printable = byte >= 32 && byte <= 126
-            let whitespace = byte == 32 || (byte >= 9 && byte <= 13)
+            // Git's sane_ctype, rather than libc isspace: vertical tab and form feed are not space.
+            let whitespace = byte == 9 || byte == 10 || byte == 13 || byte == 32
             switch self {
             case .alnum: return lower || upper || digit
             case .alpha: return lower || upper

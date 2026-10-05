@@ -119,20 +119,43 @@ struct SparseCheckoutMatcher: Sendable {
 
 /// Sparse policy owns negation; the positive pattern grammar is shared with copy rules.
 private struct SparsePattern: Sendable {
+    private enum Compilation: Sendable {
+        case pattern(GitPathPattern)
+        case neverMatches
+    }
     let isNegated: Bool
-    private let pattern: GitPathPattern
+    private let compilation: Compilation
 
     init?(_ line: String) {
         let bytes = Array(line.utf8)
         isNegated = bytes.first == 33
         let positiveBytes = isNegated ? Array(bytes.dropFirst()) : bytes
         guard let positive = String(bytes: positiveBytes, encoding: .utf8) else { return nil }
-        // Sparse policy has consumed its one negation byte. Any remaining leading bang is literal.
-        let literalLeadingBang = positiveBytes.first == 33 ? "\\" + positive : positive
-        guard let pattern = try? GitPathPattern(literalLeadingBang) else { return nil }
-        self.pattern = pattern
+        // Sparse policy has consumed its one negation byte. Remaining ! or # markers are literal.
+        // An existing middle slash already anchors the rule. Spell that anchor explicitly for !,
+        // so an injected escape does not incorrectly end match_pathname's glob-free literal prefix.
+        let body = positiveBytes.last == 47 ? positiveBytes.dropLast() : positiveBytes[...]
+        let literalLeadingMarker =
+            positiveBytes.first == 33 || positiveBytes.first == 35
+            ? (body.contains(47) ? "/" + positive : "\\" + positive) : positive
+        do {
+            compilation = .pattern(try GitPathPattern(literalLeadingMarker))
+        } catch {
+            // A trailing escape or unknown POSIX class aborts Git matching for this line only.
+            // Unsupported control bytes retain the existing fail-closed file behavior.
+            guard !positiveBytes.contains(0), !positiveBytes.contains(10), !positiveBytes.contains(13) else {
+                return nil
+            }
+            switch error {
+            case .empty, .malformed: compilation = .neverMatches
+            case .negationNotSupported: return nil
+            }
+        }
     }
     func matches(_ path: String, isDirectory: Bool, ignoreCase: Bool) -> Bool {
-        pattern.matches(path, isDirectory: isDirectory, ignoreCase: ignoreCase)
+        switch compilation {
+        case .pattern(let pattern): pattern.matches(path, isDirectory: isDirectory, ignoreCase: ignoreCase)
+        case .neverMatches: false
+        }
     }
 }

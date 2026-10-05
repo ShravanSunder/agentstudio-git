@@ -18,6 +18,7 @@ public struct GitPathPattern: Codable, Hashable, Sendable {
         var body = Array(rawValue.utf8)
         guard !body.isEmpty else { throw .empty }
         guard body.first != 33 else { throw .negationNotSupported }
+        guard body.first != 35 else { throw .malformed }
         // Syntax markers are bytes too: a following combining mark must not be consumed with them.
         // Git discards unescaped trailing spaces, preserving an escaped final space.
         while body.last == 32 {

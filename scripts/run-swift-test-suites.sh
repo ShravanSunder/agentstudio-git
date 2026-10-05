@@ -22,6 +22,7 @@ suites=(
   GitPathPatternReviewTests
   GitPathPatternNativeParityTests
   SparseCheckoutMatcherNativeParityTests
+  GitWildmatchDifferentialTests
   GitLargeFileFillContractTests
   LibGit2BlockingReadExecutorTests
   LibGit2RuntimeTests
