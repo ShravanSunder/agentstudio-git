@@ -64,17 +64,14 @@ struct WorktreeForkCopyNestedRepositories {
     }
 
     private func gitfileNamesSourceRegistration(_ relativePath: String) throws(GitWorktreeForkError) -> Bool {
-        let unresolved = GitWorktreeForkError.entryFailed(
-            relativePath: relativePath,
-            reason: .unresolvableGitAdministration, errorNumber: nil)
         let file = sourceRoot.appending(path: relativePath)
         return try WorktreeForkDatalessGuardedRead.run(file, reportPath: relativePath) {
             () throws(GitWorktreeForkError) in
             guard let text = try? String(contentsOf: file, encoding: .utf8), text.hasPrefix("gitdir: ") else {
-                throw unresolved
+                return false
             }
             let targetText = text.dropFirst(8).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !targetText.isEmpty, !targetText.contains("\n") else { throw unresolved }
+            guard !targetText.isEmpty, !targetText.contains("\n") else { return false }
             let target =
                 targetText.hasPrefix("/")
                 ? URL(fileURLWithPath: targetText)
@@ -83,7 +80,7 @@ struct WorktreeForkCopyNestedRepositories {
             let registrations = commonDirectory.appending(path: "worktrees")
             guard canonical.path != registrations.path,
                 WorktreeForkFilesystemPlan.isPath(canonical.path, within: registrations.path)
-            else { throw unresolved }
+            else { return false }
             return true
         }
     }

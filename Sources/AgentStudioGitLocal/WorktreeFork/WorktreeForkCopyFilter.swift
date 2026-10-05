@@ -32,15 +32,15 @@ struct WorktreeForkCopyFilter: Sendable {
             commonDirectory: input.sourceCommonDirectory, cancellation: cancellation
         )
         let skipped = try nestedRepositories.sameRepositoryWorktreeRoots(input.filesystem.nestedGitEntryPaths)
-        let tracked = try WorktreeForkCopyTrackedPaths.capture(
-            sourceRoot: input.sourceRoot,
-            gitDirectory: input.sourceGitDirectory, capturedHead: input.capturedHead)
         guard case .copyMatching(let patterns) = input.copyRules.ignoredPaths else {
             return Result(
                 filesystem: try input.filesystem.excludingSubtrees(skipped),
                 ignoredIncludedPatterns: [], ignoredExcludedCount: 0, nestedWorktreesSkipped: skipped,
                 classifiedPathCount: 0, ignoreQueryCount: 0)
         }
+        let tracked = try WorktreeForkCopyTrackedPaths.capture(
+            sourceRoot: input.sourceRoot,
+            gitDirectory: input.sourceGitDirectory, capturedHead: input.capturedHead)
         let nestedRoots = Set(
             input.filesystem.nestedGitEntryPaths.map { WorktreeForkDescriptors.splitParent($0).parent }
         )
@@ -75,7 +75,6 @@ struct WorktreeForkCopyFilter: Sendable {
             let node = tree.nodes[index]
             if node.skippedWorktree { continue }
             classifiedCount += 1
-            let matched = tree.matches(at: index, patterns: patterns, ignoreCase: tracked.ignoreCase)
             let ignored: Bool
             if parentIgnored {
                 ignored = true
@@ -85,6 +84,9 @@ struct WorktreeForkCopyFilter: Sendable {
                 ignoreQueries += 1
                 ignored = try session.isPathIgnored(relativePath: node.isDirectory ? node.path + "/" : node.path)
             }
+            let matched =
+                node.isDirectory || ignored
+                ? tree.matches(at: index, patterns: patterns, ignoreCase: tracked.ignoreCase) : []
             if node.isDirectory && !matched.isEmpty {
                 if ignored {
                     includedPatterns.formUnion(matched)

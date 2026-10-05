@@ -180,7 +180,7 @@ struct GitWorktreeForkTopologyIntegrationTests {
     }
 
     @Test(
-        "cone and non-cone checkouts keep sparse behavior while sparse indexes refuse",
+        "cone, non-cone, and sparse-index sources keep sparse behavior without mass deletions",
         arguments: [SparseScenario.cone, .nonCone, .sparseIndex]
     )
     func sparseSourcesKeepSparseBehavior(scenario: SparseScenario) async throws {
@@ -200,24 +200,12 @@ struct GitWorktreeForkTopologyIntegrationTests {
         case .sparseIndex:
             try fixture.git.run("sparse-checkout", "init", "--cone", "--sparse-index")
             try fixture.git.run("sparse-checkout", "set", "kept")
-            // libgit2 cannot read every tracked path in this index, so the root copy must refuse.
+            // The source index really is sparse: libgit2 1.9 cannot open it, so patterns must be the authority.
             #expect(try fixture.git.run("ls-files", "--sparse").contains("dropped/\n"))
         }
         try fixture.write("kept/one.txt", "dirty inside the cone\n")
         let sourceList = try fixture.git.run("sparse-checkout", "list")
         let destination = fixture.destination()
-
-        if scenario == .sparseIndex {
-            do {
-                _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
-                Issue.record("expected sourceIndexUnsupported")
-            } catch {
-                #expect(error == .rejected(reason: .sourceIndexUnsupported))
-            }
-            #expect(!GitWorktreeForkFileProbe.exists(destination))
-            #expect(try fixture.git.run("sparse-checkout", "list") == sourceList)
-            return
-        }
 
         // Act
         _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())

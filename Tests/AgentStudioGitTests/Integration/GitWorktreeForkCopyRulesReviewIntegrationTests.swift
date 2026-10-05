@@ -270,28 +270,60 @@ struct GitWorktreeForkCopyRulesReviewIntegrationTests {
     }
 
     @Test(
-        "unopenable same-repository gitfiles are skipped while other broken gitfiles fail closed",
-        arguments: [false, true])
-    func brokenNestedGitfiles(sameRepository: Bool) async throws {
-        let fixture = try makeFixture("broken-gitfile", ignores: "")
+        "unopenable gitfiles follow location policy while stale source registrations are skipped",
+        arguments: BrokenNestedGitfileScenario.allCases)
+    func brokenNestedGitfiles(scenario: BrokenNestedGitfileScenario) async throws {
+        let sameRepository = scenario == .sameRepository
+        let ignored = scenario == .ignoredIndependent
+        let nestedPath = ignored ? "ignored/nested" : "nested"
+        let fixture = try makeFixture("broken-gitfile", ignores: ignored ? "ignored/\n" : "")
         defer { fixture.remove() }
         let target =
             sameRepository
             ? fixture.source.appending(path: ".git/worktrees/pruned")
             : fixture.repository.root.appending(path: "missing-independent-admin")
-        try fixture.write("nested/.git", "gitdir: \(target.path)\n")
-        try fixture.write("nested/file", "nested working content")
+        try fixture.write("\(nestedPath)/.git", "gitdir: \(target.path)\n")
+        try fixture.write("\(nestedPath)/file", "nested working content")
         do {
             let result = try await fork(fixture, patterns: [])
-            #expect(sameRepository)
-            #expect(try report(result).nestedWorktreesSkipped == ["nested"])
-            #expect(!GitWorktreeForkFileProbe.exists(fixture.destination().appending(path: "nested")))
+            #expect(sameRepository || ignored)
+            #expect(try report(result).nestedWorktreesSkipped == (sameRepository ? ["nested"] : []))
+            #expect(try report(result).ignoredExcludedCount == (ignored ? 3 : 0))
+            #expect(!GitWorktreeForkFileProbe.exists(fixture.destination().appending(path: nestedPath)))
         } catch let error as GitWorktreeForkError {
-            #expect(!sameRepository)
+            #expect(!sameRepository && !ignored)
             #expect(
                 error
                     == .entryFailed(
                         relativePath: "nested/.git", reason: .unresolvableGitAdministration, errorNumber: nil))
+        }
+    }
+
+    enum BrokenNestedGitfileScenario: CaseIterable {
+        case sameRepository
+        case keptIndependent
+        case ignoredIndependent
+    }
+
+    @Test("unopenable reftable directory administration follows location policy", arguments: [false, true])
+    func reftableNestedDirectory(ignored: Bool) async throws {
+        let fixture = try makeFixture("reftable-location", ignores: ignored ? "ignored/\n" : "")
+        defer { fixture.remove() }
+        let nestedPath = ignored ? "ignored/tool" : "tool"
+        try fixture.git.run("init", "-q", "--ref-format=reftable", fixture.source.appending(path: nestedPath).path)
+        try fixture.write("\(nestedPath)/file", "nested working content")
+        do {
+            let result = try await fork(fixture, patterns: [])
+            #expect(ignored)
+            #expect(!GitWorktreeForkFileProbe.exists(fixture.destination().appending(path: "ignored")))
+            #expect(try report(result).ignoredExcludedCount == 3)
+            #expect(try report(result).nestedWorktreesSkipped.isEmpty)
+        } catch let error as GitWorktreeForkError {
+            #expect(!ignored)
+            #expect(
+                error
+                    == .entryFailed(
+                        relativePath: "\(nestedPath)/.git", reason: .unresolvableGitAdministration, errorNumber: nil))
         }
     }
 

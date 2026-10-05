@@ -99,26 +99,20 @@ struct GitWorktreeForkCleanAdoptionIntegrationTests {
         #expect(try fixture.statusLines(at: fixture.destination()) == [" M racing.txt"])
     }
 
-    @Test("a sparse-index independent nested repository adopts nothing and still reports its true status")
+    @Test("a sparse-index source adopts nothing and still reports its true status")
     func sparseIndexSourceAdoptsNothing() async throws {
         // Arrange
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-adoption-sparse")
         defer { fixture.remove() }
-        let nested = fixture.source.appending(path: "vendor/tool")
-        try fixture.write(".gitignore", "vendor/\n")
-        try fixture.git.run("add", ".gitignore")
-        try fixture.git.run("commit", "-qm", "ignore vendor")
-        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
-        try fixture.git.run(["init", "-q"], currentDirectory: nested)
         for path in ["kept/one.txt", "dropped/two.txt"] {
-            try fixture.write(path, "\(path)\n", in: nested)
-            try Self.ageModificationTime(nested.appending(path: path))
+            try fixture.write(path, "\(path)\n")
+            try Self.ageModificationTime(fixture.source.appending(path: path))
         }
-        try fixture.git.run(["add", "."], currentDirectory: nested)
-        try fixture.git.run(["commit", "-qm", "tree"], currentDirectory: nested)
-        try fixture.git.run(["sparse-checkout", "init", "--cone", "--sparse-index"], currentDirectory: nested)
-        try fixture.git.run(["sparse-checkout", "set", "kept"], currentDirectory: nested)
-        try fixture.write("kept/one.txt", "dirty\n", in: nested)
+        try fixture.git.run("add", ".")
+        try fixture.git.run("commit", "-qm", "tree")
+        try fixture.git.run("sparse-checkout", "init", "--cone", "--sparse-index")
+        try fixture.git.run("sparse-checkout", "set", "kept")
+        try fixture.write("kept/one.txt", "dirty\n")
         let evidence = OSAllocatedUnfairLock(initialState: [String: WorktreeForkIndexRefreshEvidence]())
         let observer = WorktreeForkIndexObserver { node, nodeEvidence in
             evidence.withLock { $0[node] = nodeEvidence }
@@ -130,9 +124,8 @@ struct GitWorktreeForkCleanAdoptionIntegrationTests {
         _ = try await client.forkWorktree(fixture.request())
 
         // Assert
-        #expect(try #require(evidence.withLock { $0["vendor/tool"] }).adoptedPaths.isEmpty)
-        #expect(
-            try fixture.statusLines(at: fixture.destination().appending(path: "vendor/tool")) == [" M kept/one.txt"])
+        #expect(try #require(evidence.withLock { $0[""] }).adoptedPaths.isEmpty)
+        #expect(try fixture.statusLines(at: fixture.destination()) == [" M kept/one.txt"])
     }
 
     /// Sets a file's modification time well into the past so Git caches it as a non-racy clean entry.
