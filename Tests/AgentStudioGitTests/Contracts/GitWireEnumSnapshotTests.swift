@@ -247,7 +247,9 @@ struct GitWireEnumSnapshotTests {
             GitWorktreeForkRejectionReason.allCases.map(\.rawValue) == [
                 "clientCapabilityUnavailable", "unsupportedOperatingSystem", "sourceFilesystemNotAPFS",
                 "destinationFilesystemNotAPFS", "crossDevice", "cloneCapabilityUnavailable",
-                "administrativeStoreOnDifferentDevice", "sourceNotWorktreeRoot", "sourceHeadUnavailable",
+                "administrativeStoreOnDifferentDevice", "sourceNotWorktreeRoot", "sourceIndexUnreadable",
+                "sourceIndexUnsupported",
+                "sourceHeadUnavailable",
                 "invalidDestinationPath", "destinationParentMissing", "destinationExists", "overlappingRoots",
                 "linkedWorktreeNameInUse", "invalidBranchName", "branchNotFound", "branchAlreadyExists",
                 "branchNotAtCapturedHead", "branchCheckedOut", "fileProviderManagedLocation", "datalessContent",

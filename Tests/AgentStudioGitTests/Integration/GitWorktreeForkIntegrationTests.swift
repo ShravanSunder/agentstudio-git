@@ -145,7 +145,8 @@ struct GitWorktreeForkIntegrationTests {
             sourceWorktreePath: subdirectory,
             destinationPath: fixture.destination(),
             mode: .detached,
-            materialization: .copyOnWrite
+            materialization: .copyOnWrite,
+            copyRules: GitWorktreeCopyRules(ignoredPaths: .copyAll)
         )
 
         // Act

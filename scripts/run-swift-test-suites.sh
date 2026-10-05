@@ -17,6 +17,13 @@ suites=(
   GitInvalidDecodeTests
   GitRedactionTests
   GitWorktreeForkContractTests
+  GitWorktreeCopyRulesContractTests
+  GitPathPatternTests
+  GitPathPatternReviewTests
+  GitPathPatternNativeParityTests
+  SparseCheckoutMatcherNativeParityTests
+  SparseCheckoutReapplyNativeParityTests
+  GitWildmatchDifferentialTests
   GitLargeFileFillContractTests
   LibGit2BlockingReadExecutorTests
   LibGit2RuntimeTests
@@ -28,6 +35,7 @@ suites=(
   GitRepositoryWriterRegistryTests
   GitRepositoryWriterLaneTests
   WorktreeForkPolicyTests
+  WorktreeForkCopyFilterOperationTests
   SparseCheckoutMatcherTests
   WorktreeForkCleanEntryAdoptionTests
   WorktreeForkPrivateCounterpartTests
@@ -50,12 +58,15 @@ suites=(
   GitLockAcquisitionRetirementIntegrationTests
   GitLockRemoteIntegrationTests
   GitWorktreeForkIntegrationTests
+  GitWorktreeForkCopyRulesIntegrationTests
+  GitWorktreeForkCopyRulesReviewIntegrationTests
   GitWorktreeForkLockIntegrationTests
   GitWorktreeForkIndexLockIntegrationTests
   GitWorktreeForkPackedReferenceLockIntegrationTests
   GitWorktreeForkStorageIntegrationTests
   GitWorktreeForkRollbackIntegrationTests
   GitWorktreeForkTopologyIntegrationTests
+  GitWorktreeForkSparseMatcherFallbackTests
   GitWorktreeForkEligibilityIntegrationTests
   GitWorktreeForkChangesOnlyIntegrationTests
   GitWorktreeForkCancellationIntegrationTests

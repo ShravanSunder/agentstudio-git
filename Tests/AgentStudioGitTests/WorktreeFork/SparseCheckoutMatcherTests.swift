@@ -65,7 +65,7 @@ struct SparseCheckoutMatcherTests {
         #expect(!posix.includes("v].txt"))
     }
 
-    @Test("bracket members that are special to ICU stay literal, and a reversed range matches nothing")
+    @Test("special bracket members stay literal, and Git retains the first literal of a reversed range")
     func icuSpecialBracketMembersStayLiteral() {
         // Arrange
         let icuOperators = SparseCheckoutMatcher(patternFile: "/[&&]x\n/[a[]y\n", coneMode: false)
@@ -77,7 +77,8 @@ struct SparseCheckoutMatcherTests {
         #expect(icuOperators.includes("[y"))
         #expect(!icuOperators.includes("bx"))
         #expect(!reversedRange.hasUntranslatablePatterns)
-        #expect(!reversedRange.includes("zx"))
+        // Git adds the literal z before interpreting the reversed z-a range.
+        #expect(reversedRange.includes("zx"))
         #expect(!reversedRange.includes("mx"))
     }
 

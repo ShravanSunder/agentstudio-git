@@ -34,7 +34,8 @@ struct GitWorktreeForkContractTests {
             sourceWorktreePath: URL(fileURLWithPath: "/tmp/source"),
             destinationPath: URL(fileURLWithPath: "/tmp/destination"),
             mode: .newBranch(name: "fork"),
-            materialization: .copyOnWrite
+            materialization: .copyOnWrite,
+            copyRules: GitWorktreeCopyRules(ignoredPaths: .copyAll)
         )
 
         // Act
@@ -45,7 +46,7 @@ struct GitWorktreeForkContractTests {
         #expect(decoded == request)
         #expect(
             jsonText(encoded)
-                == #"{"destinationPath":"file:///tmp/destination","materialization":"copyOnWrite","mode":{"kind":"newBranch","name":"fork"},"#
+                == #"{"copyRules":{"ignoredPaths":{"kind":"copyAll"}},"destinationPath":"file:///tmp/destination","materialization":"copyOnWrite","mode":{"kind":"newBranch","name":"fork"},"#
                 + #""sourceWorktreePath":"file:///tmp/source"}"#
         )
     }
@@ -79,7 +80,10 @@ struct GitWorktreeForkContractTests {
                     attribute: .ownerUser,
                     reason: .ownershipNotAssignable
                 ),
-            ]
+            ],
+            ignoredIncludedPatterns: [".build*/", "Frameworks/"],
+            ignoredExcludedCount: 42,
+            nestedWorktreesSkipped: [".claude/worktrees/agent"]
         )
         let result = GitForkWorktreeResult(
             worktree: worktreeSnapshot(), materialization: .copyOnWrite(report))
@@ -306,7 +310,8 @@ struct GitWorktreeForkContractTests {
             sourceWorktreePath: URL(fileURLWithPath: "/tmp/source"),
             destinationPath: URL(fileURLWithPath: "/tmp/destination"),
             mode: .detached,
-            materialization: .copyOnWrite
+            materialization: .copyOnWrite,
+            copyRules: GitWorktreeCopyRules(ignoredPaths: .copyAll)
         )
 
         // Act

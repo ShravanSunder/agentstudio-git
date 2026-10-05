@@ -23,7 +23,8 @@ enum WorktreeForkSparseCapture {
         let patternFile = (try? Data(contentsOf: gitDirectory.appending(path: "info/sparse-checkout"))) ?? Data()
         let worktreeConfiguration = try? Data(contentsOf: gitDirectory.appending(path: "config.worktree"))
         let matcher = SparseCheckoutMatcher(
-            patternFile: String(bytes: patternFile, encoding: .utf8) ?? "", coneMode: coneMode)
+            patternFile: String(bytes: patternFile, encoding: .utf8) ?? "", coneMode: coneMode,
+            ignoreCase: booleanSetting(configuration, "core.ignorecase") ?? false)
         let persistedFlags = persistedSkipWorktreeFlags(indexPath: gitDirectory.appending(path: "index"))
         // The matcher decides every path the source index cannot vouch for; with an untranslatable pattern
         // it would expose or hide paths the source did not, so fail before mutation instead.

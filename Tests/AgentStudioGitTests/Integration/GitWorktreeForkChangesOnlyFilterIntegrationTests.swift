@@ -328,7 +328,8 @@ struct GitWorktreeForkChangesOnlyFilterIntegrationTests {
             sourceWorktreePath: fixture.source,
             destinationPath: destination,
             mode: .newBranch(name: "fork-lfs-pointer"),
-            materialization: .changesOnly
+            materialization: .changesOnly,
+            copyRules: GitWorktreeCopyRules(ignoredPaths: .copyAll)
         )
 
         // Act
@@ -364,7 +365,8 @@ struct GitWorktreeForkChangesOnlyFilterIntegrationTests {
             sourceWorktreePath: fixture.source,
             destinationPath: destination,
             mode: .newBranch(name: "fork-custom-filter"),
-            materialization: .changesOnly
+            materialization: .changesOnly,
+            copyRules: GitWorktreeCopyRules(ignoredPaths: .copyAll)
         )
 
         // Act

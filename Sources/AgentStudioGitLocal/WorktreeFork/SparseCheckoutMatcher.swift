@@ -1,3 +1,4 @@
+import AgentStudioGitContracts
 import Foundation
 
 /// Git-compatible evaluation of `info/sparse-checkout` patterns over tracked paths. It exists because
@@ -10,17 +11,19 @@ struct SparseCheckoutMatcher: Sendable {
     }
 
     private let mode: Mode
+    private let ignoreCase: Bool
     /// True when a pattern could not be translated. Such a matcher must not decide skip-worktree state:
     /// dropping a pattern silently would expose or hide paths the source did not.
     let hasUntranslatablePatterns: Bool
 
     /// `coneMode` follows `core.sparseCheckoutCone`; a pattern file that is not in cone form is evaluated
     /// with ordinary pattern rules, as Git does.
-    init(patternFile: String, coneMode: Bool) {
-        let lines = patternFile.split(separator: "\n", omittingEmptySubsequences: true)
-            .map { String($0).trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
-        if coneMode, let cone = Self.coneDirectories(lines) {
+    init(patternFile: String, coneMode: Bool, ignoreCase: Bool = false) {
+        self.ignoreCase = ignoreCase
+        let lines = patternFile.components(separatedBy: "\n")
+            .map { $0.hasSuffix("\r") ? String($0.dropLast()) : $0 }
+            .filter { !$0.isEmpty && $0.utf8.first != 35 && !$0.utf8.allSatisfy { $0 == 32 } }
+        if coneMode, !ignoreCase, let cone = Self.coneDirectories(lines) {
             mode = .cone(recursiveDirectories: cone.recursive, parentDirectories: cone.parents)
             hasUntranslatablePatterns = false
         } else {
@@ -34,7 +37,7 @@ struct SparseCheckoutMatcher: Sendable {
     func includes(_ path: String) -> Bool {
         switch mode {
         case .cone(let recursiveDirectories, let parentDirectories):
-            let directory = WorktreeForkDescriptors.splitParent(path).parent
+            let directory = Self.parentPath(path)
             if directory.isEmpty || parentDirectories.contains(directory) {
                 return true
             }
@@ -43,7 +46,7 @@ struct SparseCheckoutMatcher: Sendable {
                 if recursiveDirectories.contains(ancestor) {
                     return true
                 }
-                ancestor = WorktreeForkDescriptors.splitParent(ancestor).parent
+                ancestor = Self.parentPath(ancestor)
             }
             return false
         case .patterns(let patterns):
@@ -54,18 +57,26 @@ struct SparseCheckoutMatcher: Sendable {
     /// Non-cone rule: the last matching pattern decides; an undecided path inherits its nearest decided
     /// parent directory; with nothing decided the path is outside the checkout.
     private func inheritedDecision(_ patterns: [SparsePattern], _ path: String) -> Bool {
-        var directory = WorktreeForkDescriptors.splitParent(path).parent
+        var directory = Self.parentPath(path)
         while !directory.isEmpty {
             if let decision = patternDecision(patterns, path: directory, isDirectory: true) {
                 return decision
             }
-            directory = WorktreeForkDescriptors.splitParent(directory).parent
+            directory = Self.parentPath(directory)
         }
         return false
     }
 
+    /// Git separators are bytes, even when followed by a combining mark in the next filename.
+    private static func parentPath(_ path: String) -> String {
+        let bytes = Array(path.utf8)
+        guard let slash = bytes.lastIndex(of: 47) else { return "" }
+        return String(bytes: bytes[..<slash], encoding: .utf8) ?? ""
+    }
+
     private func patternDecision(_ patterns: [SparsePattern], path: String, isDirectory: Bool) -> Bool? {
-        for pattern in patterns.reversed() where pattern.matches(path, isDirectory: isDirectory) {
+        for pattern in patterns.reversed() where pattern.matches(path, isDirectory: isDirectory, ignoreCase: ignoreCase)
+        {
             return !pattern.isNegated
         }
         return nil
@@ -106,164 +117,46 @@ struct SparseCheckoutMatcher: Sendable {
     }
 }
 
-/// One gitignore-syntax sparse pattern.
+/// Sparse policy owns negation; the positive pattern grammar is shared with copy rules.
 private struct SparsePattern: Sendable {
+    private enum Compilation: Sendable {
+        case pattern(GitPathPattern)
+        case neverMatches
+    }
     let isNegated: Bool
-    let directoryOnly: Bool
-    let matchesBasenameOnly: Bool
-    let expression: NSRegularExpression
+    private let compilation: Compilation
 
     init?(_ line: String) {
-        var body = Substring(line)
-        isNegated = body.hasPrefix("!")
-        if isNegated {
-            body = body.dropFirst()
+        let bytes = Array(line.utf8)
+        isNegated = bytes.first == 33
+        var positiveBytes = isNegated ? Array(bytes.dropFirst()) : bytes
+        GitPathPattern.trimUnescapedTrailingSpaces(&positiveBytes)
+        guard let positive = String(bytes: positiveBytes, encoding: .utf8) else { return nil }
+        // Sparse policy has consumed its one negation byte. Remaining ! or # markers are literal.
+        // Preserve an existing middle-slash anchor explicitly; basename rules escape the marker.
+        // Neither spelling makes literal-glued ** recursive under Git 2.52+ prefix context.
+        let body = positiveBytes.last == 47 ? positiveBytes.dropLast() : positiveBytes[...]
+        let literalLeadingMarker =
+            positiveBytes.first == 33 || positiveBytes.first == 35
+            ? (body.contains(47) ? "/" + positive : "\\" + positive) : positive
+        do {
+            compilation = .pattern(try GitPathPattern(literalLeadingMarker))
+        } catch {
+            // A trailing escape or unknown POSIX class aborts Git matching for this line only.
+            // Unsupported control bytes retain the existing fail-closed file behavior.
+            guard !positiveBytes.contains(0), !positiveBytes.contains(10), !positiveBytes.contains(13) else {
+                return nil
+            }
+            switch error {
+            case .empty, .malformed: compilation = .neverMatches
+            case .negationNotSupported: return nil
+            }
         }
-        directoryOnly = body.hasSuffix("/")
-        if directoryOnly {
-            body = body.dropLast()
-        }
-        matchesBasenameOnly = !body.contains("/")
-        if body.hasPrefix("/") {
-            body = body.dropFirst()
-        }
-        guard !body.isEmpty, let translated = Self.regex(fromGlob: String(body)),
-            let expression = try? NSRegularExpression(pattern: "^\(translated)$")
-        else {
-            return nil
-        }
-        self.expression = expression
     }
-
-    func matches(_ path: String, isDirectory: Bool) -> Bool {
-        if directoryOnly, !isDirectory {
-            return false
+    func matches(_ path: String, isDirectory: Bool, ignoreCase: Bool) -> Bool {
+        switch compilation {
+        case .pattern(let pattern): pattern.matches(path, isDirectory: isDirectory, ignoreCase: ignoreCase)
+        case .neverMatches: false
         }
-        let subject = matchesBasenameOnly ? WorktreeForkDescriptors.splitParent(path).name : path
-        let range = NSRange(subject.startIndex..<subject.endIndex, in: subject)
-        return expression.firstMatch(in: subject, range: range) != nil
-    }
-
-    /// Translates wildmatch globs: `**/` spans directories, `*` and `?` stay within one component. Returns
-    /// nil for a pattern Git itself rejects (an unknown POSIX class), which the matcher then reports.
-    private static func regex(fromGlob glob: String) -> String? {
-        var result = ""
-        let characters = Array(glob)
-        var index = 0
-        while index < characters.count {
-            let character = characters[index]
-            switch character {
-            case "*" where index + 1 < characters.count && characters[index + 1] == "*":
-                let followedBySlash = index + 2 < characters.count && characters[index + 2] == "/"
-                result += followedBySlash ? "(?:.*/)?" : ".*"
-                index += followedBySlash ? 3 : 2
-                continue
-            case "*":
-                result += "[^/]*"
-            case "?":
-                result += "[^/]"
-            case "[":
-                switch bracketExpression(characters, from: index) {
-                case .translated(let expression, let next):
-                    result += expression
-                    index = next
-                    continue
-                case .unterminated:
-                    result += "\\["
-                case .unsupported:
-                    return nil
-                }
-            case "\\" where index + 1 < characters.count:
-                result += NSRegularExpression.escapedPattern(for: String(characters[index + 1]))
-                index += 2
-                continue
-            default:
-                result += NSRegularExpression.escapedPattern(for: String(character))
-            }
-            index += 1
-        }
-        return result
-    }
-
-    private enum BracketTranslation {
-        case translated(String, next: Int)
-        case unterminated
-        case unsupported
-    }
-
-    private static let posixClasses: Set<String> = [
-        "alnum", "alpha", "blank", "cntrl", "digit", "graph", "lower", "print", "punct", "space", "upper", "xdigit",
-    ]
-
-    /// Translates one Git bracket expression into an ICU class built only from code-point escapes, ranges, and
-    /// known POSIX classes, so ICU set syntax (`&&`, nested `[`, `\p`) can never leak in. A leading `]` is a
-    /// member, `!`/`^` negates (never matching `/`, as under Git's pathname rule), and a reversed range
-    /// matches nothing.
-    private static func bracketExpression(_ characters: [Character], from start: Int) -> BracketTranslation {
-        var index = start + 1
-        var negated = false
-        if index < characters.count, characters[index] == "!" || characters[index] == "^" {
-            negated = true
-            index += 1
-        }
-        var members = ""
-        var isFirst = true
-        while index < characters.count {
-            let character = characters[index]
-            if character == "]", !isFirst {
-                let expression =
-                    negated ? "[^/\(members)]" : (members.isEmpty ? "(?!)" : "[\(members)]")
-                return .translated(expression, next: index + 1)
-            }
-            isFirst = false
-            if character == "[", index + 1 < characters.count, characters[index + 1] == ":" {
-                guard let end = posixClassEnd(characters, from: index + 2) else {
-                    return .unsupported
-                }
-                let name = String(characters[(index + 2)..<end])
-                guard posixClasses.contains(name) else {
-                    return .unsupported
-                }
-                members += "[:\(name):]"
-                index = end + 2
-                continue
-            }
-            var lower = character
-            if character == "\\", index + 1 < characters.count {
-                index += 1
-                lower = characters[index]
-            }
-            if index + 2 < characters.count, characters[index + 1] == "-", characters[index + 2] != "]" {
-                var upper = characters[index + 2]
-                var consumed = 3
-                if upper == "\\", index + 3 < characters.count {
-                    upper = characters[index + 3]
-                    consumed = 4
-                }
-                if let low = lower.unicodeScalars.first?.value, let high = upper.unicodeScalars.first?.value,
-                    low <= high
-                {
-                    members += "\\x{\(String(low, radix: 16))}-\\x{\(String(high, radix: 16))}"
-                }
-                index += consumed
-                continue
-            }
-            for scalar in lower.unicodeScalars {
-                members += "\\x{\(String(scalar.value, radix: 16))}"
-            }
-            index += 1
-        }
-        return .unterminated
-    }
-
-    private static func posixClassEnd(_ characters: [Character], from start: Int) -> Int? {
-        var index = start
-        while index + 1 < characters.count {
-            if characters[index] == ":", characters[index + 1] == "]" {
-                return index
-            }
-            index += 1
-        }
-        return nil
     }
 }

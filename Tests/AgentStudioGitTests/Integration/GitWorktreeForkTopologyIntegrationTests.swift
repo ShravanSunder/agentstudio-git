@@ -335,8 +335,8 @@ struct GitWorktreeForkTopologyIntegrationTests {
         #expect(try canonical(storeRootLink).path == canonical(mirror).path)
     }
 
-    @Test("an untranslatable sparse pattern the matcher must decide with rejects the fork before mutation")
-    func untranslatableSparsePatternRejectsBeforeMutation() async throws {
+    @Test("a never-matching sparse line leaves fallback includes intact and the source unchanged")
+    func neverMatchingSparseLinePreservesFallbackIncludes() async throws {
         // Arrange
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-sparse-untranslatable")
         defer { fixture.remove() }
@@ -347,24 +347,21 @@ struct GitWorktreeForkTopologyIntegrationTests {
         try fixture.git.run("commit", "-qm", "tree")
         try fixture.git.run("sparse-checkout", "set", "--no-cone", "/*", "/[[:bogus:]]x")
         try fixture.git.run("rm", "-q", "--cached", "gone.txt")
-        let branchesBefore = try fixture.branchNames()
+        let sourceHead = try fixture.blobID("HEAD", at: fixture.source)
+        let sourceStatus = try fixture.statusLines(at: fixture.source)
 
         // Act
-        let failure: GitWorktreeForkError?
-        do {
-            _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
-            failure = nil
-        } catch {
-            failure = error
-        }
+        _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
 
-        // Assert
+        // Assert: native Git ignores the unknown class and /* still includes gone.txt.
         #expect(
-            failure
-                == .entryFailed(
-                    relativePath: "info/sparse-checkout", reason: .unresolvableGitAdministration, errorNumber: nil))
-        #expect(!GitWorktreeForkFileProbe.exists(fixture.destination()))
-        #expect(try fixture.branchNames() == branchesBefore)
+            try fixture.git.run(["ls-files", "-t", "--", "gone.txt"], currentDirectory: fixture.destination())
+                .hasPrefix("H "))
+        #expect(try fixture.statusLines(at: fixture.destination()).isEmpty)
+        #expect(
+            try String(contentsOf: fixture.destination().appending(path: "gone.txt"), encoding: .utf8) == "gone.txt\n")
+        #expect(try fixture.blobID("HEAD", at: fixture.source) == sourceHead)
+        #expect(try fixture.statusLines(at: fixture.source) == sourceStatus)
     }
 
     @Test("a worktree-scoped core.worktree is never carried into destination configuration")

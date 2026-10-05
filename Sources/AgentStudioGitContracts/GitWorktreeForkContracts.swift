@@ -21,6 +21,69 @@ public enum GitWorktreeForkMaterialization: String, Codable, CaseIterable, Hasha
     case changesOnly
 }
 
+/// Controls which ignored roots a copy-on-write fork carries from its source worktree.
+public enum GitIgnoredPathPolicy: Equatable, Hashable, Sendable {
+    case copyAll
+    case copyMatching([GitPathPattern])
+}
+
+extension GitIgnoredPathPolicy: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case kind
+        case patterns
+    }
+
+    private enum Kind: String, Codable {
+        case copyAll
+        case copyMatching
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(Kind.self, forKey: .kind) {
+        case .copyAll:
+            guard Set(try decoder.container(keyedBy: CopyRulePayloadKey.self).allKeys.map(\.stringValue)) == ["kind"]
+            else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(codingPath: decoder.codingPath, debugDescription: "copyAll has no patterns")
+                )
+            }
+            self = .copyAll
+        case .copyMatching:
+            guard
+                Set(try decoder.container(keyedBy: CopyRulePayloadKey.self).allKeys.map(\.stringValue)) == [
+                    "kind", "patterns",
+                ]
+            else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(
+                        codingPath: decoder.codingPath, debugDescription: "copyMatching requires patterns")
+                )
+            }
+            self = .copyMatching(try container.decode([GitPathPattern].self, forKey: .patterns))
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .copyAll:
+            try container.encode(Kind.copyAll, forKey: .kind)
+        case .copyMatching(let patterns):
+            try container.encode(Kind.copyMatching, forKey: .kind)
+            try container.encode(patterns, forKey: .patterns)
+        }
+    }
+}
+
+public struct GitWorktreeCopyRules: Codable, Equatable, Hashable, Sendable {
+    public let ignoredPaths: GitIgnoredPathPolicy
+
+    public init(ignoredPaths: GitIgnoredPathPolicy) {
+        self.ignoredPaths = ignoredPaths
+    }
+}
+
 extension GitForkWorktreeMode: Codable {
     private enum CodingKeys: String, CodingKey {
         case kind
@@ -74,17 +137,20 @@ public struct GitForkWorktreeRequest: Codable, Equatable, Hashable, Sendable {
     public let destinationPath: URL
     public let mode: GitForkWorktreeMode
     public let materialization: GitWorktreeForkMaterialization
+    public let copyRules: GitWorktreeCopyRules
 
     public init(
         sourceWorktreePath: URL,
         destinationPath: URL,
         mode: GitForkWorktreeMode,
-        materialization: GitWorktreeForkMaterialization
+        materialization: GitWorktreeForkMaterialization,
+        copyRules: GitWorktreeCopyRules
     ) {
         self.sourceWorktreePath = sourceWorktreePath
         self.destinationPath = destinationPath
         self.mode = mode
         self.materialization = materialization
+        self.copyRules = copyRules
     }
 }
 
@@ -116,6 +182,9 @@ extension GitWorktreeMaterializationResult: Codable {
         case logicalRegularFileBytes
         case skippedEntries
         case normalizedEntries
+        case ignoredIncludedPatterns
+        case ignoredExcludedCount
+        case nestedWorktreesSkipped
         case trackedChanges
         case untrackedFiles
         case ignoredExcluded
@@ -134,7 +203,8 @@ extension GitWorktreeMaterializationResult: Codable {
             let expectedKeys: Set<CodingKeys> = [
                 .kind, .clonedRegularFileCount, .createdDirectoryCount, .recreatedSymbolicLinkCount,
                 .preservedHardLinkCount, .preservedGitRepositoryCount, .recreatedFIFOCount,
-                .logicalRegularFileBytes, .skippedEntries, .normalizedEntries,
+                .logicalRegularFileBytes, .skippedEntries, .normalizedEntries, .ignoredIncludedPatterns,
+                .ignoredExcludedCount, .nestedWorktreesSkipped,
             ]
             guard Set(container.allKeys) == expectedKeys else {
                 throw Self.invalidPayload(decoder)
@@ -151,7 +221,12 @@ extension GitWorktreeMaterializationResult: Codable {
                     skippedEntries: try container.decode(
                         [GitWorktreeMaterializationSkippedEntry].self, forKey: .skippedEntries),
                     normalizedEntries: try container.decode(
-                        [GitWorktreeMaterializationNormalizedEntry].self, forKey: .normalizedEntries)
+                        [GitWorktreeMaterializationNormalizedEntry].self, forKey: .normalizedEntries),
+                    ignoredIncludedPatterns: try container.decode(
+                        [String].self, forKey: .ignoredIncludedPatterns),
+                    ignoredExcludedCount: try container.decode(Int.self, forKey: .ignoredExcludedCount),
+                    nestedWorktreesSkipped: try container.decode(
+                        [String].self, forKey: .nestedWorktreesSkipped)
                 )
             )
         case .changesOnly:
@@ -192,6 +267,9 @@ extension GitWorktreeMaterializationResult: Codable {
             try container.encode(report.logicalRegularFileBytes, forKey: .logicalRegularFileBytes)
             try container.encode(report.skippedEntries, forKey: .skippedEntries)
             try container.encode(report.normalizedEntries, forKey: .normalizedEntries)
+            try container.encode(report.ignoredIncludedPatterns, forKey: .ignoredIncludedPatterns)
+            try container.encode(report.ignoredExcludedCount, forKey: .ignoredExcludedCount)
+            try container.encode(report.nestedWorktreesSkipped, forKey: .nestedWorktreesSkipped)
         case .changesOnly(let report):
             try container.encode(Kind.changesOnly, forKey: .kind)
             try container.encode(report.trackedChanges, forKey: .trackedChanges)
@@ -283,6 +361,10 @@ public struct GitWorktreeMaterializationReport: Codable, Equatable, Hashable, Se
     public let logicalRegularFileBytes: Int64
     public let skippedEntries: [GitWorktreeMaterializationSkippedEntry]
     public let normalizedEntries: [GitWorktreeMaterializationNormalizedEntry]
+    public let ignoredIncludedPatterns: [String]
+    /// Number of excluded walked paths, including directories and hard-link members, excluding sockets.
+    public let ignoredExcludedCount: Int
+    public let nestedWorktreesSkipped: [String]
 
     public init(
         clonedRegularFileCount: Int,
@@ -293,7 +375,10 @@ public struct GitWorktreeMaterializationReport: Codable, Equatable, Hashable, Se
         recreatedFIFOCount: Int,
         logicalRegularFileBytes: Int64,
         skippedEntries: [GitWorktreeMaterializationSkippedEntry],
-        normalizedEntries: [GitWorktreeMaterializationNormalizedEntry]
+        normalizedEntries: [GitWorktreeMaterializationNormalizedEntry],
+        ignoredIncludedPatterns: [String],
+        ignoredExcludedCount: Int,
+        nestedWorktreesSkipped: [String]
     ) {
         self.clonedRegularFileCount = clonedRegularFileCount
         self.createdDirectoryCount = createdDirectoryCount
@@ -304,6 +389,9 @@ public struct GitWorktreeMaterializationReport: Codable, Equatable, Hashable, Se
         self.logicalRegularFileBytes = logicalRegularFileBytes
         self.skippedEntries = skippedEntries
         self.normalizedEntries = normalizedEntries
+        self.ignoredIncludedPatterns = ignoredIncludedPatterns
+        self.ignoredExcludedCount = ignoredExcludedCount
+        self.nestedWorktreesSkipped = nestedWorktreesSkipped
     }
 }
 
@@ -417,4 +505,12 @@ extension GitWorktreeForkEligibility: Codable {
             try container.encode(reason, forKey: .reason)
         }
     }
+}
+
+/// Dynamic keys ensure unknown payload keys are rejected, rather than hidden by an enum container.
+private struct CopyRulePayloadKey: CodingKey {
+    let stringValue: String
+    var intValue: Int? { nil }
+    init?(stringValue: String) { self.stringValue = stringValue }
+    init?(intValue: Int) { nil }
 }

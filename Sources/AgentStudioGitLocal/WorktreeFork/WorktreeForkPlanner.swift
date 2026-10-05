@@ -71,17 +71,36 @@ struct WorktreeForkPlanner: Sendable {
         }
         do throws(GitWorktreeForkError) {
             let filesystem: WorktreeForkFilesystemPlan
+            let ignoredIncludedPatterns: [String]
+            let ignoredExcludedCount: Int
+            let nestedWorktreesSkipped: [String]
             let changesOnly: WorktreeForkChangesOnlyPlan?
             let nestedGitEntryPaths: [String]
             let gitDirectoryCandidatePaths: [String]
             if request.materialization == .copyOnWrite {
-                filesystem = try WorktreeForkSourceWalker(cancellation: cancellation)
+                let walkedFilesystem = try WorktreeForkSourceWalker(cancellation: cancellation)
                     .walk(sourceRootDescriptor: sourceRootDescriptor)
+                let filtered = try WorktreeForkCopyFilter(cancellation: cancellation).apply(
+                    .init(
+                        filesystem: walkedFilesystem,
+                        sourceRoot: sourceRoot,
+                        sourceCommonDirectory: gitCapture.commonDirectory,
+                        sourceGitDirectory: gitCapture.sourceGitDirectory,
+                        capturedHead: gitCapture.capturedHead,
+                        copyRules: request.copyRules
+                    ))
+                filesystem = filtered.filesystem
+                ignoredIncludedPatterns = filtered.ignoredIncludedPatterns
+                ignoredExcludedCount = filtered.ignoredExcludedCount
+                nestedWorktreesSkipped = filtered.nestedWorktreesSkipped
                 nestedGitEntryPaths = filesystem.nestedGitEntryPaths
                 gitDirectoryCandidatePaths = filesystem.gitDirectoryCandidatePaths
                 changesOnly = nil
             } else {
                 filesystem = .empty
+                ignoredIncludedPatterns = []
+                ignoredExcludedCount = 0
+                nestedWorktreesSkipped = []
                 nestedGitEntryPaths = []
                 gitDirectoryCandidatePaths = []
                 changesOnly = try WorktreeForkChangesOnlyPlanner(cancellation: cancellation).plan(
@@ -118,6 +137,9 @@ struct WorktreeForkPlanner: Sendable {
                 materialization: request.materialization,
                 filesystem: try filesystem.excludingSubtrees(
                     gitTopology.copiedGitDirectories.flatMap(\.retiredRegistrationSubtrees)),
+                ignoredIncludedPatterns: ignoredIncludedPatterns,
+                ignoredExcludedCount: ignoredExcludedCount,
+                nestedWorktreesSkipped: nestedWorktreesSkipped,
                 changesOnly: changesOnly,
                 gitTopology: gitTopology
             )
