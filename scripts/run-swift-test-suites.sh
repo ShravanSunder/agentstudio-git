@@ -20,6 +20,8 @@ suites=(
   GitWorktreeCopyRulesContractTests
   GitPathPatternTests
   GitPathPatternReviewTests
+  GitPathPatternNativeParityTests
+  SparseCheckoutMatcherNativeParityTests
   GitLargeFileFillContractTests
   LibGit2BlockingReadExecutorTests
   LibGit2RuntimeTests
@@ -62,6 +64,7 @@ suites=(
   GitWorktreeForkStorageIntegrationTests
   GitWorktreeForkRollbackIntegrationTests
   GitWorktreeForkTopologyIntegrationTests
+  GitWorktreeForkSparseMatcherFallbackTests
   GitWorktreeForkEligibilityIntegrationTests
   GitWorktreeForkChangesOnlyIntegrationTests
   GitWorktreeForkCancellationIntegrationTests

@@ -62,3 +62,7 @@ The compatibility obligations remain attached to their real owners:
 This package owns Git data access and Git-shaped value types. It should not import AgentStudio app modules, Bridge UI contracts, atoms, stores, or persistence systems.
 
 Blocking Git and filesystem work belongs off the main actor. Public async APIs should be safe to call from AgentStudio actors without doing blocking work on the caller executor.
+
+## Wildmatch attribution
+
+This product includes software developed by Rich Salz. `GitPathPattern` uses an altered Swift bytecode port of Git's wildmatch implementation by Rich Salz and Wayne Davison. The source reference and copyright terms are retained in [vendor/libgit2/COPYING](vendor/libgit2/COPYING).

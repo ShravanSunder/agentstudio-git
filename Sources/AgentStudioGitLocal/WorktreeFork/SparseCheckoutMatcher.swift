@@ -11,17 +11,19 @@ struct SparseCheckoutMatcher: Sendable {
     }
 
     private let mode: Mode
+    private let ignoreCase: Bool
     /// True when a pattern could not be translated. Such a matcher must not decide skip-worktree state:
     /// dropping a pattern silently would expose or hide paths the source did not.
     let hasUntranslatablePatterns: Bool
 
     /// `coneMode` follows `core.sparseCheckoutCone`; a pattern file that is not in cone form is evaluated
     /// with ordinary pattern rules, as Git does.
-    init(patternFile: String, coneMode: Bool) {
-        let lines = patternFile.split(separator: "\n", omittingEmptySubsequences: true)
-            .map { String($0).trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
-        if coneMode, let cone = Self.coneDirectories(lines) {
+    init(patternFile: String, coneMode: Bool, ignoreCase: Bool = false) {
+        self.ignoreCase = ignoreCase
+        let lines = patternFile.components(separatedBy: "\n")
+            .map { $0.hasSuffix("\r") ? String($0.dropLast()) : $0 }
+            .filter { !$0.isEmpty && $0.utf8.first != 35 && !$0.utf8.allSatisfy { $0 == 32 } }
+        if coneMode, !ignoreCase, let cone = Self.coneDirectories(lines) {
             mode = .cone(recursiveDirectories: cone.recursive, parentDirectories: cone.parents)
             hasUntranslatablePatterns = false
         } else {
@@ -35,7 +37,7 @@ struct SparseCheckoutMatcher: Sendable {
     func includes(_ path: String) -> Bool {
         switch mode {
         case .cone(let recursiveDirectories, let parentDirectories):
-            let directory = WorktreeForkDescriptors.splitParent(path).parent
+            let directory = Self.parentPath(path)
             if directory.isEmpty || parentDirectories.contains(directory) {
                 return true
             }
@@ -44,7 +46,7 @@ struct SparseCheckoutMatcher: Sendable {
                 if recursiveDirectories.contains(ancestor) {
                     return true
                 }
-                ancestor = WorktreeForkDescriptors.splitParent(ancestor).parent
+                ancestor = Self.parentPath(ancestor)
             }
             return false
         case .patterns(let patterns):
@@ -55,18 +57,26 @@ struct SparseCheckoutMatcher: Sendable {
     /// Non-cone rule: the last matching pattern decides; an undecided path inherits its nearest decided
     /// parent directory; with nothing decided the path is outside the checkout.
     private func inheritedDecision(_ patterns: [SparsePattern], _ path: String) -> Bool {
-        var directory = WorktreeForkDescriptors.splitParent(path).parent
+        var directory = Self.parentPath(path)
         while !directory.isEmpty {
             if let decision = patternDecision(patterns, path: directory, isDirectory: true) {
                 return decision
             }
-            directory = WorktreeForkDescriptors.splitParent(directory).parent
+            directory = Self.parentPath(directory)
         }
         return false
     }
 
+    /// Git separators are bytes, even when followed by a combining mark in the next filename.
+    private static func parentPath(_ path: String) -> String {
+        let bytes = Array(path.utf8)
+        guard let slash = bytes.lastIndex(of: 47) else { return "" }
+        return String(bytes: bytes[..<slash], encoding: .utf8) ?? ""
+    }
+
     private func patternDecision(_ patterns: [SparsePattern], path: String, isDirectory: Bool) -> Bool? {
-        for pattern in patterns.reversed() where pattern.matches(path, isDirectory: isDirectory) {
+        for pattern in patterns.reversed() where pattern.matches(path, isDirectory: isDirectory, ignoreCase: ignoreCase)
+        {
             return !pattern.isNegated
         }
         return nil
@@ -113,12 +123,16 @@ private struct SparsePattern: Sendable {
     private let pattern: GitPathPattern
 
     init?(_ line: String) {
-        isNegated = line.hasPrefix("!")
-        let positive = isNegated ? String(line.dropFirst()) : line
-        guard let pattern = try? GitPathPattern(positive) else { return nil }
+        let bytes = Array(line.utf8)
+        isNegated = bytes.first == 33
+        let positiveBytes = isNegated ? Array(bytes.dropFirst()) : bytes
+        guard let positive = String(bytes: positiveBytes, encoding: .utf8) else { return nil }
+        // Sparse policy has consumed its one negation byte. Any remaining leading bang is literal.
+        let literalLeadingBang = positiveBytes.first == 33 ? "\\" + positive : positive
+        guard let pattern = try? GitPathPattern(literalLeadingBang) else { return nil }
         self.pattern = pattern
     }
-    func matches(_ path: String, isDirectory: Bool) -> Bool {
-        pattern.matches(path, isDirectory: isDirectory)
+    func matches(_ path: String, isDirectory: Bool, ignoreCase: Bool) -> Bool {
+        pattern.matches(path, isDirectory: isDirectory, ignoreCase: ignoreCase)
     }
 }
