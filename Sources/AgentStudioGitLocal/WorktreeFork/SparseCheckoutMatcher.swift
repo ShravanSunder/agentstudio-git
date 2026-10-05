@@ -129,7 +129,8 @@ private struct SparsePattern: Sendable {
     init?(_ line: String) {
         let bytes = Array(line.utf8)
         isNegated = bytes.first == 33
-        let positiveBytes = isNegated ? Array(bytes.dropFirst()) : bytes
+        var positiveBytes = isNegated ? Array(bytes.dropFirst()) : bytes
+        GitPathPattern.trimUnescapedTrailingSpaces(&positiveBytes)
         guard let positive = String(bytes: positiveBytes, encoding: .utf8) else { return nil }
         // Sparse policy has consumed its one negation byte. Remaining ! or # markers are literal.
         // An existing middle slash already anchors the rule. Spell that anchor explicitly for !,

@@ -20,16 +20,7 @@ public struct GitPathPattern: Codable, Hashable, Sendable {
         guard body.first != 33 else { throw .negationNotSupported }
         guard body.first != 35 else { throw .malformed }
         // Syntax markers are bytes too: a following combining mark must not be consumed with them.
-        // Git discards unescaped trailing spaces, preserving an escaped final space.
-        while body.last == 32 {
-            var backslashes = 0
-            for byte in body.dropLast().reversed() {
-                guard byte == 92 else { break }
-                backslashes += 1
-            }
-            if backslashes % 2 == 1 { break }
-            body.removeLast()
-        }
+        Self.trimUnescapedTrailingSpaces(&body)
         directoryOnly = body.last == 47
         if directoryOnly { body.removeLast() }
         basenameOnly = !body.contains(47)
@@ -37,6 +28,19 @@ public struct GitPathPattern: Codable, Hashable, Sendable {
         guard !body.isEmpty, !body.contains(10), !body.contains(13), !body.contains(0) else { throw .malformed }
         compiledPattern = try GitWildmatchPattern(bytes: body)
         self.rawValue = rawValue
+    }
+
+    /// Git trims before deciding directory-only and basename anchoring; sparse adapters must too.
+    package static func trimUnescapedTrailingSpaces(_ bytes: inout [UInt8]) {
+        while bytes.last == 32 {
+            var backslashes = 0
+            for byte in bytes.dropLast().reversed() {
+                guard byte == 92 else { break }
+                backslashes += 1
+            }
+            if backslashes % 2 == 1 { break }
+            bytes.removeLast()
+        }
     }
 
     public func matches(_ path: String, isDirectory: Bool, ignoreCase: Bool = false) -> Bool {
