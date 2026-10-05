@@ -7,11 +7,34 @@ import Testing
 /// One extensible table compares the public parser with native Git, including byte-oriented paths.
 @Suite("Git path pattern native Git parity", .serialized)
 struct GitPathPatternNativeParityTests {
+    @Test("native oracle gates only glued double stars before Git 2.52")
+    func oracleVersionBoundary() throws {
+        for version in ["git version 2.50.1 (Apple Git-155)", "git version 2.51.0"] {
+            #expect(!(try GitNativePatternOracle(version: version)).supportsModernPrefixContext)
+        }
+        for version in ["git version 2.52.0", "git version 2.55.0", "git version 3.0.0"] {
+            #expect(try GitNativePatternOracle(version: version).supportsModernPrefixContext)
+        }
+        #expect(throws: GitNativePatternOracle.DetectionFailure.self) {
+            _ = try GitNativePatternOracle(version: "unrecognized")
+        }
+        let old = try GitNativePatternOracle(version: "git version 2.50.1")
+        let modern = try GitNativePatternOracle(version: "git version 2.52.0")
+        for pattern in ["foo**/bar", "x/foo**/bar", #"foo**\/bar"#, "!!**/foo", "a?b**/c"] {
+            #expect(!old.canCompare(pattern))
+            #expect(modern.canCompare(pattern))
+        }
+        for pattern in ["**/foo", "foo/**/bar", "[**]/foo", "[[:digit:]]**/bar"] {
+            #expect(old.canCompare(pattern))
+        }
+    }
+
     struct PatternCase: Sendable {
         let pattern: String
         let path: String
         var isDirectory = false
         var ignoreCase = false
+        var modernExpected: Bool?
     }
 
     static let cases: [PatternCase] = [
@@ -33,8 +56,8 @@ struct GitPathPatternNativeParityTests {
         .init(pattern: "cache/**", path: "cache/a\nb/file"),
         .init(pattern: "**/x", path: "x"),
         .init(pattern: "**/x", path: "a/b/x"),
-        .init(pattern: "foo**bar", path: "foo/a/bar"),
-        .init(pattern: "foo**bar", path: "fooabbar"),
+        .init(pattern: "foo**bar", path: "foo/a/bar", modernExpected: false),
+        .init(pattern: "foo**bar", path: "fooabbar", modernExpected: true),
         .init(pattern: "*.[oa]", path: "build/file.o"),
         .init(pattern: "[!a-c]x", path: "dx"),
         .init(pattern: "[^a-c]x", path: "bx"),
@@ -83,11 +106,14 @@ struct GitPathPatternNativeParityTests {
         .init(pattern: "/\u{0301}name", path: "\u{0301}name"),
         .init(pattern: "a/\u{0301}name", path: "a/\u{0301}name"),
         .init(pattern: #"\!́name"#, path: "!\u{0301}name"),
-        .init(pattern: "foo**/bar", path: "foox/y/bar"),
-        .init(pattern: "x/foo**/bar", path: "x/fooq/r/bar"),
-        .init(pattern: #"foo**\/bar"#, path: "foox/y/bar"),
-        .init(pattern: "a?b**/c", path: "axbq/r/c"),
-        .init(pattern: #"\!**/foo"#, path: "!x/y/foo"),
+        // Recorded Git >=2.52 expectations: 1940a02dc1 retains one byte of prefix context.
+        .init(pattern: "foo**/bar", path: "foo/bar", modernExpected: true),
+        .init(pattern: "foo**/bar", path: "foox/y/bar", modernExpected: false),
+        .init(pattern: "foo**/bar", path: "foobar", modernExpected: false),
+        .init(pattern: "x/foo**/bar", path: "x/fooq/r/bar", modernExpected: false),
+        .init(pattern: #"foo**\/bar"#, path: "foox/y/bar", modernExpected: false),
+        .init(pattern: "a?b**/c", path: "axbq/r/c", modernExpected: false),
+        .init(pattern: #"\!**/foo"#, path: "!x/y/foo", modernExpected: false),
         .init(pattern: "x[[:space:]]y", path: "x\u{000B}y"),
         .init(pattern: "x[[:space:]]y", path: "x\u{000C}y"),
         .init(pattern: "x[[:space:]]y", path: "x\ty"),
@@ -96,6 +122,13 @@ struct GitPathPatternNativeParityTests {
 
     @Test("compiled positive patterns agree with git check-ignore --no-index", arguments: cases)
     func matchesNativeGit(row: PatternCase) throws {
+        let oracle = try GitNativePatternOracle.installed.get()
+        let pattern = try GitPathPattern(row.pattern)
+        if !oracle.canCompare(row.pattern) {
+            let recorded = try #require(row.modernExpected, "missing recorded modern Git expectation")
+            #expect(pattern.matches(row.path, isDirectory: row.isDirectory, ignoreCase: row.ignoreCase) == recorded)
+            return
+        }
         let fixture = try GitFixtureRepository.makeRepository(prefix: "wildmatch-parity")
         defer { fixture.remove() }
         try fixture.git.run("config", "core.ignorecase", row.ignoreCase ? "true" : "false")
@@ -107,7 +140,6 @@ struct GitPathPatternNativeParityTests {
             ["check-ignore", "--no-index", "-z", "--stdin"],
             standardInput: Data((candidate + "\0" + sentinel + "\0").utf8))
         let nativeMatch = output.split(separator: "\0").contains { $0 == candidate }
-        let pattern = try GitPathPattern(row.pattern)
         #expect(
             pattern.matches(row.path, isDirectory: row.isDirectory, ignoreCase: row.ignoreCase) == nativeMatch,
             "native Git: \(nativeMatch), pattern: \(String(reflecting: row.pattern)), path: \(String(reflecting: row.path))"
@@ -121,6 +153,7 @@ struct SparseCheckoutMatcherNativeParityTests {
         let rules: String
         let paths: [String]
         var ignoreCase = false
+        var modernIncluded: [String]?
     }
 
     static let cases: [SparseCase] = [
@@ -140,8 +173,12 @@ struct SparseCheckoutMatcherNativeParityTests {
         .init(rules: "/*\n!\u{0301}name\n", paths: ["\u{0301}name", "visible.txt"]),
         .init(rules: "/*\n!!\u{0301}name\n", paths: ["!\u{0301}name", "visible.txt"]),
         .init(rules: "/cache/\n", paths: ["cache/\u{0301}file", "other/file"]),
-        .init(rules: "/foo**/bar\n", paths: ["foox/y/bar", "foobar", "foo/bar"]),
-        .init(rules: "/*\n!!**/foo\n", paths: ["!x/y/foo", "visible.txt"]),
+        // Git >=2.52 / 1940a02dc1: component ** cannot cross a slash or omit /bar.
+        .init(rules: "/foo**/bar\n", paths: ["foox/y/bar", "foobar", "foo/bar"], modernIncluded: ["foo/bar"]),
+        // 1940a02dc1: the literal ! prefix makes ** component-only; inherit /* for both paths.
+        .init(
+            rules: "/*\n!!**/foo\n", paths: ["!x/y/foo", "visible.txt"],
+            modernIncluded: ["!x/y/foo", "visible.txt"]),
         .init(rules: "b\n?/\\/\n", paths: ["b/c", "b", "other/c"]),
         .init(rules: "b\n[[:unknown:]]\n", paths: ["b/c", "b", "other/c"]),
         .init(rules: "/*\n!#foo\n", paths: ["#foo", "bar"]),
@@ -149,6 +186,14 @@ struct SparseCheckoutMatcherNativeParityTests {
 
     @Test("sparse policy agrees with git sparse-checkout check-rules --no-cone", arguments: cases)
     func matchesNativeSparseRules(row: SparseCase) throws {
+        let oracle = try GitNativePatternOracle.installed.get()
+        let matcher = SparseCheckoutMatcher(patternFile: row.rules, coneMode: false, ignoreCase: row.ignoreCase)
+        #expect(!matcher.hasUntranslatablePatterns)
+        if !oracle.canCompareSparseRules(row.rules) {
+            let included = Set(try #require(row.modernIncluded, "missing recorded modern sparse expectation"))
+            for path in row.paths { #expect(matcher.includes(path) == included.contains(path)) }
+            return
+        }
         let fixture = try GitFixtureRepository.makeRepository(prefix: "sparse-rule-parity")
         defer { fixture.remove() }
         try fixture.git.run("config", "core.ignorecase", row.ignoreCase ? "true" : "false")
@@ -158,8 +203,6 @@ struct SparseCheckoutMatcherNativeParityTests {
             ["sparse-checkout", "check-rules", "--no-cone", "-z", "--rules-file", rulesFile.path],
             standardInput: Data((row.paths.joined(separator: "\0") + "\0").utf8))
         let included = Set(output.split(separator: "\0").map(String.init))
-        let matcher = SparseCheckoutMatcher(patternFile: row.rules, coneMode: false, ignoreCase: row.ignoreCase)
-        #expect(!matcher.hasUntranslatablePatterns)
         for path in row.paths {
             #expect(
                 matcher.includes(path) == included.contains(path),

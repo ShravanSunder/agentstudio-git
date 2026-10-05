@@ -133,8 +133,8 @@ private struct SparsePattern: Sendable {
         GitPathPattern.trimUnescapedTrailingSpaces(&positiveBytes)
         guard let positive = String(bytes: positiveBytes, encoding: .utf8) else { return nil }
         // Sparse policy has consumed its one negation byte. Remaining ! or # markers are literal.
-        // An existing middle slash already anchors the rule. Spell that anchor explicitly for !,
-        // so an injected escape does not incorrectly end match_pathname's glob-free literal prefix.
+        // Preserve an existing middle-slash anchor explicitly; basename rules escape the marker.
+        // Neither spelling makes literal-glued ** recursive under Git 2.52+ prefix context.
         let body = positiveBytes.last == 47 ? positiveBytes.dropLast() : positiveBytes[...]
         let literalLeadingMarker =
             positiveBytes.first == 33 || positiveBytes.first == 35

@@ -14,6 +14,8 @@ struct SparseCheckoutReapplyNativeParityTests {
     }
 
     static let cases: [ReapplyCase] = [
+        // Recorded Git >=2.52 / 1940a02dc1: ** after a literal prefix is a component star.
+        .init(rules: "/foo**/bar\n", skippedPaths: ["foox/y/bar", "foobar"], includedPaths: ["foo/bar"]),
         .init(
             rules: "/*\n!!build/ \n", skippedPaths: ["!build/f", "x/!build/f"],
             includedPaths: ["!build /f", "keep"]),
@@ -27,6 +29,14 @@ struct SparseCheckoutReapplyNativeParityTests {
 
     @Test("trailing-space marker rules agree with real reapply flags", arguments: cases)
     func trailingSpaceRulesMatchNativeGit(row: ReapplyCase) throws {
+        let oracle = try GitNativePatternOracle.installed.get()
+        let matcher = SparseCheckoutMatcher(patternFile: row.rules, coneMode: false)
+        if !oracle.canCompareSparseRules(row.rules) {
+            #expect(!matcher.hasUntranslatablePatterns)
+            for path in row.skippedPaths { #expect(!matcher.includes(path)) }
+            for path in row.includedPaths { #expect(matcher.includes(path)) }
+            return
+        }
         // Arrange
         let paths = row.skippedPaths + row.includedPaths
         let fixture = try makeSparseFixture(paths: paths)
@@ -34,7 +44,6 @@ struct SparseCheckoutReapplyNativeParityTests {
 
         // Act: write the file directly so Git's file reader, rather than set/check-rules, is the oracle.
         let flags = try reapplyFlags(fixture: fixture, rules: row.rules)
-        let matcher = SparseCheckoutMatcher(patternFile: row.rules, coneMode: false)
 
         // Assert both the recorded native outcome and the adapter's decision.
         #expect(!matcher.hasUntranslatablePatterns)
@@ -50,6 +59,7 @@ struct SparseCheckoutReapplyNativeParityTests {
 
     @Test("seeded marker and trailing-form rules agree with real reapply skip-worktree flags")
     func seededTrailingFormsMatchNativeGit() throws {
+        let oracle = try GitNativePatternOracle.installed.get()
         // Arrange: cover the full prefix/body/tail product, then add fixed-seed generated cases.
         let seed: UInt64 = 0xE1_5A2E_2026_1004
         var generator = ReapplyDifferentialGenerator(seed: seed)
@@ -83,9 +93,15 @@ struct SparseCheckoutReapplyNativeParityTests {
         defer { fixture.remove() }
         var mismatches: [String] = []
         var decisions = 0
+        var excluded = 0
 
         // Act: each rule set crosses Git's actual file reader and index update path.
         for ruleSet in rules {
+            // 1940a02dc1: generate the same corpus, gate only native comparison on old Git.
+            guard oracle.canCompareSparseRules(ruleSet) else {
+                excluded += paths.count
+                continue
+            }
             let flags = try reapplyFlags(fixture: fixture, rules: ruleSet)
             let matcher = SparseCheckoutMatcher(patternFile: ruleSet, coneMode: false)
             if matcher.hasUntranslatablePatterns {
@@ -105,7 +121,7 @@ struct SparseCheckoutReapplyNativeParityTests {
 
         // Assert: list every divergence with the fixed seed and complete native/adapter inputs.
         print(
-            "SPARSE_REAPPLY_DIFFERENTIAL seed=\(String(seed, radix: 16)) rules=\(rules.count) paths=\(paths.count) decisions=\(decisions) mismatches=\(mismatches.count)"
+            "SPARSE_REAPPLY_DIFFERENTIAL seed=\(String(seed, radix: 16)) rules=\(rules.count) paths=\(paths.count) generated=\(rules.count * paths.count) excluded=\(excluded) decisions=\(decisions) mismatches=\(mismatches.count)"
         )
         if !mismatches.isEmpty {
             Issue.record("Every mismatch, seed \(String(seed, radix: 16)):\n\(mismatches.joined(separator: "\n"))")

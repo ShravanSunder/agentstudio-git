@@ -12,6 +12,7 @@ struct GitWildmatchDifferentialTests {
 
     @Test("generated positive patterns agree with native check-ignore in both case policies")
     func seededPatternsAgreeWithNativeGit() throws {
+        let oracle = try GitNativePatternOracle.installed.get()
         let fixture = try GitFixtureRepository.makeRepository(prefix: "wildmatch-seeded")
         defer { fixture.remove() }
         var generator = DifferentialGenerator(seed: Self.patternSeed)
@@ -19,10 +20,16 @@ struct GitWildmatchDifferentialTests {
         let paths = generator.paths(count: 32)
         var mismatches: [String] = []
         var decisions = 0
+        var excluded = 0
         let sentinel = "__git_differential_oracle__"
         for ignoreCase in [false, true] {
             try fixture.git.run("config", "core.ignorecase", ignoreCase ? "true" : "false")
             for patternText in patterns {
+                // 1940a02dc1: preserve generation order, exclude this class only from older oracles.
+                guard oracle.canCompare(patternText) else {
+                    excluded += paths.count
+                    continue
+                }
                 try fixture.write(".gitignore", contents: patternText + "\n" + sentinel + "\n")
                 let candidates = paths.map(\.oraclePath) + [sentinel]
                 // Batch paths per pattern: stdout is bounded below pipe capacity, including newlines.
@@ -45,7 +52,7 @@ struct GitWildmatchDifferentialTests {
             }
         }
         print(
-            "WILDMATCH_DIFFERENTIAL seed=\(String(Self.patternSeed, radix: 16)) pairs=\(decisions) mismatches=\(mismatches.count)"
+            "WILDMATCH_DIFFERENTIAL seed=\(String(Self.patternSeed, radix: 16)) generated=\(patterns.count * paths.count * 2) excluded=\(excluded) pairs=\(decisions) mismatches=\(mismatches.count)"
         )
         if !mismatches.isEmpty {
             Issue.record(
@@ -55,6 +62,7 @@ struct GitWildmatchDifferentialTests {
 
     @Test("generated sparse rules agree with native check-rules in both case policies")
     func seededSparseRulesAgreeWithNativeGit() throws {
+        let oracle = try GitNativePatternOracle.installed.get()
         let fixture = try GitFixtureRepository.makeRepository(prefix: "sparse-seeded")
         defer { fixture.remove() }
         var generator = DifferentialGenerator(seed: Self.sparseSeed)
@@ -78,9 +86,15 @@ struct GitWildmatchDifferentialTests {
         }
         var mismatches: [String] = []
         var decisions = 0
+        var excluded = 0
         for ignoreCase in [false, true] {
             try fixture.git.run("config", "core.ignorecase", ignoreCase ? "true" : "false")
             for rules in ruleSets {
+                // Rule sets remain identical on every Git version; never compare old prefix bugs.
+                guard oracle.canCompareSparseRules(rules) else {
+                    excluded += paths.count
+                    continue
+                }
                 try rules.write(to: rulesFile, atomically: true, encoding: .utf8)
                 let output = try fixture.git.run(
                     ["sparse-checkout", "check-rules", "--no-cone", "-z", "--rules-file", rulesFile.path],
@@ -104,7 +118,7 @@ struct GitWildmatchDifferentialTests {
             }
         }
         print(
-            "SPARSE_DIFFERENTIAL seed=\(String(Self.sparseSeed, radix: 16)) pairs=\(decisions) mismatches=\(mismatches.count)"
+            "SPARSE_DIFFERENTIAL seed=\(String(Self.sparseSeed, radix: 16)) generated=\(ruleSets.count * paths.count * 2) excluded=\(excluded) pairs=\(decisions) mismatches=\(mismatches.count)"
         )
         if !mismatches.isEmpty {
             Issue.record(
