@@ -30,7 +30,10 @@ struct WorktreeForkValidator: Sendable {
         let snapshot = try validateRegistration(plan)
         try validateHead(plan)
         try validateCounts(plan.filesystem, observations)
-        try validateDestinationTree(plan.filesystem, destinationRootDescriptor: destinationRootDescriptor)
+        try validateDestinationTree(
+            plan.filesystem,
+            embeddedRepositoryGitEntryPaths: plan.gitTopology.embeddedRepositoryGitEntryPaths,
+            destinationRootDescriptor: destinationRootDescriptor)
         try WorktreeForkIndexValidation.validate(
             worktreePath: plan.destinationRoot,
             treeOID: plan.capturedHead.treeOID,
@@ -254,14 +257,19 @@ struct WorktreeForkValidator: Sendable {
         }
     }
 
-    /// Re-walks the destination and requires exactly the planned paths and kinds, hard-link groups sharing
-    /// one destination inode, and regular files that are new inodes rather than the source's.
+    /// Re-walks the destination the way the source was planned, independent repositories' `.git` entries as
+    /// ordinary content, and requires exactly the planned paths and kinds, hard-link groups sharing one
+    /// destination inode, and regular files that are new inodes rather than the source's.
     private func validateDestinationTree(
         _ plan: WorktreeForkFilesystemPlan,
+        embeddedRepositoryGitEntryPaths: [String],
         destinationRootDescriptor: Int32
     ) throws(GitWorktreeForkError) {
-        let realized = try WorktreeForkSourceWalker(cancellation: cancellation)
-            .walk(sourceRootDescriptor: destinationRootDescriptor)
+        let walker = WorktreeForkSourceWalker(cancellation: cancellation)
+        let realized = try walker.walk(sourceRootDescriptor: destinationRootDescriptor).addingPlainGitEntries(
+            embeddedRepositoryGitEntryPaths,
+            walked: try walker.walkPlainGitEntries(
+                embeddedRepositoryGitEntryPaths, rootDescriptor: destinationRootDescriptor))
         guard Self.pathKinds(of: realized) == Self.pathKinds(of: plan) else {
             let mismatch = Self.pathKinds(of: realized).symmetricDifference(Self.pathKinds(of: plan))
             throw .validationFailed(reason: .entryKindMismatch, relativePath: mismatch.map(\.path).min())

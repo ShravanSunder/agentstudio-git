@@ -148,7 +148,7 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
             // Relocated `includeIf` subsections, old to new, renamed in place before any value edit.
             var renamedSubsections: [String: String] = [:]
             for entry in try Self.ownEntries(of: copy) {
-                let valueRelocation = try mapping.valueRelocation(for: entry, in: copy)
+                let valueRelocation = mapping.valueRelocation(for: entry, in: copy)
                 if let relocatedSource = valueRelocation.relocatedSource,
                     let relocatedDestination = valueRelocation.relocatedDestination
                 {
@@ -184,7 +184,7 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
                         ))
                 case .outsideSource, .sharedRepository:
                     pending.append((.external(sourceTarget, includedBy: copy.reportPath), depth + 1))
-                case .relocated, .unmapped:
+                case .relocated:
                     continue
                 }
             }
@@ -289,15 +289,13 @@ struct WorktreeForkConfigurationPathRehomer: Sendable {
 }
 
 extension WorktreeForkSourcePathRelocation {
-    /// True when `path` is a source location the fork relocates to somewhere else, or one with no counterpart.
+    /// True when `path` is a source location the fork relocates to somewhere else.
     func namesRelocatedSource(_ path: URL) -> Bool {
         switch counterpart(of: path) {
         case .outsideSource, .sharedRepository:
             false
         case .relocated(let destination):
             destination.path != path.path
-        case .unmapped:
-            true
         }
     }
 }

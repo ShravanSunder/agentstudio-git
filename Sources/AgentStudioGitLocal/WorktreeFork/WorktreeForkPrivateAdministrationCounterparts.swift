@@ -5,13 +5,14 @@ import Foundation
 /// Gives a re-homed configuration value the right file to name. Re-homing re-aims a value that names a
 /// captured worktree's private administration (an `allowed_signers` or included `extra.conf` there) at the
 /// destination administration, but only the files re-homing writes itself come from that private source. Git
-/// silently ignores a missing include or signer file, and a flattened node's administration is cloned from
-/// the common administration, which may hold a different file under the same name. Git reads the
+/// silently ignores a missing include or signer file, and the administration of a submodule whose gitfile
+/// names a linked worktree is cloned from the common administration, which may hold a different file under the
+/// same name. Git reads the
 /// worktree-private file, so the private source wins: a missing counterpart is strictly cloned, and an
 /// existing one that is not equivalent to it is replaced through the metadata-preserving rewrite. A source
 /// entry that does not exist stays absent, exactly as Git finds nothing in the source either.
 ///
-/// One destination name can stand for two sources: a flattened node's common and private administration both
+/// One destination name can stand for two sources: such a submodule's common and private administration both
 /// land in one destination directory. When values require that name from two sources that differ, no single
 /// file serves both, so the fork fails rather than silently giving one reference the other's bytes.
 ///

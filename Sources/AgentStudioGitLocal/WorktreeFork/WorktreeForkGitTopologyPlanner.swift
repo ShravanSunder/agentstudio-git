@@ -3,9 +3,11 @@ import CLibGit2Local
 import Darwin
 import Foundation
 
-/// Classifies every nested `.git` entry the walker found. Registered submodules are discovered from each
-/// parent's captured tree gitlinks and `.gitmodules` blob, never from a source index. Git directories the
-/// walker found inside ordinary content are confirmed here and their copied pointers captured.
+/// Classifies every nested `.git` entry the walker found without opening it. A gitlink in the nearest enclosing
+/// submodule's (or the root's) captured tree or index is a submodule, named by that tree's `.gitmodules` blob,
+/// and only a submodule is opened and captured. Every other entry belongs to an independent repository, copied
+/// as content. Git directories the walker found inside ordinary content are confirmed here and their copied
+/// pointers captured.
 struct WorktreeForkGitTopologyPlanner: Sendable {
     let sourceRoot: URL
     /// The source repository's common directory, which the fork shares rather than mirrors.
@@ -22,10 +24,13 @@ struct WorktreeForkGitTopologyPlanner: Sendable {
         let rootTree = try WorktreeForkGitHandles.treeEntries(rootCapturedHead.treeOID, repository: rootRepository)
         let rootSparse = try WorktreeForkSparseCapture.capture(
             repository: rootRepository, gitDirectory: rootGitDirectory, treeEntries: rootTree)
+        let rootSourceIndex = WorktreeForkCleanEntryAdoption.captureSourceIndex(gitDirectory: rootGitDirectory)
         var registrations: [String: WorktreeForkSubmoduleRegistrations] = [
-            "": try WorktreeForkSubmoduleRegistrations(treeEntries: rootTree, repository: rootRepository)
+            "": try WorktreeForkSubmoduleRegistrations(
+                treeEntries: rootTree, sourceIndex: rootSourceIndex, repository: rootRepository)
         ]
         var nodes: [WorktreeForkGitNode] = []
+        var embeddedRepositoryGitEntryPaths: [String] = []
         for gitEntryPath in nestedGitEntryPaths {
             try cancellation.throwIfCancelled()
             let nodePath = WorktreeForkDescriptors.splitParent(gitEntryPath).parent
@@ -33,26 +38,32 @@ struct WorktreeForkGitTopologyPlanner: Sendable {
                 $0.count < $1.count
             }
             let pathInParent = parentPath.map { String(nodePath.dropFirst($0.count + 1)) } ?? nodePath
-            let submoduleName = registrations[parentPath ?? ""]?.nameByPath[pathInParent]
-            let captured = try captureNode(nodePath, gitEntryPath: gitEntryPath, submoduleName: submoduleName)
+            guard let submoduleName = registrations[parentPath ?? ""]?.nameByPath[pathInParent] else {
+                embeddedRepositoryGitEntryPaths.append(gitEntryPath)
+                continue
+            }
+            let captured = try captureSubmodule(nodePath, gitEntryPath: gitEntryPath, name: submoduleName)
             registrations[nodePath] = captured.registrations
             nodes.append(
                 WorktreeForkGitNode(
                     relativePath: nodePath,
                     parentRelativePath: parentPath,
-                    kind: captured.kind,
+                    submoduleName: submoduleName,
                     sourceGitDirectory: captured.gitDirectory,
                     sourceCommonDirectory: captured.commonDirectory,
                     capturedHead: captured.head,
                     headReferenceName: captured.headReferenceName,
                     sparse: captured.sparse,
-                    sourceIndex: WorktreeForkCleanEntryAdoption.captureSourceIndex(gitDirectory: captured.gitDirectory),
+                    sourceIndex: captured.sourceIndex,
                     alternateObjectStores: captured.alternates,
                     administrativeSymlinks: captured.administrativeSymlinks
                 ))
         }
         let copiedGitDirectories = try captureCopiedGitDirectories(
-            gitDirectoryCandidatePaths, capturedAdministration: Set(nodes.map(\.sourceGitDirectory.path)))
+            gitDirectoryCandidatePaths,
+            capturedAdministration: Set(nodes.map(\.sourceGitDirectory.path)),
+            gitfilesNamingSourceAdministration: try gitfilesNamingAbsoluteAdministration(
+                embeddedRepositoryGitEntryPaths))
         let mirroredObjectStores = Array(
             Set(
                 nodes.flatMap(\.alternateObjectStores)
@@ -73,9 +84,10 @@ struct WorktreeForkGitTopologyPlanner: Sendable {
         }
         return WorktreeForkGitTopology(
             rootSparse: rootSparse,
-            rootSourceIndex: WorktreeForkCleanEntryAdoption.captureSourceIndex(gitDirectory: rootGitDirectory),
+            rootSourceIndex: rootSourceIndex,
             nodes: nodes,
             uninitializedSubmodulePaths: uninitializedSubmodules(registrations, nodes: nodes),
+            embeddedRepositoryGitEntryPaths: embeddedRepositoryGitEntryPaths,
             mirroredObjectStores: mirroredObjectStores,
             mirroredStoreSymlinks: mirroredStoreSymlinks,
             copiedGitDirectories: copiedGitDirectories
@@ -83,7 +95,7 @@ struct WorktreeForkGitTopologyPlanner: Sendable {
     }
 
     /// Object stores outside the source tree that copied Git directories borrow from, with every store those
-    /// borrow from in turn. Each gets a destination-owned mirror, exactly as a nested node's alternates do.
+    /// borrow from in turn. Each gets a destination-owned mirror, exactly as a submodule's alternates do.
     /// The source repository's own common directory is shared by the fork, so it is never mirrored here.
     private func outsideObjectStores(
         of copiedGitDirectories: [WorktreeForkCopiedGitDirectory]
@@ -106,12 +118,15 @@ struct WorktreeForkGitTopologyPlanner: Sendable {
     }
 
     /// Keeps each candidate libgit2 opens as a Git directory and records the pointers its copy will hold. A
-    /// candidate Git would not open is not a repository, so its copy stays ordinary content. A registration
-    /// whose directory is a captured node's own administration (`capturedAdministration`, canonical paths) is
-    /// retired rather than recorded, and no candidate inside a retired registration is kept.
+    /// candidate Git would not open is not a repository, so its copy stays ordinary content. A registration no
+    /// destination gitfile will lead back to is retired rather than recorded: its directory is a captured
+    /// submodule's own administration (`capturedAdministration`), or its `gitdir` names a gitfile copied as
+    /// content that still names the source administration (`gitfilesNamingSourceAdministration`). Both sets hold
+    /// canonical paths. No candidate inside a retired registration is kept.
     private func captureCopiedGitDirectories(
         _ candidatePaths: [String],
-        capturedAdministration: Set<String>
+        capturedAdministration: Set<String>,
+        gitfilesNamingSourceAdministration: Set<String>
     ) throws(GitWorktreeForkError) -> [WorktreeForkCopiedGitDirectory] {
         var copied: [WorktreeForkCopiedGitDirectory] = []
         for relativePath in candidatePaths {
@@ -131,10 +146,19 @@ struct WorktreeForkGitTopologyPlanner: Sendable {
             var retired: [String] = []
             for registrationPath in registrations.keys.sorted() {
                 let registrationDirectory = WorktreeForkDescriptors.splitParent(registrationPath).parent
-                if case .success(let canonical) = WorktreeForkDescriptors.realpathURL(
-                    gitDirectory.appending(path: registrationDirectory)),
-                    capturedAdministration.contains(canonical.path)
-                {
+                let capturedAsSubmodule =
+                    if case .success(let canonical) = WorktreeForkDescriptors.realpathURL(
+                        gitDirectory.appending(path: registrationDirectory))
+                    {
+                        capturedAdministration.contains(canonical.path)
+                    } else {
+                        false
+                    }
+                let copiedAsContent =
+                    registrations[registrationPath]?.target.map {
+                        gitfilesNamingSourceAdministration.contains($0.path)
+                    } ?? false
+                if capturedAsSubmodule || copiedAsContent {
                     registrations[registrationPath] = nil
                     retired.append(registrationDirectory)
                 }
@@ -151,6 +175,22 @@ struct WorktreeForkGitTopologyPlanner: Sendable {
         return copied.filter { candidate in
             !retiredSubtrees.contains { WorktreeForkFilesystemPlan.isPath(candidate.relativePath, within: $0) }
         }
+    }
+
+    /// The canonical paths of the gitfiles among `gitEntryPaths` whose `gitdir:` is absolute. Copied byte for
+    /// byte, such a gitfile still names the source's administration, so the destination copy of the
+    /// registration it names would have nothing leading back to it. A relative one leads to the copy instead.
+    private func gitfilesNamingAbsoluteAdministration(
+        _ gitEntryPaths: [String]
+    ) throws(GitWorktreeForkError) -> Set<String> {
+        var gitfiles = Set<String>()
+        for gitEntryPath in gitEntryPaths {
+            let file = sourceRoot.appending(path: gitEntryPath)
+            if try WorktreeForkGitfile.recordedGitDirectory(file, reportPath: gitEntryPath)?.hasPrefix("/") == true {
+                gitfiles.insert(file.path)
+            }
+        }
+        return gitfiles
     }
 
     /// Each `worktrees/<name>/gitdir` file, which Git writes as the linked worktree's `.git` path, absolute
@@ -181,14 +221,14 @@ struct WorktreeForkGitTopologyPlanner: Sendable {
         return WorktreeForkCopiedPointer(line: line, target: canonical)
     }
 
-    private func captureNode(
+    private func captureSubmodule(
         _ nodePath: String,
         gitEntryPath: String,
-        submoduleName: String?
+        name: String
     ) throws(GitWorktreeForkError) -> WorktreeForkCapturedNode {
         let unresolvable = GitWorktreeForkError.entryFailed(
             relativePath: gitEntryPath, reason: .unresolvableGitAdministration, errorNumber: nil)
-        if let submoduleName, !WorktreeForkSubmoduleRegistrations.isSafeName(submoduleName) {
+        guard WorktreeForkSubmoduleRegistrations.isSafeName(name) else {
             throw unresolvable
         }
         let nodeRoot = sourceRoot.appending(path: nodePath)
@@ -228,26 +268,20 @@ struct WorktreeForkGitTopologyPlanner: Sendable {
             try head.map { head throws(GitWorktreeForkError) in
                 try WorktreeForkGitHandles.treeEntries(head.treeOID, repository: repository)
             } ?? [:]
-        let kind: WorktreeForkGitNodeKind
-        if let submoduleName {
-            kind = .submodule(name: submoduleName)
-        } else if gitEntryKind == .directory, gitDirectory == commonDirectory {
-            kind = .embeddedRepository
-        } else {
-            kind = .flattenedRepository
-        }
+        let sourceIndex = WorktreeForkCleanEntryAdoption.captureSourceIndex(gitDirectory: gitDirectory)
         return WorktreeForkCapturedNode(
-            kind: kind,
             gitDirectory: gitDirectory,
             commonDirectory: commonDirectory,
             head: head,
             headReferenceName: Self.symbolicHeadTarget(repository),
             sparse: try WorktreeForkSparseCapture.capture(
                 repository: repository, gitDirectory: gitDirectory, treeEntries: treeEntries),
+            sourceIndex: sourceIndex,
             alternates: try Self.alternateClosure(of: commonDirectory.appending(path: "objects"), gitEntryPath),
             administrativeSymlinks: try WorktreeForkAdministrativeSymlinks.classify(
                 administrationRoot: commonDirectory, reportPath: gitEntryPath),
-            registrations: try WorktreeForkSubmoduleRegistrations(treeEntries: treeEntries, repository: repository)
+            registrations: try WorktreeForkSubmoduleRegistrations(
+                treeEntries: treeEntries, sourceIndex: sourceIndex, repository: repository)
         )
     }
 
@@ -332,24 +366,30 @@ struct WorktreeForkGitTopologyPlanner: Sendable {
 }
 
 private struct WorktreeForkCapturedNode {
-    let kind: WorktreeForkGitNodeKind
     let gitDirectory: URL
     let commonDirectory: URL
     let head: WorktreeForkCapturedHead?
     let headReferenceName: String?
     let sparse: WorktreeForkSparsePlan?
+    let sourceIndex: WorktreeForkSourceIndexSnapshot?
     let alternates: [URL]
     let administrativeSymlinks: [String: WorktreeForkAdministrativeSymlink]
     let registrations: WorktreeForkSubmoduleRegistrations
 }
 
-/// Registered submodules of one node: gitlink paths from its captured tree, named by its `.gitmodules`
-/// blob in that same tree (Git's default name is the path).
+/// Registered submodules of one node: gitlink paths from its captured tree and its source index (a submodule
+/// added but not yet committed), named by the `.gitmodules` blob in that tree (Git's default name is the path).
 struct WorktreeForkSubmoduleRegistrations: Sendable {
     let nameByPath: [String: String]
 
-    init(treeEntries: [String: WorktreeForkTreeEntry], repository: OpaquePointer) throws(GitWorktreeForkError) {
-        let gitlinkPaths = treeEntries.filter { $0.value.mode == UInt32(GIT_FILEMODE_COMMIT.rawValue) }.keys
+    init(
+        treeEntries: [String: WorktreeForkTreeEntry],
+        sourceIndex: WorktreeForkSourceIndexSnapshot?,
+        repository: OpaquePointer
+    ) throws(GitWorktreeForkError) {
+        let gitlinkMode = UInt32(GIT_FILEMODE_COMMIT.rawValue)
+        let gitlinkPaths = Set(treeEntries.filter { $0.value.mode == gitlinkMode }.keys)
+            .union((sourceIndex?.entries ?? [:]).filter { $0.value.mode == gitlinkMode }.keys)
         guard !gitlinkPaths.isEmpty else {
             nameByPath = [:]
             return

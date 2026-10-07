@@ -2,8 +2,8 @@ import AgentStudioGit
 import Foundation
 import Testing
 
-/// Configuration a nested repository reaches through includes: every file the fork owns a copy of is
-/// re-homed at every level, include conditions naming relocated administration follow it, and cycles end.
+/// Configuration a submodule reaches through includes: every file the fork owns a copy of is re-homed at
+/// every level, include conditions naming relocated administration follow it, and cycles end.
 @Suite("Git worktree fork nested include integration", .serialized)
 struct GitWorktreeForkNestedIncludeIntegrationTests {
     @Test("configuration reached through nested includes is re-homed at every level")
@@ -11,10 +11,9 @@ struct GitWorktreeForkNestedIncludeIntegrationTests {
         // Arrange: config includes extra.conf, which includes deeper.conf and names the source's LFS storage.
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-config-include-chain")
         defer { fixture.remove() }
-        try ignoreVendorAndStorage(fixture)
-        let tool = try makeRepository(
-            at: fixture.source.appending(path: "vendor/tool"), file: "tool.txt", fixture: fixture)
-        let administration = try canonical(tool.appending(path: ".git"))
+        try ignoreStorage(fixture)
+        let tool = try fixture.addSubmodule(at: "deps/tool")
+        let administration = try fixture.gitDirectory(of: tool)
         let storage = try canonical(fixture.source.appending(path: "large-file-store"))
         let extra = administration.appending(path: "extra.conf")
         let deeper = administration.appending(path: "deeper.conf")
@@ -29,8 +28,8 @@ struct GitWorktreeForkNestedIncludeIntegrationTests {
         try "[agentstudio]\n\tmarker = changed-in-source\n".write(to: deeper, atomically: false, encoding: .utf8)
 
         // Assert
-        let destinationTool = destination.appending(path: "vendor/tool")
-        let destinationAdministration = try canonical(destinationTool.appending(path: ".git"))
+        let destinationTool = destination.appending(path: "deps/tool")
+        let destinationAdministration = try fixture.gitDirectory(of: destinationTool)
         #expect(
             try configValues("include.path", at: destinationTool, fixture)
                 == [
@@ -48,10 +47,9 @@ struct GitWorktreeForkNestedIncludeIntegrationTests {
         // Arrange: extra.conf includes deeper.conf by a relative path; deeper.conf names the source storage.
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-config-include-relative")
         defer { fixture.remove() }
-        try ignoreVendorAndStorage(fixture)
-        let tool = try makeRepository(
-            at: fixture.source.appending(path: "vendor/tool"), file: "tool.txt", fixture: fixture)
-        let administration = try canonical(tool.appending(path: ".git"))
+        try ignoreStorage(fixture)
+        let tool = try fixture.addSubmodule(at: "deps/tool")
+        let administration = try fixture.gitDirectory(of: tool)
         let storage = try canonical(fixture.source.appending(path: "large-file-store"))
         let extra = administration.appending(path: "extra.conf")
         try "[include]\n\tpath = deeper.conf\n".write(to: extra, atomically: false, encoding: .utf8)
@@ -64,12 +62,13 @@ struct GitWorktreeForkNestedIncludeIntegrationTests {
         _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
 
         // Assert
-        let destinationTool = destination.appending(path: "vendor/tool")
+        let destinationTool = destination.appending(path: "deps/tool")
         #expect(
             try configuredPath("lfs.storage", at: destinationTool, fixture)
                 == canonical(destination.appending(path: "large-file-store")).path)
         #expect(
-            try String(contentsOf: destinationTool.appending(path: ".git/extra.conf"), encoding: .utf8)
+            try String(
+                contentsOf: fixture.gitDirectory(of: destinationTool).appending(path: "extra.conf"), encoding: .utf8)
                 == "[include]\n\tpath = deeper.conf\n")
     }
 
@@ -78,10 +77,8 @@ struct GitWorktreeForkNestedIncludeIntegrationTests {
         // Arrange: config includes a.conf, a.conf includes b.conf, and b.conf includes a.conf again.
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-config-include-cycle")
         defer { fixture.remove() }
-        try ignore("vendor/", fixture: fixture)
-        let tool = try makeRepository(
-            at: fixture.source.appending(path: "vendor/tool"), file: "tool.txt", fixture: fixture)
-        let administration = try canonical(tool.appending(path: ".git"))
+        let tool = try fixture.addSubmodule(at: "deps/tool")
+        let administration = try fixture.gitDirectory(of: tool)
         try "[include]\n\tpath = b.conf\n"
             .write(to: administration.appending(path: "a.conf"), atomically: false, encoding: .utf8)
         try "[include]\n\tpath = a.conf\n"
@@ -106,7 +103,7 @@ struct GitWorktreeForkNestedIncludeIntegrationTests {
         #expect(
             failure
                 == .entryFailed(
-                    relativePath: "vendor/tool/.git", reason: .unresolvableGitAdministration, errorNumber: nil))
+                    relativePath: "deps/tool/.git", reason: .unresolvableGitAdministration, errorNumber: nil))
         #expect(!GitWorktreeForkFileProbe.exists(fixture.destination()))
         #expect(try fixture.branchNames() == branchesBefore)
     }
@@ -143,12 +140,11 @@ struct GitWorktreeForkNestedIncludeIntegrationTests {
         // Arrange: the Advisor's shape; a byte copy of this relative path would still reach the source file.
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-config-climbing-include")
         defer { fixture.remove() }
-        try ignore("dependency/", fixture: fixture)
-        let dependency = try makeRepository(
-            at: fixture.source.appending(path: "dependency"), file: "tracked.txt", fixture: fixture)
-        let extra = dependency.appending(path: ".git/extra.conf")
+        let dependency = try fixture.addSubmodule(at: "dependency", file: "tracked.txt")
+        let extra = try fixture.gitDirectory(of: dependency).appending(path: "extra.conf")
         try "[agentstudio]\n\tmarker = relative-original\n".write(to: extra, atomically: false, encoding: .utf8)
-        let climbing = "../../../\(fixture.source.lastPathComponent)/dependency/.git/extra.conf"
+        // The submodule's config lives in `<source>/.git/modules/dependency`, four levels below the fixture root.
+        let climbing = "../../../../\(fixture.source.lastPathComponent)/.git/modules/dependency/extra.conf"
         try fixture.git.run(["config", "include.path", climbing], currentDirectory: dependency)
         #expect(try configValue("agentstudio.marker", at: dependency, fixture) == "relative-original")
         let destination = fixture.destination()
@@ -163,21 +159,19 @@ struct GitWorktreeForkNestedIncludeIntegrationTests {
         #expect(try configValue("agentstudio.marker", at: destinationDependency, fixture) == "relative-original")
         #expect(
             try configuredPath("include.path", at: destinationDependency, fixture)
-                == canonical(destinationDependency.appending(path: ".git/extra.conf")).path)
+                == fixture.gitDirectory(of: destinationDependency).appending(path: "extra.conf").path)
     }
 
     @Test(
-        "an active gitdir condition naming the nested .git stays active at its destination counterpart",
+        "an active gitdir condition naming the submodule's administration stays active at its destination counterpart",
         arguments: ["gitdir:", "gitdir/i:"]
     )
     func gitDirectoryConditionFollowsDestinationAdministration(conditionPrefix: String) async throws {
         // Arrange: the Advisor's 509b-conditional-gitdir-exact shape.
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-config-conditional")
         defer { fixture.remove() }
-        try ignore("dependency/", fixture: fixture)
-        let dependency = try makeRepository(
-            at: fixture.source.appending(path: "dependency"), file: "tracked.txt", fixture: fixture)
-        let administration = try canonical(dependency.appending(path: ".git"))
+        let dependency = try fixture.addSubmodule(at: "dependency", file: "tracked.txt")
+        let administration = try fixture.gitDirectory(of: dependency)
         let included = administration.appending(path: "conditional.conf")
         try "[agentstudio]\n\tmarker = conditional-active\n".write(to: included, atomically: false, encoding: .utf8)
         let configuration = administration.appending(path: "config")
@@ -194,7 +188,7 @@ struct GitWorktreeForkNestedIncludeIntegrationTests {
 
         // Assert
         let destinationDependency = destination.appending(path: "dependency")
-        let destinationAdministration = try canonical(destinationDependency.appending(path: ".git"))
+        let destinationAdministration = try fixture.gitDirectory(of: destinationDependency)
         #expect(try configValue("agentstudio.marker", at: destinationDependency, fixture) == "conditional-active")
         let conditional = try fixture.git.run(
             ["config", "--get-regexp", "^includeif\\."], currentDirectory: destinationDependency)
@@ -207,13 +201,11 @@ struct GitWorktreeForkNestedIncludeIntegrationTests {
 
     @Test("a gitdir condition with a glob inside the source-owned part fails instead of guessing its counterpart")
     func gitDirectoryConditionGlobInSourcePartFails() async throws {
-        // Arrange: `*` could match the nested repository, whose administration relocates on its own.
+        // Arrange: `*` could match beneath the source's `.git`, administration that relocates on its own.
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-config-conditional-glob")
         defer { fixture.remove() }
-        try ignore("dependency/", fixture: fixture)
-        let dependency = try makeRepository(
-            at: fixture.source.appending(path: "dependency"), file: "tracked.txt", fixture: fixture)
-        let administration = try canonical(dependency.appending(path: ".git"))
+        let dependency = try fixture.addSubmodule(at: "dependency", file: "tracked.txt")
+        let administration = try fixture.gitDirectory(of: dependency)
         let pattern = "\(try canonical(fixture.source).path)/*/.git"
         try fixture.git.run([
             "config", "--file", administration.appending(path: "config").path,
@@ -245,16 +237,18 @@ struct GitWorktreeForkNestedIncludeIntegrationTests {
         arguments: [IncludeForm.relative, .absolute]
     )
     func includedHooksPathIntoSourcePrivateAdministrationFollowsFork(form: IncludeForm) async throws {
-        // Arrange: fork a linked worktree; its nested repository includes extra.conf, which includes deeper.conf
+        // Arrange: fork a linked worktree; its submodule includes extra.conf, which includes deeper.conf
         // relatively, which points core.hooksPath into the linked source's private administration.
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-config-include-private")
         defer { fixture.remove() }
-        try ignore("vendor/", fixture: fixture)
         let linkedSource = fixture.repository.root.appending(path: "linked-source")
         try fixture.git.run("worktree", "add", "-q", "-b", "linked-source", linkedSource.path)
-        let tool = try makeRepository(
-            at: linkedSource.appending(path: "vendor/tool"), file: "tool.txt", fixture: fixture)
-        let administration = try canonical(tool.appending(path: ".git"))
+        let origin = try makeRepository(
+            at: fixture.repository.root.appending(path: "tool-origin"), file: "tool.txt", fixture: fixture)
+        try fixture.git.run(["submodule", "add", "-q", origin.path, "vendor/tool"], currentDirectory: linkedSource)
+        try fixture.git.run(["commit", "-qm", "submodule"], currentDirectory: linkedSource)
+        let tool = linkedSource.appending(path: "vendor/tool")
+        let administration = try fixture.gitDirectory(of: tool)
         let sourceHooks = try canonical(fixture.linkedWorktreeAdministration("linked-source")).appending(path: "hooks")
         let extra = administration.appending(path: "extra.conf")
         try "[include]\n\tpath = deeper.conf\n".write(to: extra, atomically: false, encoding: .utf8)
@@ -280,10 +274,10 @@ struct GitWorktreeForkNestedIncludeIntegrationTests {
                 == canonical(fixture.linkedWorktreeAdministration()).appending(path: "hooks").path)
     }
 
-    private func ignoreVendorAndStorage(_ fixture: GitWorktreeForkFixture) throws {
-        try fixture.write(".gitignore", "vendor/\nlarge-file-store/\n")
+    private func ignoreStorage(_ fixture: GitWorktreeForkFixture) throws {
+        try fixture.write(".gitignore", "large-file-store/\n")
         try fixture.git.run("add", ".gitignore")
-        try fixture.git.run("commit", "-qm", "ignore vendor and storage")
+        try fixture.git.run("commit", "-qm", "ignore storage")
         try fixture.write("large-file-store/objects/placeholder", "stored\n")
     }
 

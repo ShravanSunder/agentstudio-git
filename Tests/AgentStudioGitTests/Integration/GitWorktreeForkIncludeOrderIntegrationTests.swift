@@ -14,10 +14,8 @@ struct GitWorktreeForkIncludeOrderIntegrationTests {
         // Arrange: the Advisor's shape; an active conditional include, then a later override of the same key.
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-include-precedence")
         defer { fixture.remove() }
-        try ignore("dependency/", fixture: fixture)
-        let dependency = try makeRepository(
-            at: fixture.source.appending(path: "dependency"), file: "tracked.txt", fixture: fixture)
-        let administration = try canonical(dependency.appending(path: ".git"))
+        let dependency = try fixture.addSubmodule(at: "dependency", file: "tracked.txt")
+        let administration = try fixture.gitDirectory(of: dependency)
         let included = administration.appending(path: "conditional.conf")
         try "[agentstudio]\n\tmarker = included-value\n".write(to: included, atomically: false, encoding: .utf8)
         let configuration = administration.appending(path: "config")
@@ -47,10 +45,8 @@ struct GitWorktreeForkIncludeOrderIntegrationTests {
         // Arrange: a commented condition section with two relative includes, followed by a later override.
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-include-section-body")
         defer { fixture.remove() }
-        try ignore("dependency/", fixture: fixture)
-        let dependency = try makeRepository(
-            at: fixture.source.appending(path: "dependency"), file: "tracked.txt", fixture: fixture)
-        let administration = try canonical(dependency.appending(path: ".git"))
+        let dependency = try fixture.addSubmodule(at: "dependency", file: "tracked.txt")
+        let administration = try fixture.gitDirectory(of: dependency)
         try "[agentstudio]\n\tmarker = one\n"
             .write(to: administration.appending(path: "one.conf"), atomically: false, encoding: .utf8)
         try "[agentstudio]\n\tmarker = two\n"
@@ -70,14 +66,18 @@ struct GitWorktreeForkIncludeOrderIntegrationTests {
         // Act
         _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
 
-        // Assert
+        // Assert: besides the header, re-homing only re-aims the submodule's own `core.worktree`.
         let destinationDependency = destination.appending(path: "dependency")
-        let destinationAdministration = try canonical(destinationDependency.appending(path: ".git"))
+        let destinationAdministration = try fixture.gitDirectory(of: destinationDependency)
+        let sourceWorktree = try coreWorktree(in: configuration, fixture)
+        let destinationWorktree = try coreWorktree(in: destinationAdministration.appending(path: "config"), fixture)
         #expect(
             try String(contentsOf: destinationAdministration.appending(path: "config"), encoding: .utf8)
                 == sourceText.replacingOccurrences(
                     of: "[includeIf \"gitdir:\(administration.path)\"]",
-                    with: "[includeIf \"gitdir:\(destinationAdministration.path)\"]"))
+                    with: "[includeIf \"gitdir:\(destinationAdministration.path)\"]"
+                ).replacingOccurrences(
+                    of: "\tworktree = \(sourceWorktree)\n", with: "\tworktree = \(destinationWorktree)\n"))
         #expect(
             try fixture.git.run(["config", "--get-all", "agentstudio.marker"], currentDirectory: destinationDependency)
                 == "one\ntwo\nlocal-override\n")
@@ -92,10 +92,8 @@ struct GitWorktreeForkIncludeOrderIntegrationTests {
         // Arrange: the same condition appears twice, each time with includes, between two plain overrides.
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-include-repeated")
         defer { fixture.remove() }
-        try ignore("dependency/", fixture: fixture)
-        let dependency = try makeRepository(
-            at: fixture.source.appending(path: "dependency"), file: "tracked.txt", fixture: fixture)
-        let administration = try canonical(dependency.appending(path: ".git"))
+        let dependency = try fixture.addSubmodule(at: "dependency", file: "tracked.txt")
+        let administration = try fixture.gitDirectory(of: dependency)
         for name in ["one", "two", "three"] {
             try "[agentstudio]\n\tmarker = \(name)\n"
                 .write(to: administration.appending(path: "\(name).conf"), atomically: false, encoding: .utf8)
@@ -127,29 +125,13 @@ struct GitWorktreeForkIncludeOrderIntegrationTests {
         #expect(try Data(contentsOf: configuration) == sourceBytes)
     }
 
-    private func ignore(_ pattern: String, fixture: GitWorktreeForkFixture) throws {
-        try fixture.write(".gitignore", "\(pattern)\n")
-        try fixture.git.run("add", ".gitignore")
-        try fixture.git.run("commit", "-qm", "ignore \(pattern)")
-    }
-
-    private func makeRepository(at path: URL, file: String, fixture: GitWorktreeForkFixture) throws -> URL {
-        try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true)
-        try fixture.git.run(["init", "-q"], currentDirectory: path)
-        try fixture.write(file, "\(file)\n", in: path)
-        try fixture.git.run(["add", "."], currentDirectory: path)
-        try fixture.git.run(["commit", "-qm", "initial"], currentDirectory: path)
-        return path
+    private func coreWorktree(in configuration: URL, _ fixture: GitWorktreeForkFixture) throws -> String {
+        try fixture.git.run(["config", "--file", configuration.path, "--get", "core.worktree"])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func configValue(_ key: String, at worktree: URL, _ fixture: GitWorktreeForkFixture) throws -> String {
         try fixture.git.run(["config", "--get", key], currentDirectory: worktree)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private func canonical(_ url: URL) throws -> URL {
-        let resolved = try #require(realpath(url.path, nil))
-        defer { free(resolved) }
-        return URL(fileURLWithPath: String(cString: resolved))
     }
 }

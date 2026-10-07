@@ -34,11 +34,11 @@ struct WorktreeForkRehomeOutcome: Sendable {
     }
 }
 
-/// Gives every initialized nested Git node destination-owned administration: submodules beneath the fork's
-/// own `$GIT_DIR/modules/...` (as Git lays out a linked worktree's submodules), independent repositories as
-/// embedded `.git` directories, and every object alternate a destination-owned CoW mirror. No administrative
-/// pointer is copied as final; each is rewritten for the destination. Git directories copied with ordinary
-/// content keep their own copy, with every pointer into the source re-aimed at the destination.
+/// Gives every initialized submodule destination-owned administration beneath the fork's own
+/// `$GIT_DIR/modules/...` (as Git lays out a linked worktree's submodules), and every object alternate a
+/// destination-owned CoW mirror. No administrative pointer is copied as final; each is rewritten for the
+/// destination. Git directories copied with ordinary content keep their own copy, with every pointer into the
+/// source re-aimed at the destination. Independent repositories copied as content are never touched here.
 struct GitRepositoryStateRehomer: Sendable {
     let plan: WorktreeForkPlan
     let cancellation: WorktreeForkCancellation
@@ -73,14 +73,12 @@ struct GitRepositoryStateRehomer: Sendable {
             let administration = destinationAdministration(for: node, administrationByNode: administrationByNode)
             try requireBeneath(administration, reportPath: "\(node.relativePath)/.git")
             administrationByNode[node.relativePath] = administration
-            if case .submodule = node.kind {
-                journal.record(
-                    .nestedAdministration(
-                        path: administration,
-                        reportLocation: String(administration.path.dropFirst(plan.commonDirectory.path.count + 1)),
-                        identity: nil
-                    ))
-            }
+            journal.record(
+                .nestedAdministration(
+                    path: administration,
+                    reportLocation: String(administration.path.dropFirst(plan.commonDirectory.path.count + 1)),
+                    identity: nil
+                ))
             let tree = try rehome(
                 node, worktree: destinationWorktree, administration: administration, mirrorByStore: mirrorByStore
             ) { identity in
@@ -192,8 +190,8 @@ struct GitRepositoryStateRehomer: Sendable {
     /// The text that leads from the copy to the pointer's destination counterpart. A target outside every
     /// relocated location leads to its mirror when `outsideMirrors` is given, otherwise to itself; a target in
     /// the shared repository leads to itself. The recorded
-    /// text is kept when it already resolves there from the copy; a counterpart that is unmapped, unmirrored,
-    /// or missing would leave the copy dangling or source-dependent, so it fails.
+    /// text is kept when it already resolves there from the copy; a counterpart that is unmirrored or missing
+    /// would leave the copy dangling or source-dependent, so it fails.
     private func destinationLine(
         for pointer: WorktreeForkCopiedPointer,
         resolvingFrom base: URL,
@@ -221,8 +219,6 @@ struct GitRepositoryStateRehomer: Sendable {
             wanted = target
         case .relocated(let destination):
             wanted = destination
-        case .unmapped:
-            throw unresolvable
         }
         let recorded =
             pointer.line.hasPrefix("/") ? URL(fileURLWithPath: pointer.line) : base.appending(path: pointer.line)
@@ -236,14 +232,13 @@ struct GitRepositoryStateRehomer: Sendable {
     }
 
     /// Defense in depth behind the planner's name rule: destination administration must sit beneath the
-    /// fork's own administration or the destination tree, compared by path components, never by prefix.
+    /// fork's own administration, compared by path components, never by prefix.
     private func requireBeneath(_ administration: URL, reportPath: String) throws(GitWorktreeForkError) {
         let components = administration.pathComponents
-        let isBeneath = [rootAdministration, plan.destinationRoot].contains { root in
-            let rootComponents = root.pathComponents
-            return components.count > rootComponents.count
-                && Array(components.prefix(rootComponents.count)) == rootComponents
-        }
+        let rootComponents = rootAdministration.pathComponents
+        let isBeneath =
+            components.count > rootComponents.count
+            && Array(components.prefix(rootComponents.count)) == rootComponents
         guard isBeneath, !components.contains(".."), !components.contains(".") else {
             throw .entryFailed(relativePath: reportPath, reason: .unresolvableGitAdministration, errorNumber: nil)
         }
@@ -253,14 +248,8 @@ struct GitRepositoryStateRehomer: Sendable {
         for node: WorktreeForkGitNode,
         administrationByNode: [String: URL]
     ) -> URL {
-        switch node.kind {
-        case .submodule(let name):
-            let parentAdministration =
-                node.parentRelativePath.flatMap { administrationByNode[$0] } ?? rootAdministration
-            return parentAdministration.appending(path: "modules").appending(path: name)
-        case .embeddedRepository, .flattenedRepository:
-            return plan.destinationRoot.appending(path: node.relativePath).appending(path: ".git")
-        }
+        let parentAdministration = node.parentRelativePath.flatMap { administrationByNode[$0] } ?? rootAdministration
+        return parentAdministration.appending(path: "modules").appending(path: node.submoduleName)
     }
 
     private func rehome(
@@ -286,14 +275,10 @@ struct GitRepositoryStateRehomer: Sendable {
         )
         try writeAlternates(node, administration: administration, mirrorByStore: mirrorByStore, reportPath: reportPath)
 
-        var configurationEdits: [WorktreeForkConfigurationEdit] = [.setBool("core.bare", false)]
-        switch node.kind {
-        case .submodule:
-            configurationEdits.append(
-                .setString("core.worktree", WorktreeForkRelativePath.from(administration, to: worktree)))
-        case .embeddedRepository, .flattenedRepository:
-            configurationEdits.append(.delete("core.worktree"))
-        }
+        var configurationEdits: [WorktreeForkConfigurationEdit] = [
+            .setBool("core.bare", false),
+            .setString("core.worktree", WorktreeForkRelativePath.from(administration, to: worktree)),
+        ]
         if node.sparse != nil {
             configurationEdits.append(.setBool("index.sparse", false))
         }
@@ -303,15 +288,13 @@ struct GitRepositoryStateRehomer: Sendable {
             reportPath: reportPath,
             lockTracker: lockTracker
         )
-        if case .submodule = node.kind {
-            let pointer = "gitdir: \(WorktreeForkRelativePath.from(worktree, to: administration))\n"
-            try writeText(
-                pointer,
-                to: worktree.appending(path: ".git"),
-                metadataFrom: plan.sourceRoot.appending(path: node.relativePath).appending(path: ".git"),
-                reportPath: reportPath
-            )
-        }
+        let pointer = "gitdir: \(WorktreeForkRelativePath.from(worktree, to: administration))\n"
+        try writeText(
+            pointer,
+            to: worktree.appending(path: ".git"),
+            metadataFrom: plan.sourceRoot.appending(path: node.relativePath).appending(path: ".git"),
+            reportPath: reportPath
+        )
         if let sparse = node.sparse {
             try writeSparseState(sparse, administration: administration, reportPath: reportPath)
         }
@@ -345,8 +328,8 @@ struct GitRepositoryStateRehomer: Sendable {
         return targets
     }
 
-    /// A gitfile-reached node keeps its worktree-private identity (`HEAD` is rewritten from the plan) and
-    /// worktree configuration; its common administration was cloned above.
+    /// A submodule whose gitfile names a linked worktree keeps its worktree-private identity (`HEAD` is
+    /// rewritten from the plan) and worktree configuration; its common administration was cloned above.
     private func overlayPrivateAdministration(
         _ node: WorktreeForkGitNode,
         administration: URL,
@@ -455,7 +438,7 @@ struct GitRepositoryStateRehomer: Sendable {
         administration: URL,
         reportPath: String
     ) throws(GitWorktreeForkError) {
-        // The destination copy may be absent (fresh fork administration) or removed (a flattened node's
+        // The destination copy may be absent (fresh fork administration) or removed (a linked submodule's
         // overlay), so the source files are the metadata templates.
         try writeData(
             sparse.patternFile,

@@ -123,6 +123,14 @@ struct WorktreeForkPlanner: Sendable {
             if let eligibilityFacts = preflight.eligibilityFacts {
                 try requireMirroredStoresEligible(gitTopology, eligibilityFacts: eligibilityFacts)
             }
+            let embeddedRepositoryGitEntryPaths = gitTopology.embeddedRepositoryGitEntryPaths
+            let plannedFilesystem = try filesystem.excludingSubtrees(
+                gitTopology.copiedGitDirectories.flatMap(\.retiredRegistrationSubtrees)
+            )
+            .addingPlainGitEntries(
+                embeddedRepositoryGitEntryPaths,
+                walked: try WorktreeForkSourceWalker(cancellation: cancellation).walkPlainGitEntries(
+                    embeddedRepositoryGitEntryPaths, rootDescriptor: sourceRootDescriptor))
             let plan = WorktreeForkPlan(
                 sourceRoot: sourceRoot,
                 destinationRoot: destination.root,
@@ -135,8 +143,7 @@ struct WorktreeForkPlanner: Sendable {
                 capturedHead: gitCapture.capturedHead,
                 branchIdentity: gitCapture.branchIdentity,
                 materialization: request.materialization,
-                filesystem: try filesystem.excludingSubtrees(
-                    gitTopology.copiedGitDirectories.flatMap(\.retiredRegistrationSubtrees)),
+                filesystem: plannedFilesystem,
                 ignoredIncludedPatterns: ignoredIncludedPatterns,
                 ignoredExcludedCount: ignoredExcludedCount,
                 nestedWorktreesSkipped: nestedWorktreesSkipped,
@@ -177,7 +184,7 @@ struct WorktreeForkPlanner: Sendable {
         )
     }
 
-    /// Nested common directories and borrowed object stores are mirrored with strict CoW, so they must
+    /// Submodule common directories and borrowed object stores are mirrored with strict CoW, so they must
     /// share the source volume just as the working files do.
     private func requireMirroredStoresEligible(
         _ topology: WorktreeForkGitTopology,

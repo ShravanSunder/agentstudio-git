@@ -63,9 +63,10 @@ struct GitWorktreeForkTopologyIntegrationTests {
         #expect(materializationReport.preservedGitRepositoryCount == 2)
     }
 
-    @Test("nested repositories, linked worktrees, and alternates are re-homed without source administration")
-    func nestedRepositoriesAreRehomedWithoutSourceAdministration() async throws {
-        // Arrange
+    @Test("independent nested repositories, foreign linked worktrees, and shared clones are copied as content")
+    func independentNestedRepositoriesAreCopiedAsContent() async throws {
+        // Arrange: none of these is a submodule or a linked worktree of the source repository, so each is part of
+        // the checkout as it is, operation residue and borrowed objects included.
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-nested")
         defer { fixture.remove() }
         let root = fixture.repository.root
@@ -86,57 +87,41 @@ struct GitWorktreeForkTopologyIntegrationTests {
         try fixture.git.run([
             "clone", "-q", "--shared", outside.path, fixture.source.appending(path: "vendor/alt").path,
         ])
-        let toolStatus = try fixture.statusLines(at: tool)
+        let nestedPaths = ["vendor/tool", "vendor/linked", "vendor/alt"]
+        let sourceContent = try nestedPaths.map {
+            try GitWorktreeForkFileProbe.contentTree(at: fixture.source.appending(path: $0))
+        }
         let destination = fixture.destination()
 
         // Act
         let result = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
 
         // Assert
-        let destinationOwnedPrefixes = [
-            try canonical(destination).path + "/", try canonical(fixture.linkedWorktreeAdministration()).path + "/",
-        ]
-        let destinationTool = destination.appending(path: "vendor/tool")
-        #expect(try fixture.statusLines(at: destinationTool) == toolStatus)
-        for residue in ["MERGE_HEAD", "index.lock", "rebase-merge"] {
-            #expect(!GitWorktreeForkFileProbe.exists(destinationTool.appending(path: ".git/\(residue)")), "\(residue)")
+        let destinationContent = try nestedPaths.map {
+            try GitWorktreeForkFileProbe.contentTree(at: destination.appending(path: $0))
         }
+        #expect(destinationContent == sourceContent)
+        let destinationTool = destination.appending(path: "vendor/tool")
         let linkedA = try #require(GitWorktreeForkFileProbe.info(destinationTool.appending(path: "a.txt")))
         let linkedB = try #require(GitWorktreeForkFileProbe.info(destinationTool.appending(path: "b.txt")))
         #expect(linkedA.st_ino == linkedB.st_ino)
-        for nested in ["vendor/tool", "vendor/linked", "vendor/alt"] {
-            let nestedDestination = destination.appending(path: nested)
-            #expect(
-                try fixture.blobID("HEAD", at: nestedDestination)
-                    == fixture.blobID("HEAD", at: fixture.source.appending(path: nested)))
-            let administrativePaths =
-                [
-                    try absoluteGitDirectory(nestedDestination, fixture),
-                    try fixture.git.run(
-                        ["rev-parse", "--path-format=absolute", "--git-common-dir"], currentDirectory: nestedDestination
-                    )
-                    .trimmingCharacters(in: .whitespacesAndNewlines),
-                ] + alternates(of: nestedDestination)
-            for path in administrativePaths {
-                let resolved = try canonical(URL(fileURLWithPath: path)).path + "/"
-                #expect(destinationOwnedPrefixes.contains { resolved.hasPrefix($0) }, "\(nested) → \(path)")
-            }
-        }
         #expect(
             try fixture.git.succeeds(
                 "cat-file", "-e", "HEAD:outside.txt", currentDirectory: destination.appending(path: "vendor/alt")))
-        #expect(!alternates(of: destination.appending(path: "vendor/alt")).isEmpty)
+        #expect(
+            !GitWorktreeForkFileProbe.exists(
+                fixture.linkedWorktreeAdministration().appending(path: "agentstudio-object-mirrors")))
         guard case .copyOnWrite(let materializationReport) = result.materialization else {
             Issue.record("expected copy-on-write materialization")
             return
         }
-        #expect(materializationReport.preservedGitRepositoryCount == 3)
+        #expect(materializationReport.preservedGitRepositoryCount == 0)
     }
 
-    @Test("SwiftPM-style read-only nested repositories are re-homed and keep their file modes")
-    func readOnlyNestedRepositoriesAreRehomed() async throws {
-        // Arrange: SwiftPM makes every file in a checkout read-only, including .git/HEAD; a --shared
-        // clone also carries a read-only objects/info/alternates. The fork rewrites both while re-homing.
+    @Test("SwiftPM-style read-only nested repositories are copied as content and keep their file modes")
+    func readOnlyNestedRepositoriesAreCopiedAsContent() async throws {
+        // Arrange: SwiftPM makes every file in a checkout read-only, including .git/HEAD; a --shared clone also
+        // carries a read-only objects/info/alternates. The fork copies both byte for byte.
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-readonly-nested")
         defer {
             restoreOwnerWrite(under: fixture.repository.root)
@@ -163,6 +148,9 @@ struct GitWorktreeForkTopologyIntegrationTests {
         for nested in [".build/checkouts/swift-syntax", ".build/checkouts/shared"] {
             let nestedDestination = destination.appending(path: nested)
             #expect(
+                try GitWorktreeForkFileProbe.contentTree(at: nestedDestination)
+                    == GitWorktreeForkFileProbe.contentTree(at: fixture.source.appending(path: nested)), "\(nested)")
+            #expect(
                 try fixture.blobID("HEAD", at: nestedDestination)
                     == fixture.blobID("HEAD", at: fixture.source.appending(path: nested)), "\(nested)")
             let head = try #require(GitWorktreeForkFileProbe.info(nestedDestination.appending(path: ".git/HEAD")))
@@ -176,7 +164,7 @@ struct GitWorktreeForkTopologyIntegrationTests {
             Issue.record("expected copy-on-write materialization")
             return
         }
-        #expect(materializationReport.preservedGitRepositoryCount == 2)
+        #expect(materializationReport.preservedGitRepositoryCount == 0)
     }
 
     @Test(
@@ -259,20 +247,17 @@ struct GitWorktreeForkTopologyIntegrationTests {
 
     @Test("administrative symlinks are re-homed: internal ones stay internal, external object stores are mirrored")
     func administrativeSymlinksAreRehomed() async throws {
-        // Arrange
+        // Arrange: a submodule whose administration links its object store outside and one file internally.
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-admin-symlinks")
         defer { fixture.remove() }
-        try fixture.write(".gitignore", "vendor/\n")
-        try fixture.git.run("add", ".gitignore")
-        try fixture.git.run("commit", "-qm", "ignore vendor")
-        let tool = fixture.source.appending(path: "vendor/tool")
-        _ = try makeRepository(at: tool, file: "tool.txt", fixture: fixture)
+        let tool = try fixture.addSubmodule(at: "deps/tool", file: "tool.txt")
+        let administration = try canonical(fixture.source.appending(path: ".git/modules/deps/tool"))
         let externalObjects = fixture.repository.root.appending(path: "external-objects")
-        try FileManager.default.moveItem(at: tool.appending(path: ".git/objects"), to: externalObjects)
+        try FileManager.default.moveItem(at: administration.appending(path: "objects"), to: externalObjects)
         try FileManager.default.createSymbolicLink(
-            at: tool.appending(path: ".git/objects"), withDestinationURL: externalObjects)
+            at: administration.appending(path: "objects"), withDestinationURL: externalObjects)
         try FileManager.default.createSymbolicLink(
-            atPath: tool.appending(path: ".git/description-link").path, withDestinationPath: "description")
+            atPath: administration.appending(path: "description-link").path, withDestinationPath: "description")
         let sourceHead = try fixture.blobID("HEAD", at: tool)
         let destination = fixture.destination()
 
@@ -280,17 +265,18 @@ struct GitWorktreeForkTopologyIntegrationTests {
         _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
 
         // Assert
-        let destinationTool = destination.appending(path: "vendor/tool")
+        let destinationTool = destination.appending(path: "deps/tool")
+        let destinationAdministration = try fixture.gitDirectory(of: destinationTool)
         let destinationOwned = [
             try canonical(destination).path + "/", try canonical(fixture.linkedWorktreeAdministration()).path + "/",
         ]
-        for link in [".git/objects", ".git/description-link"] {
-            let resolved = try canonical(destinationTool.appending(path: link)).path + "/"
+        for link in ["objects", "description-link"] {
+            let resolved = try canonical(destinationAdministration.appending(path: link)).path + "/"
             #expect(destinationOwned.contains { resolved.hasPrefix($0) }, "\(link) → \(resolved)")
         }
         #expect(
-            try canonical(destinationTool.appending(path: ".git/description-link")).path
-                == canonical(destinationTool.appending(path: ".git/description")).path)
+            try canonical(destinationAdministration.appending(path: "description-link")).path
+                == canonical(destinationAdministration.appending(path: "description")).path)
         #expect(try fixture.blobID("HEAD", at: destinationTool) == sourceHead)
         #expect(try fixture.git.succeeds("cat-file", "-e", "HEAD:tool.txt", currentDirectory: destinationTool))
         #expect(try fixture.statusLines(at: destinationTool).isEmpty)
@@ -298,17 +284,13 @@ struct GitWorktreeForkTopologyIntegrationTests {
 
     @Test("a mirrored alternate store keeps its internal relative symlinks inside the destination mirror")
     func mirroredAlternateStoreKeepsInternalSymlinks() async throws {
-        // Arrange
+        // Arrange: a submodule cloned with --reference borrows its objects from a store outside the source.
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-store-symlink")
         defer { fixture.remove() }
-        try fixture.write(".gitignore", "vendor/\n")
-        try fixture.git.run("add", ".gitignore")
-        try fixture.git.run("commit", "-qm", "ignore vendor")
         let outside = try makeRepository(
             at: fixture.repository.root.appending(path: "outside"), file: "outside.txt", fixture: fixture)
-        try fixture.git.run([
-            "clone", "-q", "--shared", outside.path, fixture.source.appending(path: "vendor/alt").path,
-        ])
+        try fixture.git.run("submodule", "add", "-q", "--reference", outside.path, outside.path, "deps/alt")
+        try fixture.git.run("commit", "-qm", "referencing submodule")
         try FileManager.default.createSymbolicLink(
             atPath: outside.appending(path: ".git/objects/info/packs-link").path, withDestinationPath: "../pack")
         try FileManager.default.createSymbolicLink(
@@ -319,7 +301,7 @@ struct GitWorktreeForkTopologyIntegrationTests {
         _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
 
         // Assert
-        let destinationAlt = destination.appending(path: "vendor/alt")
+        let destinationAlt = destination.appending(path: "deps/alt")
         #expect(try fixture.git.succeeds("cat-file", "-e", "HEAD:outside.txt", currentDirectory: destinationAlt))
         let mirrorRoot = try canonical(fixture.linkedWorktreeAdministration()).appending(
             path: "agentstudio-object-mirrors")
@@ -444,17 +426,6 @@ struct GitWorktreeForkTopologyIntegrationTests {
         let path = try fixture.git.run(["rev-parse", "--absolute-git-dir"], currentDirectory: worktree)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return try canonical(URL(fileURLWithPath: path)).path
-    }
-
-    private func alternates(of worktree: URL) -> [String] {
-        let commonDirectory = worktree.appending(path: ".git")
-        guard
-            let text = try? String(
-                contentsOf: commonDirectory.appending(path: "objects/info/alternates"), encoding: .utf8)
-        else {
-            return []
-        }
-        return text.split(separator: "\n").map(String.init)
     }
 
     private func canonical(_ url: URL) throws -> URL {

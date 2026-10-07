@@ -1,14 +1,19 @@
 import Foundation
 
-/// Captured Git structure beneath the source root: every initialized nested Git node, the registered
-/// submodules that stay uninitialized, sparse intent, and the object stores that need CoW mirrors.
+/// Captured Git structure beneath the source root: every initialized submodule, the registered submodules that
+/// stay uninitialized, the independent repositories copied as content, sparse intent, and the object stores
+/// that need CoW mirrors.
 struct WorktreeForkGitTopology: Sendable {
     let rootSparse: WorktreeForkSparsePlan?
     /// Nil when libgit2 cannot read the root source index (for example a sparse index).
     let rootSourceIndex: WorktreeForkSourceIndexSnapshot?
-    /// Parent-before-child.
+    /// Initialized submodules, parent-before-child.
     let nodes: [WorktreeForkGitNode]
     let uninitializedSubmodulePaths: [String]
+    /// Nested `.git` entries of independent repositories: neither a registered submodule nor a linked worktree
+    /// of the source repository. None is opened; each is copied with the ordinary content, byte for byte, so
+    /// the copy is exactly as usable as its source, broken alternates included.
+    let embeddedRepositoryGitEntryPaths: [String]
     /// Canonical source object directories reachable through nested alternates, deduplicated.
     let mirroredObjectStores: [URL]
     /// Mirror link text for store-internal symlinks, keyed by store then store-relative path.
@@ -28,7 +33,7 @@ struct WorktreeForkCopiedGitDirectory: Sendable {
     /// The `gitdir` file of each linked-worktree registration, keyed by Git-directory-relative path.
     let worktreeRegistrations: [String: WorktreeForkCopiedPointer]
     /// Git-directory-relative `worktrees/<name>` registrations whose linked worktree the fork captured as a
-    /// nested node and re-homes as an independent repository. The destination has no gitfile pointing back at
+    /// submodule and re-homes under its own administration. The destination has no gitfile pointing back at
     /// them, so Git would see a broken registration; they are left out of the copy instead of rewritten.
     let retiredRegistrations: [String]
 
@@ -45,22 +50,14 @@ struct WorktreeForkCopiedPointer: Equatable, Sendable {
     let target: URL?
 }
 
-enum WorktreeForkGitNodeKind: Equatable, Sendable {
-    /// Registered in its parent's captured tree; administration lives under the parent's `modules/`.
-    case submodule(name: String)
-    /// Independent repository with an embedded `.git` directory.
-    case embeddedRepository
-    /// Independent repository reached through a gitfile (linked worktree or absorbed layout); its private
-    /// and common administration are flattened into an embedded destination `.git` directory.
-    case flattenedRepository
-}
-
+/// An initialized submodule: a gitlink in its parent's captured tree or index. Its destination administration
+/// lives under the parent's `modules/<name>`.
 struct WorktreeForkGitNode: Sendable {
     /// Worktree-relative directory of the nested working tree.
     let relativePath: String
     /// Nearest enclosing node, or nil when the parent is the fork root.
     let parentRelativePath: String?
-    let kind: WorktreeForkGitNodeKind
+    let submoduleName: String
     /// Worktree-private administration (`$GIT_DIR`).
     let sourceGitDirectory: URL
     let sourceCommonDirectory: URL

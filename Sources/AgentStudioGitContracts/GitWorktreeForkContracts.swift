@@ -355,7 +355,8 @@ public struct GitWorktreeMaterializationReport: Codable, Equatable, Hashable, Se
     public let recreatedSymbolicLinkCount: Int
     /// Destination paths realized as hard links to an already-cloned member of the same source inode group.
     public let preservedHardLinkCount: Int
-    /// Initialized submodules and nested repositories given destination-owned administration.
+    /// Initialized submodules given destination-owned administration. An independent repository inside the
+    /// tree is copied with the ordinary content and not counted here.
     public let preservedGitRepositoryCount: Int
     public let recreatedFIFOCount: Int
     public let logicalRegularFileBytes: Int64
