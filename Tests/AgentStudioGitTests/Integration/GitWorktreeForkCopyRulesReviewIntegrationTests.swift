@@ -67,7 +67,7 @@ struct GitWorktreeForkCopyRulesReviewIntegrationTests {
         #expect(
             try String(contentsOf: destination.appending(path: "cache/output"), encoding: .utf8) == "nested ignored\n")
         #expect(!GitWorktreeForkFileProbe.exists(fixture.destination().appending(path: "ignored/drop.txt")))
-        #expect(try report(result).preservedGitRepositoryCount == 1)
+        #expect(try report(result).preservedGitRepositoryCount == 0, "copied as content, not re-homed")
     }
 
     @Test("submodules under ignored folders are kept from HEAD or index gitlinks", arguments: [false, true])
@@ -284,18 +284,19 @@ struct GitWorktreeForkCopyRulesReviewIntegrationTests {
             : fixture.repository.root.appending(path: "missing-independent-admin")
         try fixture.write("\(nestedPath)/.git", "gitdir: \(target.path)\n")
         try fixture.write("\(nestedPath)/file", "nested working content")
-        do {
-            let result = try await fork(fixture, patterns: [])
-            #expect(sameRepository || ignored)
-            #expect(try report(result).nestedWorktreesSkipped == (sameRepository ? ["nested"] : []))
-            #expect(try report(result).ignoredExcludedCount == (ignored ? 3 : 0))
+        let sourceGitfile = try Data(contentsOf: fixture.source.appending(path: "\(nestedPath)/.git"))
+
+        let result = try await fork(fixture, patterns: [])
+
+        #expect(try report(result).nestedWorktreesSkipped == (sameRepository ? ["nested"] : []))
+        #expect(try report(result).ignoredExcludedCount == (ignored ? 3 : 0))
+        let destinationGitfile = fixture.destination().appending(path: "\(nestedPath)/.git")
+        switch scenario {
+        case .sameRepository, .ignoredIndependent:
             #expect(!GitWorktreeForkFileProbe.exists(fixture.destination().appending(path: nestedPath)))
-        } catch let error as GitWorktreeForkError {
-            #expect(!sameRepository && !ignored)
-            #expect(
-                error
-                    == .entryFailed(
-                        relativePath: "nested/.git", reason: .unresolvableGitAdministration, errorNumber: nil))
+        case .keptIndependent:
+            // A broken repository is part of the checkout as it is: copied byte for byte, never opened.
+            #expect(try Data(contentsOf: destinationGitfile) == sourceGitfile)
         }
     }
 
@@ -312,18 +313,20 @@ struct GitWorktreeForkCopyRulesReviewIntegrationTests {
         let nestedPath = ignored ? "ignored/tool" : "tool"
         try fixture.git.run("init", "-q", "--ref-format=reftable", fixture.source.appending(path: nestedPath).path)
         try fixture.write("\(nestedPath)/file", "nested working content")
-        do {
-            let result = try await fork(fixture, patterns: [])
-            #expect(ignored)
+        let sourceHead = try Data(contentsOf: fixture.source.appending(path: "\(nestedPath)/.git/HEAD"))
+
+        let result = try await fork(fixture, patterns: [])
+
+        #expect(try report(result).nestedWorktreesSkipped.isEmpty)
+        if ignored {
             #expect(!GitWorktreeForkFileProbe.exists(fixture.destination().appending(path: "ignored")))
             #expect(try report(result).ignoredExcludedCount == 3)
-            #expect(try report(result).nestedWorktreesSkipped.isEmpty)
-        } catch let error as GitWorktreeForkError {
-            #expect(!ignored)
+        } else {
+            // libgit2 cannot open reftable administration, and the fork never tries: it is copied as content.
+            let destinationHead = fixture.destination().appending(path: "\(nestedPath)/.git/HEAD")
+            #expect(try Data(contentsOf: destinationHead) == sourceHead)
             #expect(
-                error
-                    == .entryFailed(
-                        relativePath: "\(nestedPath)/.git", reason: .unresolvableGitAdministration, errorNumber: nil))
+                GitWorktreeForkFileProbe.exists(fixture.destination().appending(path: "\(nestedPath)/.git/reftable")))
         }
     }
 

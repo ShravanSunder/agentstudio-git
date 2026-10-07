@@ -3,13 +3,14 @@ import Foundation
 /// Where a source path lives after the fork. The longest matching source location decides:
 ///
 /// - the private administration of the source worktree (when it is linked) moves to the fork's private
-///   administration, and each nested node's administration (common and private) moves to its re-homed
+///   administration, and each submodule's administration (common and private) moves to its re-homed
 ///   administration;
 /// - the rest of the source repository's common directory is shared, not moved: the fork is a linked worktree
 ///   of that same repository. That covers shared files (objects, refs, configuration) and the private
 ///   administration of any other worktree the fork does not capture, which the fork sees exactly as the source
 ///   does;
-/// - the source tree moves to the destination tree, except beneath a `.git` entry that none of the above owns.
+/// - the source tree moves to the destination tree, an independent repository's `.git` included: it is copied
+///   with the ordinary content.
 ///
 /// So a path inside relocated administration never takes the plain tree substitution (the fork's own `.git`
 /// is a gitfile, not the source's administration directory).
@@ -20,9 +21,6 @@ struct WorktreeForkSourcePathRelocation: Sendable {
         /// In the source repository's shared common directory: the fork names the same path.
         case sharedRepository
         case relocated(URL)
-        /// Beneath a source `.git` entry that no re-homed administration owns. Nothing was copied there, so
-        /// there is no destination counterpart to name.
-        case unmapped
     }
 
     private enum Disposition: Sendable {
@@ -93,9 +91,6 @@ struct WorktreeForkSourcePathRelocation: Sendable {
         case .sharedRepository:
             return .sharedRepository
         case .sourceTree(let destinationRoot):
-            if match.remainder.split(separator: "/").dropLast().contains(".git") {
-                return .unmapped
-            }
             destination = destinationRoot
         case .administration(let administration):
             destination = administration

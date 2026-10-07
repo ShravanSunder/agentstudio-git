@@ -5,7 +5,7 @@ import Testing
 
 @testable import AgentStudioGitLocal
 
-/// Re-homing rewrites cloned administrative files (a nested `.git/HEAD`, sparse state, configuration edited
+/// Re-homing rewrites cloned administrative files (a submodule's `HEAD`, sparse state, configuration edited
 /// through libgit2) on a fresh inode. The specification makes loss of ACL access semantics, extended
 /// attributes, or file flags a failure, so each rewrite must carry the metadata of the file it stands for.
 @Suite("Git worktree fork re-homed file metadata integration", .serialized)
@@ -26,20 +26,13 @@ struct GitWorktreeForkRehomedMetadataIntegrationTests {
             protectedDestinationFile.map(clearProtection)
             fixture.remove()
         }
-        try fixture.write(".gitignore", ".build/\n")
-        try fixture.git.run("add", ".gitignore")
-        try fixture.git.run("commit", "-qm", "ignore build")
         switch file {
-        case .nestedHead, .nestedConfiguration:
-            try makeRepository(
-                at: fixture.source.appending(path: file.worktreeRelativePath), file: "Package.swift",
-                fixture: fixture)
-        case .submoduleGitfile:
+        case .submoduleHead, .submoduleConfiguration, .submoduleGitfile:
             let library = try makeRepository(
                 at: fixture.repository.root.appending(path: "library"), file: "library.txt", fixture: fixture)
             try fixture.git.run("submodule", "add", "-q", library.path, file.worktreeRelativePath)
             try fixture.git.run("commit", "-qm", "submodule")
-        case .flattenedLinkedHead:
+        case .linkedSubmoduleHead:
             // The worktree's private HEAD carries the protection; the common repository's HEAD stays 0644.
             let upstream = try makeRepository(
                 at: fixture.repository.root.appending(path: "upstream"), file: "up.txt", fixture: fixture)
@@ -49,8 +42,9 @@ struct GitWorktreeForkRehomedMetadataIntegrationTests {
                     fixture.source.appending(path: file.worktreeRelativePath).path,
                 ],
                 currentDirectory: upstream)
-        case .nestedAlternates, .mirrorAlternates:
-            // A --shared clone borrows its objects; the mirror case borrows from a store that borrows again.
+            try fixture.registerSubmodule(at: file.worktreeRelativePath)
+        case .submoduleAlternates, .mirrorAlternates:
+            // A --reference clone borrows its objects; the mirror case borrows from a store that borrows again.
             var lender = try makeRepository(
                 at: fixture.repository.root.appending(path: "upstream"), file: "up.txt", fixture: fixture)
             if file == .mirrorAlternates {
@@ -58,10 +52,9 @@ struct GitWorktreeForkRehomedMetadataIntegrationTests {
                 try fixture.git.run(["clone", "-q", "--shared", lender.path, middle.path])
                 lender = middle
             }
-            try fixture.git.run([
-                "clone", "-q", "--shared", lender.path,
-                fixture.source.appending(path: file.worktreeRelativePath).path,
-            ])
+            try fixture.git.run(
+                "submodule", "add", "-q", "--reference", lender.path, lender.path, file.worktreeRelativePath)
+            try fixture.git.run("commit", "-qm", "referencing submodule")
         }
         try metadata.apply(to: sourceFile)
 
@@ -75,7 +68,7 @@ struct GitWorktreeForkRehomedMetadataIntegrationTests {
         let destinationWorktree = fixture.destination().appending(path: file.worktreeRelativePath)
         #expect(try fixture.blobID("HEAD", at: destinationWorktree) == fixture.blobID("HEAD", at: sourceWorktree))
         #expect(try fixture.statusLines(at: destinationWorktree).isEmpty)
-        if file == .nestedAlternates || file == .mirrorAlternates {
+        if file == .submoduleAlternates || file == .mirrorAlternates {
             #expect(
                 try fixture.git.succeeds("cat-file", "-e", "HEAD:up.txt", currentDirectory: destinationWorktree),
                 "objects still resolve through the rewritten alternates")
@@ -96,32 +89,35 @@ struct GitWorktreeForkRehomedMetadataIntegrationTests {
         arguments: SparseAdministrationLayout.allCases)
     func rewrittenSparseConfigurationKeepsMetadata(layout: SparseAdministrationLayout) async throws {
         // Arrange: config.worktree is rewritten by re-homing and then edited through libgit2's lock-file
-        // rename; a flattened linked worktree's copy is removed and rebuilt from its private source file, and
-        // the fork root's copy is new fork administration built from the source worktree's own files.
+        // rename; a linked submodule's copy is removed and rebuilt from its private source file, and the fork
+        // root's copy is new fork administration built from the source worktree's own files.
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-sparse-metadata")
         defer { fixture.remove() }
-        try fixture.write(".gitignore", ".build/\n")
-        try fixture.git.run("add", ".gitignore")
-        try fixture.git.run("commit", "-qm", "ignore build")
-        let nestedPath = ".build/checkouts/dependency"
+        let nestedPath = "deps/dependency"
         let nested = fixture.source.appending(path: nestedPath)
         let sparseWorktree: URL
         let sourceAdministration: URL
         let destinationWorktree: URL
         let destinationAdministration: URL
         switch layout {
-        case .embeddedRepository:
-            try makeSparseTree(at: nested, fixture: fixture)
-            (sparseWorktree, sourceAdministration) = (nested, nested.appending(path: ".git"))
+        case .submodule:
+            let origin = fixture.repository.root.appending(path: "origin")
+            try makeSparseTree(at: origin, fixture: fixture)
+            try fixture.git.run("submodule", "add", "-q", origin.path, nestedPath)
+            try fixture.git.run("commit", "-qm", "submodule")
+            (sparseWorktree, sourceAdministration) = (
+                nested, fixture.source.appending(path: ".git/modules/\(nestedPath)")
+            )
             destinationWorktree = fixture.destination().appending(path: nestedPath)
-            destinationAdministration = destinationWorktree.appending(path: ".git")
-        case .linkedWorktree:
+            destinationAdministration = fixture.linkedWorktreeAdministration().appending(path: "modules/\(nestedPath)")
+        case .linkedSubmodule:
             let upstream = fixture.repository.root.appending(path: "upstream")
             try makeSparseTree(at: upstream, fixture: fixture)
             try fixture.git.run(["worktree", "add", "-q", nested.path], currentDirectory: upstream)
+            try fixture.registerSubmodule(at: nestedPath)
             (sparseWorktree, sourceAdministration) = (nested, upstream.appending(path: ".git/worktrees/dependency"))
             destinationWorktree = fixture.destination().appending(path: nestedPath)
-            destinationAdministration = destinationWorktree.appending(path: ".git")
+            destinationAdministration = fixture.linkedWorktreeAdministration().appending(path: "modules/\(nestedPath)")
         case .forkRoot:
             try fixture.write("kept/one.txt", "kept\n")
             try fixture.write("dropped/two.txt", "dropped\n")
@@ -246,17 +242,17 @@ private let probeAttributeName = "com.example.forklab"
 
 /// An administrative file re-homing rewrites, by its source-relative path.
 enum RehomedAdministrativeFile: String, CaseIterable, Sendable, CustomStringConvertible {
-    /// Rewritten on a fresh inode by re-homing.
-    case nestedHead
-    /// Edited through libgit2's lock-file rename (`core.bare`, `core.worktree`).
-    case nestedConfiguration
+    /// A submodule's `HEAD`, rewritten on a fresh inode by re-homing.
+    case submoduleHead
+    /// A submodule's `config`, edited through libgit2's lock-file rename (`core.bare`, `core.worktree`).
+    case submoduleConfiguration
     /// Never copied; written from scratch with the source gitfile as its metadata template.
     case submoduleGitfile
-    /// A gitfile-reached linked worktree's private `HEAD`. Flattening clones the common repository, whose
-    /// `HEAD` is a different source file, so the destination copy is not the template.
-    case flattenedLinkedHead
-    /// A `--shared` nested repository's `objects/info/alternates`: never copied, rewritten to name a mirror.
-    case nestedAlternates
+    /// The private `HEAD` of a submodule whose gitfile names a linked worktree. Re-homing clones the common
+    /// repository, whose `HEAD` is a different source file, so the destination copy is not the template.
+    case linkedSubmoduleHead
+    /// A `--reference` submodule's `objects/info/alternates`: rewritten to name a mirror.
+    case submoduleAlternates
     /// A mirrored store's own `info/alternates`: cloned with the store, then rewritten to name a mirror.
     case mirrorAlternates
 
@@ -266,53 +262,54 @@ enum RehomedAdministrativeFile: String, CaseIterable, Sendable, CustomStringConv
 
     var worktreeRelativePath: String {
         switch self {
-        case .nestedHead, .nestedConfiguration:
-            return ".build/checkouts/dependency"
+        case .submoduleHead, .submoduleConfiguration:
+            return "deps/dependency"
         case .submoduleGitfile:
             return "deps/library"
-        case .flattenedLinkedHead:
-            return ".build/checkouts/linked"
-        case .nestedAlternates, .mirrorAlternates:
-            return ".build/checkouts/shared"
+        case .linkedSubmoduleHead:
+            return "deps/linked"
+        case .submoduleAlternates, .mirrorAlternates:
+            return "deps/shared"
         }
     }
 
     func sourceFile(in fixture: GitWorktreeForkFixture) -> URL {
+        let administration = fixture.source.appending(path: ".git/modules/\(worktreeRelativePath)")
         switch self {
+        case .submoduleHead:
+            return administration.appending(path: "HEAD")
+        case .submoduleConfiguration:
+            return administration.appending(path: "config")
+        case .submoduleAlternates:
+            return administration.appending(path: "objects/info/alternates")
+        case .submoduleGitfile:
+            return fixture.source.appending(path: worktreeRelativePath).appending(path: ".git")
+        case .linkedSubmoduleHead:
+            return fixture.repository.root.appending(path: "upstream/.git/worktrees/linked/HEAD")
         case .mirrorAlternates:
             return fixture.repository.root.appending(path: "middle/.git/objects/info/alternates")
-        case .flattenedLinkedHead:
-            return fixture.repository.root.appending(path: "upstream/.git/worktrees/linked/HEAD")
-        case .nestedHead, .nestedConfiguration, .submoduleGitfile, .nestedAlternates:
-            return fixture.source.appending(path: worktreeRelativePath).appending(path: administrativePath)
         }
     }
 
     /// The destination file standing for `sourceFile(in:)`. A mirror's index is the planner's choice, so
     /// the mirror case finds the only mirror that borrows from another.
     func destinationFile(in fixture: GitWorktreeForkFixture) throws -> URL {
+        let administration = fixture.linkedWorktreeAdministration().appending(path: "modules/\(worktreeRelativePath)")
         switch self {
+        case .submoduleHead, .linkedSubmoduleHead:
+            return administration.appending(path: "HEAD")
+        case .submoduleConfiguration:
+            return administration.appending(path: "config")
+        case .submoduleAlternates:
+            return administration.appending(path: "objects/info/alternates")
+        case .submoduleGitfile:
+            return fixture.destination().appending(path: worktreeRelativePath).appending(path: ".git")
         case .mirrorAlternates:
             let mirrors = fixture.linkedWorktreeAdministration().appending(path: "agentstudio-object-mirrors")
             let borrowing = try FileManager.default.contentsOfDirectory(atPath: mirrors.path)
                 .map { mirrors.appending(path: $0).appending(path: "info/alternates") }
                 .filter(GitWorktreeForkFileProbe.exists)
             return try #require(borrowing.count == 1 ? borrowing.first : nil, "one borrowing mirror")
-        case .nestedHead, .nestedConfiguration, .submoduleGitfile, .flattenedLinkedHead, .nestedAlternates:
-            return fixture.destination().appending(path: worktreeRelativePath).appending(path: administrativePath)
-        }
-    }
-
-    private var administrativePath: String {
-        switch self {
-        case .nestedHead, .flattenedLinkedHead:
-            return ".git/HEAD"
-        case .nestedConfiguration:
-            return ".git/config"
-        case .submoduleGitfile:
-            return ".git"
-        case .nestedAlternates, .mirrorAlternates:
-            return ".git/objects/info/alternates"
         }
     }
 }
@@ -340,11 +337,11 @@ enum HardLinkedRewriteInput: String, CaseIterable, Sendable, CustomStringConvert
 
 /// Where a sparse repository's administration lives in the source.
 enum SparseAdministrationLayout: String, CaseIterable, Sendable, CustomStringConvertible {
-    /// An embedded `.git` directory; the destination copy is cloned, then rewritten in place.
-    case embeddedRepository
-    /// A gitfile-reached linked worktree; its destination copy is flattened and rebuilt from the private
-    /// source administration.
-    case linkedWorktree
+    /// An absorbed submodule; the destination copy is cloned, then rewritten in place.
+    case submodule
+    /// A submodule whose gitfile names a linked worktree; its destination copy is cloned from the common
+    /// administration and rebuilt from the private source administration.
+    case linkedSubmodule
     /// The worktree being forked; the fork's own administration starts without these files.
     case forkRoot
 

@@ -107,8 +107,40 @@ struct GitWorktreeForkFixture {
         repository.remove()
     }
 
-    /// An independent repository whose linked worktrees must still be re-homed by the fork. It is
-    /// outside the copied tree, so only its nested linked working trees enter the filesystem plan.
+    /// Adds and commits a submodule at `relativePath`, cloned from a new repository outside the source; its
+    /// administration lives in the source's `.git/modules`. Returns the source working tree.
+    @discardableResult
+    func addSubmodule(at relativePath: String, file: String = "tool.txt") throws -> URL {
+        let origin = repository.root.appending(path: "origins").appending(path: relativePath)
+        try FileManager.default.createDirectory(at: origin, withIntermediateDirectories: true)
+        try git.run(["init", "-q"], currentDirectory: origin)
+        try write(file, "\(file)\n", in: origin)
+        try git.run(["add", "."], currentDirectory: origin)
+        try git.run(["commit", "-qm", "initial"], currentDirectory: origin)
+        try git.run("submodule", "add", "-q", "-f", origin.path, relativePath)
+        try git.run("commit", "-qm", "submodule \(relativePath)")
+        return source.appending(path: relativePath)
+    }
+
+    /// Commits the nested working tree at `relativePath` as a gitlink, so the fork re-homes it as a registered
+    /// submodule however its `.git` was made. A linked worktree of an outside repository registered this way is
+    /// a submodule whose worktree-private administration differs from its common administration.
+    func registerSubmodule(at relativePath: String) throws {
+        try git.run("-c", "advice.addEmbeddedRepo=false", "add", "-f", relativePath)
+        try git.run("commit", "-qm", "register \(relativePath)")
+    }
+
+    /// The canonical administration Git opens for `worktree`.
+    func gitDirectory(of worktree: URL) throws -> URL {
+        let path = try git.run(["rev-parse", "--absolute-git-dir"], currentDirectory: worktree)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolved = try #require(realpath(path, nil))
+        defer { free(resolved) }
+        return URL(fileURLWithPath: String(cString: resolved))
+    }
+
+    /// An outside repository whose linked worktrees nested in the source become submodules once registered.
+    /// It is outside the copied tree, so only its nested linked working trees enter the filesystem plan.
     func makeIndependentWorktreeRepository() throws -> URL {
         let origin = repository.root.appending(path: "nested-origin")
         try FileManager.default.createDirectory(at: origin, withIntermediateDirectories: true)
@@ -118,6 +150,19 @@ struct GitWorktreeForkFixture {
         try git.run(["commit", "-qm", "independent initial"], currentDirectory: origin)
         return origin
     }
+}
+
+/// One entry of `GitWorktreeForkFileProbe.contentTree(at:)`.
+struct GitWorktreeForkCopiedEntry: Equatable {
+    enum Kind: Equatable {
+        case directory
+        case symbolicLink
+        case file
+    }
+
+    let kind: Kind
+    let permissions: mode_t
+    let bytes: Data
 }
 
 struct GitIndexStatOracle: Equatable {
@@ -130,6 +175,36 @@ enum GitWorktreeForkFileProbe {
     static func info(_ url: URL) -> Darwin.stat? {
         var info = Darwin.stat()
         return url.path.withCString { lstat($0, &info) } == 0 ? info : nil
+    }
+
+    /// Every entry beneath `root`, `.git` included, by relative path: its kind, permission bits, and bytes
+    /// (link text for a symlink). Two equal snapshots are byte-for-byte copies of one another.
+    static func contentTree(at root: URL) throws -> [String: GitWorktreeForkCopiedEntry] {
+        var entries: [String: GitWorktreeForkCopiedEntry] = [:]
+        var pending = [""]
+        while let relativePath = pending.popLast() {
+            let directory = relativePath.isEmpty ? root : root.appending(path: relativePath)
+            for name in try FileManager.default.contentsOfDirectory(atPath: directory.path) {
+                let childPath = relativePath.isEmpty ? name : "\(relativePath)/\(name)"
+                let child = root.appending(path: childPath)
+                let info = try #require(Self.info(child))
+                let permissions = info.st_mode & 0o7777
+                switch info.st_mode & S_IFMT {
+                case S_IFDIR:
+                    entries[childPath] = GitWorktreeForkCopiedEntry(
+                        kind: .directory, permissions: permissions, bytes: Data())
+                    pending.append(childPath)
+                case S_IFLNK:
+                    let target = try FileManager.default.destinationOfSymbolicLink(atPath: child.path)
+                    entries[childPath] = GitWorktreeForkCopiedEntry(
+                        kind: .symbolicLink, permissions: 0, bytes: Data(target.utf8))
+                default:
+                    entries[childPath] = GitWorktreeForkCopiedEntry(
+                        kind: .file, permissions: permissions, bytes: try Data(contentsOf: child))
+                }
+            }
+        }
+        return entries
     }
 
     static func exists(_ url: URL) -> Bool {

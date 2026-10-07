@@ -40,7 +40,7 @@ struct WorktreeForkIndexBuilder: Sendable {
         if let capturedHead {
             try readCapturedTree(capturedHead.treeOID, into: index, repository: repository)
         } else {
-            // An unborn nested repository has no captured tree; its index starts empty.
+            // An unborn submodule has no captured tree; its index starts empty.
             try check(git_index_clear(index))
         }
         try applySkipWorktree(skipWorktreePaths, to: index)

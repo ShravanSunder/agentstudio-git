@@ -3,7 +3,9 @@ import Darwin
 import Foundation
 
 /// Iterative, descriptor-relative classification of the source tree. Every source-root child is planned
-/// except the exact root `.git` entry; inclusion does not depend on Git tracked or ignored status.
+/// except the exact root `.git` entry; inclusion does not depend on Git tracked or ignored status. A nested
+/// `.git` entry is recorded, not entered; once the planner knows it belongs to an independent repository,
+/// `walkPlainGitEntries` plans it like any other content.
 struct WorktreeForkSourceWalker: Sendable {
     static let leafBatchSize = 256
 
@@ -13,83 +15,125 @@ struct WorktreeForkSourceWalker: Sendable {
     /// would download that listing.
     func walk(sourceRootDescriptor: Int32) throws(GitWorktreeForkError) -> WorktreeForkFilesystemPlan {
         try WorktreeForkDatalessPolicy.withMaterializationDenied(reportPath: ".") { () throws(GitWorktreeForkError) in
-            try walkWithMaterializationDenied(sourceRootDescriptor: sourceRootDescriptor)
+            var walked = WorktreeForkWalkedEntries()
+            try walkDirectories(from: [""], rootDescriptor: sourceRootDescriptor, plainContent: false, into: &walked)
+            return walked.filesystemPlan()
         }
     }
 
-    private func walkWithMaterializationDenied(
-        sourceRootDescriptor: Int32
+    /// Plans each given nested `.git` entry, and everything beneath it, as ordinary content: an independent
+    /// repository's administration is copied byte for byte, never opened. Inside, a `.git` name is ordinary
+    /// and nothing is a Git directory candidate. Merge the result with `addingPlainGitEntries`.
+    func walkPlainGitEntries(
+        _ gitEntryPaths: [String],
+        rootDescriptor: Int32
     ) throws(GitWorktreeForkError) -> WorktreeForkFilesystemPlan {
-        var directories: [WorktreeForkPlannedDirectory] = []
-        var leafBatches: [WorktreeForkLeafBatch] = []
-        var skippedEntries: [GitWorktreeMaterializationSkippedEntry] = []
-        var nestedGitEntryPaths: [String] = []
-        var gitDirectoryCandidatePaths: [String] = []
-        var regularFilePathsByIdentity: [WorktreeForkEntryIdentity: [String]] = [:]
-        var pendingDirectories = [""]
+        try WorktreeForkDatalessPolicy.withMaterializationDenied(reportPath: ".") { () throws(GitWorktreeForkError) in
+            var walked = WorktreeForkWalkedEntries()
+            for gitEntryPath in gitEntryPaths {
+                try cancellation.throwIfCancelled()
+                let (parentPath, name) = WorktreeForkDescriptors.splitParent(gitEntryPath)
+                let info = try entryInfo(rootDescriptor, parentPath: parentPath, name: name)
+                var leaves: [WorktreeForkPlannedLeaf] = []
+                var childDirectories: [String] = []
+                try plan(
+                    WorktreeForkDirectoryEntry(name: name, info: info), relativePath: gitEntryPath,
+                    leaves: &leaves, childDirectories: &childDirectories, into: &walked)
+                walked.leafBatches.append(contentsOf: batches(of: leaves, in: parentPath))
+                try walkDirectories(
+                    from: childDirectories, rootDescriptor: rootDescriptor, plainContent: true, into: &walked)
+            }
+            return walked.filesystemPlan()
+        }
+    }
 
+    /// Depth-first from `startPaths`, parent before child. `plainContent` plans `.git` names like any other
+    /// entry and records no Git directory candidates.
+    private func walkDirectories(
+        from startPaths: [String],
+        rootDescriptor: Int32,
+        plainContent: Bool,
+        into walked: inout WorktreeForkWalkedEntries
+    ) throws(GitWorktreeForkError) {
+        var pendingDirectories = Array(startPaths.reversed())
         while let directoryRelativePath = pendingDirectories.popLast() {
             try cancellation.throwIfCancelled()
-            let listing = try listDirectory(sourceRootDescriptor, relativePath: directoryRelativePath)
-            directories.append(
+            let listing = try listDirectory(rootDescriptor, relativePath: directoryRelativePath)
+            walked.directories.append(
                 WorktreeForkPlannedDirectory(relativePath: directoryRelativePath, identity: listing.identity))
-            if !directoryRelativePath.isEmpty, Self.looksLikeGitDirectory(listing.entries) {
-                gitDirectoryCandidatePaths.append(directoryRelativePath)
+            if !plainContent, !directoryRelativePath.isEmpty, Self.looksLikeGitDirectory(listing.entries) {
+                walked.gitDirectoryCandidatePaths.append(directoryRelativePath)
             }
 
             var leaves: [WorktreeForkPlannedLeaf] = []
             var childDirectories: [String] = []
             for entry in listing.entries {
                 let relativePath = WorktreeForkDescriptors.joined(directoryRelativePath, entry.name)
-                if entry.name == ".git" {
+                if !plainContent, entry.name == ".git" {
                     if !directoryRelativePath.isEmpty {
-                        nestedGitEntryPaths.append(relativePath)
+                        walked.nestedGitEntryPaths.append(relativePath)
                     }
                     continue
                 }
-                let identity = WorktreeForkEntryIdentity(entry.info)
-                let kind = WorktreeForkEntryKind(mode: entry.info.st_mode)
-                switch WorktreeForkEntryPolicy.disposition(for: kind, flags: entry.info.st_flags) {
-                case .descend:
-                    childDirectories.append(relativePath)
-                case .rejectDataless:
-                    throw .rejected(reason: .datalessContent)
-                case .realize(.regularFile):
-                    if entry.info.st_nlink > 1 {
-                        regularFilePathsByIdentity[identity, default: []].append(relativePath)
-                    }
-                    leaves.append(leaf(entry, relativePath, .regularFile, identity))
-                case .realize(let leafKind):
-                    leaves.append(leaf(entry, relativePath, leafKind, identity))
-                case .skip(let kind, let reason):
-                    skippedEntries.append(
-                        GitWorktreeMaterializationSkippedEntry(relativePath: relativePath, kind: kind, reason: reason))
-                case .unsupported:
-                    throw .entryFailed(relativePath: relativePath, reason: .unsupportedEntryKind, errorNumber: nil)
-                }
+                try plan(
+                    entry, relativePath: relativePath, leaves: &leaves, childDirectories: &childDirectories,
+                    into: &walked)
             }
-            leafBatches.append(contentsOf: batches(of: leaves, in: directoryRelativePath))
+            walked.leafBatches.append(contentsOf: batches(of: leaves, in: directoryRelativePath))
             pendingDirectories.append(contentsOf: childDirectories.reversed())
         }
+    }
 
-        let hardLinkGroups = hardLinkGroups(from: regularFilePathsByIdentity)
-        let secondaryPaths = Set(hardLinkGroups.flatMap(\.secondaryRelativePaths))
-        let primaryLeafBatches =
-            secondaryPaths.isEmpty
-            ? leafBatches
-            : leafBatches.compactMap { batch -> WorktreeForkLeafBatch? in
-                let leaves = batch.leaves.filter { !secondaryPaths.contains($0.relativePath) }
-                return leaves.isEmpty
-                    ? nil : WorktreeForkLeafBatch(directoryRelativePath: batch.directoryRelativePath, leaves: leaves)
+    private func plan(
+        _ entry: WorktreeForkDirectoryEntry,
+        relativePath: String,
+        leaves: inout [WorktreeForkPlannedLeaf],
+        childDirectories: inout [String],
+        into walked: inout WorktreeForkWalkedEntries
+    ) throws(GitWorktreeForkError) {
+        let identity = WorktreeForkEntryIdentity(entry.info)
+        let kind = WorktreeForkEntryKind(mode: entry.info.st_mode)
+        switch WorktreeForkEntryPolicy.disposition(for: kind, flags: entry.info.st_flags) {
+        case .descend:
+            childDirectories.append(relativePath)
+        case .rejectDataless:
+            throw .rejected(reason: .datalessContent)
+        case .realize(.regularFile):
+            if entry.info.st_nlink > 1 {
+                walked.regularFilePathsByIdentity[identity, default: []].append(relativePath)
             }
-        return WorktreeForkFilesystemPlan(
-            directories: directories,
-            leafBatches: primaryLeafBatches,
-            hardLinkGroups: hardLinkGroups,
-            skippedEntries: skippedEntries.sorted { $0.relativePath < $1.relativePath },
-            nestedGitEntryPaths: nestedGitEntryPaths.sorted(),
-            gitDirectoryCandidatePaths: gitDirectoryCandidatePaths.sorted()
-        )
+            leaves.append(leaf(entry, relativePath, .regularFile, identity))
+        case .realize(let leafKind):
+            leaves.append(leaf(entry, relativePath, leafKind, identity))
+        case .skip(let kind, let reason):
+            walked.skippedEntries.append(
+                GitWorktreeMaterializationSkippedEntry(relativePath: relativePath, kind: kind, reason: reason))
+        case .unsupported:
+            throw .entryFailed(relativePath: relativePath, reason: .unsupportedEntryKind, errorNumber: nil)
+        }
+    }
+
+    /// The lstat of one entry the planner already saw, read through its parent beneath the root.
+    private func entryInfo(
+        _ rootDescriptor: Int32,
+        parentPath: String,
+        name: String
+    ) throws(GitWorktreeForkError) -> Darwin.stat {
+        let parent: Int32
+        switch WorktreeForkDescriptors.openDirectory(beneath: rootDescriptor, relativePath: parentPath) {
+        case .success(let opened):
+            parent = opened
+        case .failure(let failure):
+            throw Self.sourceFailure(relativePath: parentPath, errorNumber: failure.code)
+        }
+        defer { close(parent) }
+        let relativePath = WorktreeForkDescriptors.joined(parentPath, name)
+        switch WorktreeForkDescriptors.statEntry(in: parent, name: name) {
+        case .success(let info):
+            return info
+        case .failure(let failure):
+            throw Self.sourceFailure(relativePath: relativePath, errorNumber: failure.code)
+        }
     }
 
     /// Git's own shape test for a Git directory: a `HEAD` entry beside `objects/` and `refs/` directories.
@@ -189,23 +233,6 @@ struct WorktreeForkSourceWalker: Sendable {
         }
     }
 
-    private func hardLinkGroups(
-        from pathsByIdentity: [WorktreeForkEntryIdentity: [String]]
-    ) -> [WorktreeForkHardLinkGroup] {
-        pathsByIdentity.compactMap { identity, paths -> WorktreeForkHardLinkGroup? in
-            let sortedPaths = paths.sorted()
-            guard sortedPaths.count > 1, let primary = sortedPaths.first else {
-                return nil
-            }
-            return WorktreeForkHardLinkGroup(
-                identity: identity,
-                primaryRelativePath: primary,
-                secondaryRelativePaths: Array(sortedPaths.dropFirst())
-            )
-        }
-        .sorted { $0.primaryRelativePath < $1.primaryRelativePath }
-    }
-
     /// A planned directory that cannot be opened beneath the root is either a race or an escape attempt.
     static func sourceFailure(relativePath: String, errorNumber: Int32) -> GitWorktreeForkError {
         switch errorNumber {
@@ -243,6 +270,52 @@ enum WorktreeForkEntryPolicy {
         case .unixSocket: .skip(.unixSocket, .unixSocketNotReproducible)
         case .characterDevice, .blockDevice, .unknown: .unsupported
         }
+    }
+}
+
+/// What one or more walks found, before hard-link secondaries are separated from clone leaves.
+private struct WorktreeForkWalkedEntries {
+    var directories: [WorktreeForkPlannedDirectory] = []
+    var leafBatches: [WorktreeForkLeafBatch] = []
+    var skippedEntries: [GitWorktreeMaterializationSkippedEntry] = []
+    var nestedGitEntryPaths: [String] = []
+    var gitDirectoryCandidatePaths: [String] = []
+    var regularFilePathsByIdentity: [WorktreeForkEntryIdentity: [String]] = [:]
+
+    func filesystemPlan() -> WorktreeForkFilesystemPlan {
+        let hardLinkGroups = hardLinkGroups()
+        let secondaryPaths = Set(hardLinkGroups.flatMap(\.secondaryRelativePaths))
+        let primaryLeafBatches =
+            secondaryPaths.isEmpty
+            ? leafBatches
+            : leafBatches.compactMap { batch -> WorktreeForkLeafBatch? in
+                let leaves = batch.leaves.filter { !secondaryPaths.contains($0.relativePath) }
+                return leaves.isEmpty
+                    ? nil : WorktreeForkLeafBatch(directoryRelativePath: batch.directoryRelativePath, leaves: leaves)
+            }
+        return WorktreeForkFilesystemPlan(
+            directories: directories,
+            leafBatches: primaryLeafBatches,
+            hardLinkGroups: hardLinkGroups,
+            skippedEntries: skippedEntries.sorted { $0.relativePath < $1.relativePath },
+            nestedGitEntryPaths: nestedGitEntryPaths.sorted(),
+            gitDirectoryCandidatePaths: gitDirectoryCandidatePaths.sorted()
+        )
+    }
+
+    private func hardLinkGroups() -> [WorktreeForkHardLinkGroup] {
+        regularFilePathsByIdentity.compactMap { identity, paths -> WorktreeForkHardLinkGroup? in
+            let sortedPaths = paths.sorted()
+            guard sortedPaths.count > 1, let primary = sortedPaths.first else {
+                return nil
+            }
+            return WorktreeForkHardLinkGroup(
+                identity: identity,
+                primaryRelativePath: primary,
+                secondaryRelativePaths: Array(sortedPaths.dropFirst())
+            )
+        }
+        .sorted { $0.primaryRelativePath < $1.primaryRelativePath }
     }
 }
 

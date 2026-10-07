@@ -18,12 +18,11 @@ struct WorktreeForkConfigurationRelocationMapping: Sendable {
     /// The new value for an entry (nil to keep it) and, when its path relocates, the source and destination it
     /// stands for. An absolute value is re-aimed at its relocated
     /// counterpart. A relative include is re-aimed only when, read from the copy, it no longer reaches what it
-    /// reached from the source. Values outside the source or in the shared repository keep their target; a
-    /// source path with no counterpart fails.
+    /// reached from the source. Values outside the source or in the shared repository keep their target.
     func valueRelocation(
         for entry: WorktreeForkConfigurationEntry,
         in copy: WorktreeForkConfigurationCopy
-    ) throws(GitWorktreeForkError) -> ValueRelocation {
+    ) -> ValueRelocation {
         guard let form = WorktreeForkConfigurationIncludes.pathForm(name: entry.name, value: entry.value) else {
             return ValueRelocation(replacement: nil, relocatedSource: nil, relocatedDestination: nil)
         }
@@ -37,15 +36,6 @@ struct WorktreeForkConfigurationRelocationMapping: Sendable {
         case .relocated(let destination):
             relocatedDestination = destination
             wanted = destination
-        case .unmapped:
-            let sourcePath =
-                WorktreeForkAdministrativeSymlinks.relativeComponents(of: source, beneath: plan.sourceRoot)
-                ?? source.lastPathComponent
-            throw .entryFailed(
-                relativePath: "\(copy.reportPath): \(entry.name) = \(sourcePath)",
-                reason: .unresolvableGitAdministration,
-                errorNumber: nil
-            )
         }
         let reachedFromCopy =
             form == .absolute
@@ -85,8 +75,6 @@ struct WorktreeForkConfigurationRelocationMapping: Sendable {
         switch relocation.counterpart(of: source.literal) {
         case .outsideSource, .sharedRepository:
             return nil
-        case .unmapped:
-            throw unresolvable
         case .relocated(let destination):
             if source.matchesBeneathLiteral, relocation.hasRelocation(strictlyBeneath: source.literal) {
                 throw unresolvable
@@ -114,7 +102,7 @@ struct WorktreeForkConfigurationRelocationMapping: Sendable {
             if let subsection = try relocatedConditionSubsection(for: entry, in: copy) {
                 name = "includeif.\(subsection).path"
             }
-            let value = try valueRelocation(for: entry, in: copy).replacement ?? entry.value
+            let value = valueRelocation(for: entry, in: copy).replacement ?? entry.value
             expected.append(WorktreeForkConfigurationEntry(name: name, value: value))
         }
         return expected

@@ -7,7 +7,7 @@ import os
 
 /// Nested Git shapes found in real prepared worktrees: bare caches whose alternates point back into the
 /// source tree, linked worktrees of the source repository itself, separate Git directories, nested sparse
-/// checkouts, and submodules that were never absorbed.
+/// checkouts, and submodules that were never absorbed. An independent repository is copied as content.
 @Suite("Git worktree fork nested repository integration", .serialized)
 struct GitWorktreeForkNestedRepositoryIntegrationTests {
     @Test(
@@ -190,12 +190,13 @@ struct GitWorktreeForkNestedRepositoryIntegrationTests {
     }
 
     @Test(
-        "an in-tree bare repository retires the registration of a flattened worktree and keeps the outside one"
+        "an in-tree bare repository retires the registration of a worktree copied as content and keeps the outside one"
     )
-    func inTreeBareRetiresFlattenedWorktreeRegistration() async throws {
-        // Arrange: a bare repository with one linked worktree inside the source and one outside it. The fork
-        // flattens the inside worktree into an independent repository, so its registration has no reciprocal
-        // gitfile in the destination and must not survive in the destination copy of the bare repository.
+    func inTreeBareRetiresCopiedWorktreeRegistration() async throws {
+        // Arrange: a bare repository with one linked worktree inside the source and one outside it. The inside
+        // worktree is copied as content, its absolute gitfile still naming the source registration, so the
+        // destination copy of the bare repository has no reciprocal gitfile for that registration and must not
+        // keep it.
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-bare-linked")
         defer { fixture.remove() }
         try ignore(".build/", fixture: fixture)
@@ -209,6 +210,7 @@ struct GitWorktreeForkNestedRepositoryIntegrationTests {
         try fixture.git.run(["worktree", "add", "-q", "-b", "side", outside.path, "main"], currentDirectory: project)
         let sourceRegistrations = try worktreePaths(of: project, fixture)
         let sourceInsideRegistration = try Data(contentsOf: project.appending(path: "worktrees/main/gitdir"))
+        let sourceInsideGitfile = try Data(contentsOf: inside.appending(path: ".git"))
         let destination = fixture.destination()
 
         // Act
@@ -226,10 +228,7 @@ struct GitWorktreeForkNestedRepositoryIntegrationTests {
         #expect(
             !(try fixture.git.run(["worktree", "list", "--porcelain"], currentDirectory: destinationProject))
                 .contains("prunable"))
-        let insideGitEntry = try #require(GitWorktreeForkFileProbe.info(destinationInside.appending(path: ".git")))
-        #expect(insideGitEntry.st_mode & S_IFMT == S_IFDIR, "the flattened worktree is an independent repository")
-        #expect(try fixture.statusLines(at: destinationInside).isEmpty)
-        #expect(try fixture.blobID("HEAD", at: destinationInside) == fixture.blobID("HEAD", at: inside))
+        #expect(try Data(contentsOf: destinationInside.appending(path: ".git")) == sourceInsideGitfile)
         #expect(try worktreePaths(of: project, fixture) == sourceRegistrations)
         #expect(try Data(contentsOf: project.appending(path: "worktrees/main/gitdir")) == sourceInsideRegistration)
     }
@@ -307,8 +306,8 @@ struct GitWorktreeForkNestedRepositoryIntegrationTests {
         #expect(sourceWorktrees.split(separator: "\n").filter { $0.hasPrefix("worktree ") }.count == 3)
     }
 
-    @Test("a nested repository with a separate Git directory outside the source is re-homed")
-    func separateGitDirectoryOutsideSourceIsRehomed() async throws {
+    @Test("a nested repository with a separate Git directory outside the source is copied as content")
+    func separateGitDirectoryOutsideSourceIsCopied() async throws {
         // Arrange
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-separate-git-dir")
         defer { fixture.remove() }
@@ -322,19 +321,17 @@ struct GitWorktreeForkNestedRepositoryIntegrationTests {
         try fixture.git.run(["add", "."], currentDirectory: sourceNested)
         try fixture.git.run(["commit", "-qm", "initial"], currentDirectory: sourceNested)
         try fixture.write("separate.txt", "dirty\n", in: sourceNested)
-        let nestedStatus = try fixture.statusLines(at: sourceNested)
+        let sourceContent = try GitWorktreeForkFileProbe.contentTree(at: sourceNested)
         let destination = fixture.destination()
 
         // Act
         _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
 
-        // Assert
+        // Assert: the gitfile still names the separate administration, exactly as in the source.
         let destinationNested = destination.appending(path: "vendor/separate")
-        #expect(try fixture.statusLines(at: destinationNested) == nestedStatus)
-        #expect(try fixture.blobID("HEAD", at: destinationNested) == fixture.blobID("HEAD", at: sourceNested))
+        #expect(try GitWorktreeForkFileProbe.contentTree(at: destinationNested) == sourceContent)
         #expect(
-            try absoluteGitDirectory(destinationNested, fixture)
-                == canonical(destinationNested.appending(path: ".git")).path)
+            try absoluteGitDirectory(destinationNested, fixture) == canonical(separateAdministration).path)
     }
 
     @Test("a nested repository's sparse checkout keeps its patterns and skip-worktree entries")
@@ -368,32 +365,30 @@ struct GitWorktreeForkNestedRepositoryIntegrationTests {
         #expect(!GitWorktreeForkFileProbe.exists(destinationNested.appending(path: "dropped/two.txt")))
     }
 
-    @Test("a nested .git entry that is not Git administration rejects the fork before mutation")
-    func nonAdministrativeGitEntryRejectsBeforeMutation() async throws {
-        // Arrange: some packages ship an ordinary file named `.git`; it must not be copied as plain data.
+    @Test("a nested .git entry that is not Git administration is copied as ordinary content")
+    func nonAdministrativeGitEntryIsCopied() async throws {
+        // Arrange: some packages ship an ordinary file named `.git`; like any entry that is not a submodule or a
+        // linked worktree of the source repository, it is part of the checkout as it is.
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-ordinary-dotgit")
         defer { fixture.remove() }
         try ignore("node_modules/", fixture: fixture)
-        try fixture.write("node_modules/example/.git", "ordinary artifact, not git administration\n")
-        let branchesBefore = try fixture.branchNames()
+        let contents = "ordinary artifact, not git administration\n"
+        try fixture.write("node_modules/example/.git", contents)
 
         // Act
-        let failure: GitWorktreeForkError?
-        do {
-            _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
-            failure = nil
-        } catch {
-            failure = error
-        }
+        let result = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
 
         // Assert
         #expect(
-            failure
-                == .entryFailed(
-                    relativePath: "node_modules/example/.git", reason: .unresolvableGitAdministration,
-                    errorNumber: nil))
-        #expect(!GitWorktreeForkFileProbe.exists(fixture.destination()))
-        #expect(try fixture.branchNames() == branchesBefore)
+            try String(
+                contentsOf: fixture.destination().appending(path: "node_modules/example/.git"), encoding: .utf8)
+                == contents)
+        guard case .copyOnWrite(let report) = result.materialization else {
+            Issue.record("expected copy-on-write result")
+            return
+        }
+        #expect(report.preservedGitRepositoryCount == 0)
+        #expect(report.nestedWorktreesSkipped.isEmpty)
     }
 
     private func ignore(_ pattern: String, fixture: GitWorktreeForkFixture) throws {

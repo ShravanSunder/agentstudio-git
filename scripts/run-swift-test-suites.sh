@@ -80,6 +80,7 @@ suites=(
   GitWorktreeForkIncludeOrderIntegrationTests
   GitWorktreeForkExternalIncludeIntegrationTests
   GitWorktreeForkNestedRepositoryIntegrationTests
+  GitWorktreeForkEmbeddedRepositoryIntegrationTests
   GitWorktreeForkPrivateAdminIntegrationTests
   GitCommitRangeCountIntegrationTests
   GitBranchIntegrationIntegrationTests

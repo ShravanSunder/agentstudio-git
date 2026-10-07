@@ -104,20 +104,21 @@ struct GitWorktreeForkMetadataFlagsIntegrationTests {
     }
 
     @Test(
-        "read-only nested Git administration directories keep their mode after re-homing writes into them",
+        "read-only submodule administration directories keep their mode after re-homing writes into them",
         arguments: NestedRepositoryShape.allCases
     )
     func readOnlyNestedAdministrationDirectoriesKeepTheirMode(shape: NestedRepositoryShape) async throws {
-        // Arrange: a SwiftPM-style checkout whose whole .git tree, directories included, is read-only. The
-        // re-homer writes HEAD into .git, sparse state into .git/info, and alternates into .git/objects/info.
-        let fixture = try makeIgnoredBuildFixture(prefix: "agentstudio-git-fork-readonly-nested-dirs")
+        // Arrange: a submodule whose whole administration tree, directories included, is read-only. The re-homer
+        // writes HEAD and config into it, sparse state into info/, and alternates into objects/info.
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-readonly-nested-dirs")
         defer {
             releaseProtections(under: fixture.repository.root)
             fixture.remove()
         }
-        let nestedPath = ".build/checkouts/dependency"
-        let checkout = try makeNestedRepository(shape, at: fixture.source.appending(path: nestedPath), fixture: fixture)
-        try clearWriteBits(under: checkout.appending(path: ".git"))
+        let nestedPath = "deps/dependency"
+        let checkout = try makeSubmodule(shape, at: nestedPath, fixture: fixture)
+        let sourceAdministration = try fixture.gitDirectory(of: checkout)
+        try clearWriteBits(under: sourceAdministration)
         let destination = fixture.destination()
 
         // Act
@@ -126,9 +127,12 @@ struct GitWorktreeForkMetadataFlagsIntegrationTests {
         // Assert
         let report = try copyOnWriteReport(result)
         let nestedDestination = destination.appending(path: nestedPath)
+        let destinationAdministration = try fixture.gitDirectory(of: nestedDestination)
         for relativePath in shape.administrationDirectories {
-            let sourceInfo = try #require(GitWorktreeForkFileProbe.info(checkout.appending(path: relativePath)))
-            let info = try #require(GitWorktreeForkFileProbe.info(nestedDestination.appending(path: relativePath)))
+            let sourceInfo = try #require(
+                GitWorktreeForkFileProbe.info(Self.directory(relativePath, in: sourceAdministration)))
+            let info = try #require(
+                GitWorktreeForkFileProbe.info(Self.directory(relativePath, in: destinationAdministration)))
             #expect(sourceInfo.st_mode & 0o7777 == 0o555, "\(relativePath) source")
             #expect(info.st_mode & 0o7777 == 0o555, "\(relativePath) destination")
         }
@@ -220,29 +224,37 @@ struct GitWorktreeForkMetadataFlagsIntegrationTests {
         return path
     }
 
-    private func makeNestedRepository(
+    /// A submodule at `relativePath` in the given shape: plain, sparse in its own working tree, or cloned with
+    /// `--reference` so its objects come through alternates.
+    private func makeSubmodule(
         _ shape: NestedRepositoryShape,
-        at path: URL,
+        at relativePath: String,
         fixture: GitWorktreeForkFixture
     ) throws -> URL {
+        let origin = try makeRepository(at: fixture.repository.root.appending(path: "origin"), fixture: fixture)
         switch shape {
         case .plain:
-            return try makeRepository(at: path, fixture: fixture)
+            try fixture.git.run("submodule", "add", "-q", origin.path, relativePath)
         case .sparse:
-            let repository = try makeRepository(at: path, fixture: fixture)
-            try fixture.write("kept/one.txt", "kept\n", in: repository)
-            try fixture.write("dropped/two.txt", "dropped\n", in: repository)
-            try fixture.git.run(["add", "."], currentDirectory: repository)
-            try fixture.git.run(["commit", "-qm", "sparse tree"], currentDirectory: repository)
-            try fixture.git.run(["sparse-checkout", "set", "--cone", "kept"], currentDirectory: repository)
-            return repository
+            try fixture.write("kept/one.txt", "kept\n", in: origin)
+            try fixture.write("dropped/two.txt", "dropped\n", in: origin)
+            try fixture.git.run(["add", "."], currentDirectory: origin)
+            try fixture.git.run(["commit", "-qm", "sparse tree"], currentDirectory: origin)
+            try fixture.git.run("submodule", "add", "-q", origin.path, relativePath)
         case .sharedObjects:
-            let upstream = try makeRepository(at: fixture.repository.root.appending(path: "upstream"), fixture: fixture)
-            try FileManager.default.createDirectory(
-                at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try fixture.git.run(["clone", "-q", "--shared", upstream.path, path.path])
-            return path
+            try fixture.git.run("submodule", "add", "-q", "--reference", origin.path, origin.path, relativePath)
         }
+        try fixture.git.run("commit", "-qm", "submodule")
+        let checkout = fixture.source.appending(path: relativePath)
+        if shape == .sparse {
+            try fixture.git.run(["sparse-checkout", "set", "--cone", "kept"], currentDirectory: checkout)
+        }
+        return checkout
+    }
+
+    /// `relativePath` beneath `administration`; empty names the administration directory itself.
+    private static func directory(_ relativePath: String, in administration: URL) -> URL {
+        relativePath.isEmpty ? administration : administration.appending(path: relativePath)
     }
 
     private func copyOnWriteReport(_ result: GitForkWorktreeResult) throws -> GitWorktreeMaterializationReport {
@@ -304,11 +316,12 @@ enum NestedRepositoryShape: String, CaseIterable, Sendable {
     case sparse
     case sharedObjects
 
+    /// Beneath the submodule's administration; empty names the administration directory itself.
     var administrationDirectories: [String] {
         switch self {
-        case .plain: [".git", ".git/objects", ".git/refs", ".git/refs/heads", ".git/info"]
-        case .sparse: [".git", ".git/info", ".git/objects"]
-        case .sharedObjects: [".git", ".git/objects", ".git/objects/info"]
+        case .plain: ["", "objects", "refs", "refs/heads", "info"]
+        case .sparse: ["", "info", "objects"]
+        case .sharedObjects: ["", "objects", "objects/info"]
         }
     }
 }

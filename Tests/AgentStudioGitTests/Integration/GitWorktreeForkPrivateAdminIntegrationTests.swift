@@ -5,9 +5,10 @@ import Testing
 
 @testable import AgentStudioGitLocal
 
-/// A nested linked worktree's configuration can name files in its own private administration. Re-homing
-/// re-aims those values at the node's destination administration, so the files they name must exist there:
-/// Git silently ignores a missing include or signer file.
+/// A submodule whose gitfile names an outside repository's linked worktree has private administration apart
+/// from its common administration, and its configuration can name files there. Re-homing re-aims those values
+/// at the submodule's destination administration, so the files they name must exist there: Git silently
+/// ignores a missing include or signer file.
 @Suite("Git worktree fork private administration integration", .serialized)
 struct GitWorktreeForkPrivateAdminIntegrationTests {
     private static let probeAttributeName = "com.example.forklab"
@@ -60,6 +61,7 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
         }
         try ignore(".claude/", fixture: fixture)
         try fixture.git.run(["worktree", "add", "-q", "-b", "agent", agent.path], currentDirectory: nestedOrigin)
+        try fixture.registerSubmodule(at: ".claude/worktrees/agent")
         let privateAdministration = try canonical(nestedOrigin.appending(path: ".git/worktrees/agent"))
         let signers = privateAdministration.appending(path: "allowed_signers")
         let extra = privateAdministration.appending(path: "extra.conf")
@@ -74,7 +76,7 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
         _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
 
         // Assert
-        let destinationAdministration = try canonical(destinationAgent.appending(path: ".git"))
+        let destinationAdministration = try fixture.gitDirectory(of: destinationAgent)
         let destinationSigners = destinationAdministration.appending(path: "allowed_signers")
         let destinationExtra = destinationAdministration.appending(path: "extra.conf")
         #expect(try Data(contentsOf: destinationSigners) == Data(contentsOf: signers))
@@ -95,10 +97,10 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
         #expect(try configValue("agentstudio.probe", at: destinationAgent, fixture) == "from-private")
     }
 
-    @Test("a private target wins over a common file of the same name in a flattened node's administration")
+    @Test("a private target wins over a common file of the same name in a linked submodule's administration")
     func privateTargetWinsOverSameNamedCommonFile() async throws {
-        // Arrange: the flattened node's administration is cloned from the common directory, which holds its own
-        // extra.conf and allowed_signers. Git reads the worktree-private files the config names.
+        // Arrange: the linked submodule's administration is cloned from the common directory, which holds its
+        // own extra.conf and allowed_signers. Git reads the worktree-private files the config names.
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-private-wins")
         let nestedOrigin = try fixture.makeIndependentWorktreeRepository()
         let agent = fixture.source.appending(path: ".claude/worktrees/agent")
@@ -111,6 +113,7 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
         }
         try ignore(".claude/", fixture: fixture)
         try fixture.git.run(["worktree", "add", "-q", "-b", "agent", agent.path], currentDirectory: nestedOrigin)
+        try fixture.registerSubmodule(at: ".claude/worktrees/agent")
         let commonAdministration = try canonical(nestedOrigin.appending(path: ".git"))
         try "common@example.com ssh-ed25519 AAAAcommon\n".write(
             to: commonAdministration.appending(path: "allowed_signers"), atomically: false, encoding: .utf8)
@@ -130,7 +133,7 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
         _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
 
         // Assert
-        let destinationAdministration = try canonical(destinationAgent.appending(path: ".git"))
+        let destinationAdministration = try fixture.gitDirectory(of: destinationAgent)
         let destinationSigners = destinationAdministration.appending(path: "allowed_signers")
         #expect(try Data(contentsOf: destinationSigners) == Data(contentsOf: signers))
         #expect(
@@ -151,6 +154,7 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
         try ignore(".claude/", fixture: fixture)
         let agent = fixture.source.appending(path: ".claude/worktrees/agent")
         try fixture.git.run(["worktree", "add", "-q", "-b", "agent", agent.path], currentDirectory: nestedOrigin)
+        try fixture.registerSubmodule(at: ".claude/worktrees/agent")
         let commonAdministration = try canonical(nestedOrigin.appending(path: ".git"))
         try "[agentstudio]\n\tmarker = common-file\n".write(
             to: commonAdministration.appending(path: "extra.conf"), atomically: false, encoding: .utf8)
@@ -170,11 +174,11 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
     }
 
     @Test(
-        "values naming both a flattened node's common and private file of one name need them to agree",
+        "values naming both a linked submodule's common and private file of one name need them to agree",
         arguments: CollidingAdministrationContent.allCases)
     func commonAndPrivateReferencesToOneNameMustAgree(content: CollidingAdministrationContent) async throws {
-        // Arrange: an external repository's linked worktree nested in the tree is flattened, so its common and
-        // private administration both land in one destination .git, and its config includes both extra.conf.
+        // Arrange: an external repository's linked worktree registered as a submodule: its common and private
+        // administration both land in one destination directory, and its config includes both extra.conf.
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-private-collision")
         defer { fixture.remove() }
         try ignore(".build/", fixture: fixture)
@@ -186,6 +190,7 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
         try fixture.git.run(["commit", "-qm", "initial"], currentDirectory: upstream)
         let linked = fixture.source.appending(path: ".build/linked")
         try fixture.git.run(["worktree", "add", "-q", "-b", "linked", linked.path], currentDirectory: upstream)
+        try fixture.registerSubmodule(at: ".build/linked")
         let commonAdministration = try canonical(upstream.appending(path: ".git"))
         let commonExtra = commonAdministration.appending(path: "extra.conf")
         let privateExtra = commonAdministration.appending(path: "worktrees/linked/extra.conf")
@@ -215,8 +220,8 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
             #expect(
                 failure
                     == .entryFailed(
-                        relativePath: ".build/linked/.git/extra.conf", reason: .unresolvableGitAdministration,
-                        errorNumber: nil))
+                        relativePath: "worktrees/fork/modules/.build/linked/extra.conf",
+                        reason: .unresolvableGitAdministration, errorNumber: nil))
             #expect(!GitWorktreeForkFileProbe.exists(fixture.destination()))
             #expect(!GitWorktreeForkFileProbe.exists(fixture.linkedWorktreeAdministration()))
             #expect(try fixture.branchNames() == branchesBefore)
@@ -241,6 +246,7 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
         try fixture.write("large-file-store/objects/placeholder", "stored\n")
         let agent = fixture.source.appending(path: ".claude/worktrees/agent")
         try fixture.git.run(["worktree", "add", "-q", "-b", "agent", agent.path], currentDirectory: nestedOrigin)
+        try fixture.registerSubmodule(at: ".claude/worktrees/agent")
         let privateAdministration = try canonical(nestedOrigin.appending(path: ".git/worktrees/agent"))
         let extra = privateAdministration.appending(path: "extra.conf")
         let deeper = privateAdministration.appending(path: "deeper.conf")
@@ -278,6 +284,7 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
         try fixture.write("large-file-store/objects/placeholder", "stored\n")
         let agent = fixture.source.appending(path: ".claude/worktrees/agent")
         try fixture.git.run(["worktree", "add", "-q", "-b", "agent", agent.path], currentDirectory: nestedOrigin)
+        try fixture.registerSubmodule(at: ".claude/worktrees/agent")
         let extra = try canonical(nestedOrigin.appending(path: ".git/worktrees/agent")).appending(path: "extra.conf")
         let storage = try canonical(fixture.source.appending(path: "large-file-store")).path
         let outside = try canonical(fixture.repository.root).appending(path: "outside-store").path
@@ -297,7 +304,7 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
         #expect(try configValue("agentstudio.store", at: destinationAgent, fixture) == destinationStorage)
     }
 
-    @Test("a private include two nested worktrees reach is realized once and keeps its re-homed values")
+    @Test("a private include two linked submodules reach is realized once and keeps its re-homed values")
     func privateIncludeReachedTwiceIsRealizedOnce() async throws {
         // Arrange: worktrees a and b share the common config, which includes a's private extra.conf; that file
         // names a source-tree lfs.storage the re-homer must relocate in the realized copy.
@@ -315,6 +322,7 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
                     fixture.source.appending(path: ".claude/worktrees/\(name)").path,
                 ],
                 currentDirectory: nestedOrigin)
+            try fixture.registerSubmodule(at: ".claude/worktrees/\(name)")
         }
         let extra = try canonical(nestedOrigin.appending(path: ".git/worktrees/a")).appending(path: "extra.conf")
         let storage = try canonical(fixture.source.appending(path: "large-file-store"))
@@ -339,8 +347,8 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
 
     @Test("a reference to only the common file passes validation beside an unrelated same-named private file")
     func commonOnlyReferenceIgnoresUnrelatedPrivateFile() async throws {
-        // Arrange: an external repository's linked worktree under vendor/ is flattened; its config includes only
-        // the common extra.conf, while its private administration holds an unreferenced extra.conf.
+        // Arrange: an external repository's linked worktree under vendor/ is a registered submodule; its config
+        // includes only the common extra.conf, while its private administration holds an unreferenced one.
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-common-only")
         defer { fixture.remove() }
         try ignore("vendor/", fixture: fixture)
@@ -352,6 +360,7 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
         try fixture.git.run(["commit", "-qm", "initial"], currentDirectory: upstream)
         let linked = fixture.source.appending(path: "vendor/linked")
         try fixture.git.run(["worktree", "add", "-q", "-b", "linked", linked.path], currentDirectory: upstream)
+        try fixture.registerSubmodule(at: "vendor/linked")
         let commonAdministration = try canonical(upstream.appending(path: ".git"))
         let commonExtra = commonAdministration.appending(path: "extra.conf")
         try "[agentstudio]\n\tmarker = required-common\n".write(to: commonExtra, atomically: false, encoding: .utf8)
@@ -368,7 +377,7 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
         let destinationLinked = fixture.destination().appending(path: "vendor/linked")
         #expect(try configValue("agentstudio.marker", at: destinationLinked, fixture) == "required-common")
         #expect(
-            try Data(contentsOf: canonical(destinationLinked.appending(path: ".git")).appending(path: "extra.conf"))
+            try Data(contentsOf: fixture.gitDirectory(of: destinationLinked).appending(path: "extra.conf"))
                 == Data(contentsOf: commonExtra))
     }
 
@@ -383,6 +392,7 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
         try ignore(".claude/", fixture: fixture)
         let agent = fixture.source.appending(path: ".claude/worktrees/agent")
         try fixture.git.run(["worktree", "add", "-q", "-b", "agent", agent.path], currentDirectory: nestedOrigin)
+        try fixture.registerSubmodule(at: ".claude/worktrees/agent")
         let privateAdministration = try canonical(nestedOrigin.appending(path: ".git/worktrees/agent"))
         let signers = privateAdministration.appending(path: "allowed_signers")
         let extra = privateAdministration.appending(path: "extra.conf")
@@ -392,7 +402,8 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
             to: extra, atomically: false, encoding: .utf8)
         try fixture.git.run(["config", "gpg.ssh.allowedSignersFile", signers.path], currentDirectory: nestedOrigin)
         try fixture.git.run(["config", "include.path", extra.path], currentDirectory: nestedOrigin)
-        let destinationAdministration = fixture.destination().appending(path: ".claude/worktrees/agent/.git")
+        let destinationAdministration = fixture.linkedWorktreeAdministration().appending(
+            path: "modules/.claude/worktrees/agent")
         let faults = WorktreeForkFaultInjector { point throws(GitWorktreeForkError) in
             guard point == .afterGitStateRehomed else {
                 return
@@ -433,18 +444,17 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
         #expect(try fixture.branchNames() == branchesBefore)
     }
 
-    @Test("a nested repository's source administration that cannot be searched at validation fails typed")
+    @Test("a submodule's source administration that cannot be searched at validation fails typed")
     func unsearchableSourceAdministrationFailsValidation() async throws {
-        // Arrange: after the destination is built, the nested repository's source .git loses search permission,
-        // so its configuration closure can no longer be looked up, let alone read.
+        // Arrange: after the destination is built, the submodule's source administration loses search
+        // permission, so its configuration closure can no longer be looked up, let alone read.
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-source-unsearchable")
-        let sourceAdministration = fixture.source.appending(path: "vendor/tool/.git")
+        let sourceAdministration = fixture.source.appending(path: ".git/modules/deps/tool")
         defer {
             _ = chmod(sourceAdministration.path, 0o755)
             fixture.remove()
         }
-        try ignore("vendor/", fixture: fixture)
-        try makeNestedRepository(at: fixture.source.appending(path: "vendor/tool"), fixture: fixture)
+        try fixture.addSubmodule(at: "deps/tool")
         let faults = WorktreeForkFaultInjector { point throws(GitWorktreeForkError) in
             if point == .afterIndexesBuilt {
                 _ = chmod(sourceAdministration.path, 0o600)
@@ -466,27 +476,25 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
         #expect(
             failure
                 == .validationFailed(
-                    reason: .nestedRepositoryUnusable, relativePath: "vendor/tool/.git/config.worktree"))
+                    reason: .nestedRepositoryUnusable, relativePath: "deps/tool/.git/config.worktree"))
         #expect(!GitWorktreeForkFileProbe.exists(fixture.destination()))
         #expect(!GitWorktreeForkFileProbe.exists(fixture.linkedWorktreeAdministration()))
         #expect(try fixture.branchNames() == branchesBefore)
     }
 
-    @Test("a nested repository without config.worktree forks, its absent worktree configuration requiring nothing")
+    @Test("a submodule without config.worktree forks, its absent worktree configuration requiring nothing")
     func nestedRepositoryWithoutWorktreeConfigurationForks() async throws {
         // Arrange
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-no-config-worktree")
         defer { fixture.remove() }
-        try ignore("vendor/", fixture: fixture)
-        let tool = fixture.source.appending(path: "vendor/tool")
-        try makeNestedRepository(at: tool, fixture: fixture)
-        #expect(!GitWorktreeForkFileProbe.exists(tool.appending(path: ".git/config.worktree")))
+        let tool = try fixture.addSubmodule(at: "deps/tool")
+        #expect(!GitWorktreeForkFileProbe.exists(try fixture.gitDirectory(of: tool).appending(path: "config.worktree")))
 
         // Act
         _ = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
 
         // Assert
-        let destinationTool = fixture.destination().appending(path: "vendor/tool")
+        let destinationTool = fixture.destination().appending(path: "deps/tool")
         #expect(try fixture.blobID("HEAD", at: destinationTool) == fixture.blobID("HEAD", at: tool))
         #expect(try fixture.statusLines(at: destinationTool).isEmpty)
     }
@@ -500,6 +508,7 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
         try ignore(".claude/", fixture: fixture)
         let agent = fixture.source.appending(path: ".claude/worktrees/agent")
         try fixture.git.run(["worktree", "add", "-q", "-b", "agent", agent.path], currentDirectory: nestedOrigin)
+        try fixture.registerSubmodule(at: ".claude/worktrees/agent")
         let signers = try canonical(nestedOrigin.appending(path: ".git/worktrees/agent"))
             .appending(path: "allowed_signers")
         try #require(mkfifo(signers.path, 0o644) == 0)
@@ -519,19 +528,11 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
         #expect(
             failure
                 == .entryFailed(
-                    relativePath: ".claude/worktrees/agent/.git/allowed_signers", reason: .unsupportedEntryKind,
-                    errorNumber: nil))
+                    relativePath: "worktrees/fork/modules/.claude/worktrees/agent/allowed_signers",
+                    reason: .unsupportedEntryKind, errorNumber: nil))
         #expect(!GitWorktreeForkFileProbe.exists(fixture.destination()))
         #expect(!GitWorktreeForkFileProbe.exists(fixture.linkedWorktreeAdministration()))
         #expect(try fixture.branchNames() == branchesBefore)
-    }
-
-    private func makeNestedRepository(at path: URL, fixture: GitWorktreeForkFixture) throws {
-        try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true)
-        try fixture.git.run(["init", "-q"], currentDirectory: path)
-        try fixture.write("tool.txt", "tool\n", in: path)
-        try fixture.git.run(["add", "."], currentDirectory: path)
-        try fixture.git.run(["commit", "-qm", "initial"], currentDirectory: path)
     }
 
     private func ignore(_ pattern: String, fixture: GitWorktreeForkFixture) throws {
@@ -552,7 +553,7 @@ struct GitWorktreeForkPrivateAdminIntegrationTests {
     }
 }
 
-/// Whether a flattened node's common and private file of one name hold the same thing.
+/// Whether a linked submodule's common and private file of one name hold the same thing.
 enum CollidingAdministrationContent: String, CaseIterable, Sendable {
     case different
     case identical

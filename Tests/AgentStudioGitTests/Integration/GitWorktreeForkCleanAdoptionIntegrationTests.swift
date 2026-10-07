@@ -22,12 +22,10 @@ struct GitWorktreeForkCleanAdoptionIntegrationTests {
         }
         try fixture.git.run("add", ".")
         try fixture.git.run("commit", "-qm", "base")
-        let tool = fixture.source.appending(path: "vendor/tool")
-        try fixture.write("tool.txt", "nested clean\n", in: tool)
+        let tool = try fixture.addSubmodule(at: "deps/tool")
         try Self.ageModificationTime(tool.appending(path: "tool.txt"))
-        try fixture.git.run(["init", "-q"], currentDirectory: tool)
-        try fixture.git.run(["add", "."], currentDirectory: tool)
-        try fixture.git.run(["commit", "-qm", "tool"], currentDirectory: tool)
+        // Records the aged stat in the submodule's index, written after it, so the clean file is adoptable.
+        try fixture.git.run(["update-index", "-q", "--refresh"], currentDirectory: tool)
         try fixture.write("dirty.txt", "dirty edit\n")
         try fixture.write("staged.txt", "staged edit\n")
         try fixture.git.run("add", "staged.txt")
@@ -49,10 +47,9 @@ struct GitWorktreeForkCleanAdoptionIntegrationTests {
         let rootEvidence = try #require(evidence.withLock { $0[""] })
         #expect(rootEvidence.adoptedPaths == [".gitignore", "README.md", "clean.txt"])
         #expect(rootEvidence.adoptedPaths.isDisjoint(with: ["dirty.txt", "staged.txt", "racy.txt"]))
-        #expect(try #require(evidence.withLock { $0["vendor/tool"] }).adoptedPaths == ["tool.txt"])
-        #expect(
-            try fixture.statusLines(at: destination) == [" M dirty.txt", " M staged.txt", "!! vendor/"])
-        #expect(try fixture.statusLines(at: destination.appending(path: "vendor/tool")).isEmpty)
+        #expect(try #require(evidence.withLock { $0["deps/tool"] }).adoptedPaths == ["tool.txt"])
+        #expect(try fixture.statusLines(at: destination) == [" M dirty.txt", " M staged.txt"])
+        #expect(try fixture.statusLines(at: destination.appending(path: "deps/tool")).isEmpty)
         for unchangedPath in ["README.md", "clean.txt", "racy.txt"] {
             let cached = try #require(indexStat[unchangedPath])
             let file = try #require(GitWorktreeForkFileProbe.info(destination.appending(path: unchangedPath)))

@@ -129,8 +129,9 @@ struct WorktreeForkFilesystemPlan: Sendable {
     let leafBatches: [WorktreeForkLeafBatch]
     let hardLinkGroups: [WorktreeForkHardLinkGroup]
     let skippedEntries: [GitWorktreeMaterializationSkippedEntry]
-    /// Relative paths of `.git` entries below the root. They are never copied as ordinary entries;
-    /// Git-topology classification decides how each is realized.
+    /// Relative paths of `.git` entries below the root that are not ordinary entries. The walker records every
+    /// one; once Git-topology classification has added an independent repository's entry as ordinary content
+    /// (`addingPlainGitEntries`), only submodules remain, realized by re-homing.
     let nestedGitEntryPaths: [String]
     /// Directories shaped like a Git directory but not named `.git`. They are copied as ordinary entries;
     /// Git-topology classification decides which are repositories whose copied pointers need re-homing.
@@ -214,6 +215,44 @@ struct WorktreeForkFilesystemPlan: Sendable {
             hardLinkGroups: keptGroups, skippedEntries: skippedEntries.filter { !isExcluded($0.relativePath) },
             nestedGitEntryPaths: nestedGitEntryPaths.filter { !isExcluded($0) },
             gitDirectoryCandidatePaths: gitDirectoryCandidatePaths.filter { !isExcluded($0) })
+    }
+
+    /// Adds `walked`, the plain walk of independent repositories' `.git` entries (`walkPlainGitEntries`), which
+    /// then stop counting as nested Git entries. Regular files sharing one inode across both walks form one
+    /// hard-link group. Each side's earliest path keeps its leaf, so the merged primary, the earliest of all,
+    /// always has one.
+    func addingPlainGitEntries(_ gitEntryPaths: [String], walked: Self) -> Self {
+        guard !gitEntryPaths.isEmpty else { return self }
+        let walkedFiles = walked.allPlannedLeaves.filter { $0.kind == .regularFile }
+        let walkedIdentities = Set(walkedFiles.map(\.identity))
+        var pathsByIdentity: [WorktreeForkEntryIdentity: [String]] = [:]
+        for leaf in allPlannedLeaves where leaf.kind == .regularFile && walkedIdentities.contains(leaf.identity) {
+            pathsByIdentity[leaf.identity, default: []].append(leaf.relativePath)
+        }
+        for leaf in walkedFiles where pathsByIdentity[leaf.identity] != nil {
+            pathsByIdentity[leaf.identity]?.append(leaf.relativePath)
+        }
+        let regrouped = pathsByIdentity.compactMap { identity, paths -> WorktreeForkHardLinkGroup? in
+            let sortedPaths = paths.sorted()
+            guard let primary = sortedPaths.first else { return nil }
+            return WorktreeForkHardLinkGroup(
+                identity: identity, primaryRelativePath: primary, secondaryRelativePaths: Array(sortedPaths.dropFirst())
+            )
+        }
+        let secondaries = Set(regrouped.flatMap(\.secondaryRelativePaths))
+        let plainEntries = Set(gitEntryPaths)
+        return Self(
+            directories: directories + walked.directories,
+            leafBatches: (leafBatches + walked.leafBatches).compactMap { batch -> WorktreeForkLeafBatch? in
+                let leaves = batch.leaves.filter { !secondaries.contains($0.relativePath) }
+                return leaves.isEmpty
+                    ? nil : WorktreeForkLeafBatch(directoryRelativePath: batch.directoryRelativePath, leaves: leaves)
+            },
+            hardLinkGroups: ((hardLinkGroups + walked.hardLinkGroups).filter { pathsByIdentity[$0.identity] == nil }
+                + regrouped).sorted { $0.primaryRelativePath < $1.primaryRelativePath },
+            skippedEntries: (skippedEntries + walked.skippedEntries).sorted { $0.relativePath < $1.relativePath },
+            nestedGitEntryPaths: nestedGitEntryPaths.filter { !plainEntries.contains($0) },
+            gitDirectoryCandidatePaths: gitDirectoryCandidatePaths)
     }
 
     func leafCount(of kind: WorktreeForkLeafKind) -> Int {

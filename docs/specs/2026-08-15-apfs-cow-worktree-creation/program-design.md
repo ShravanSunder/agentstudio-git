@@ -174,7 +174,7 @@ contract does not promise read isolation or external-process isolation.
 - regular files, symbolic links, FIFOs, unsupported entries, and Unix sockets;
 - `(device, inode)` hard-link groups;
 - registered submodule paths and initialized/uninitialized state;
-- independent nested repository nodes and resolved administrative topology;
+- the paths of independent nested repositories, copied as content without being opened;
 - sparse patterns, relevant worktree configuration, and an effective
   skip-worktree map for each initialized Git node, derived without requiring a
   sparse-index file to be readable by libgit2;
@@ -327,16 +327,16 @@ registered submodules:
 3. registered initialized submodule — re-homed beneath the destination
    superproject worktree's `$GIT_DIR/modules/...` hierarchy;
 4. independent nested repository with an embedded `.git` directory — copied
-   into destination-owned nested administration;
-5. independent nested gitfile or linked worktree — its worktree-private and
-   common administration are flattened or mirrored into destination-owned
-   nested administration;
+   as content, byte for byte, never opened;
+5. independent nested gitfile or linked worktree of another repository —
+   copied as content, byte for byte, never opened (a linked worktree of the
+   source repository is skipped instead);
 6. malformed or unresolvable Git pointer — planning failure.
 
-Classification recurses through initialized submodules and nested repositories.
-A directory named `.git` that libgit2 does not recognize as administration is
-still treated conservatively: it must be proven ordinary and safe or the fork
-fails.
+Classification recurses through initialized submodules only, parent-first by node depth; independent nested repositories are not classified further.
+A `.git` entry that is neither a registered submodule nor a linked worktree of
+the source repository, including one libgit2 would not recognize as
+administration, is copied as content.
 
 ### Re-homing algorithm
 
@@ -460,7 +460,7 @@ checks:
   skipped;
 - root and nested index trees, status semantics, and sparse behavior;
 - tracked entries unchanged from the captured tree carry refreshed stat data;
-- initialized submodule and nested repository open/status operations;
+- initialized submodule open/status operations;
 - uninitialized submodules remain uninitialized;
 - canonical resolution of `.git`, `commondir`, `core.worktree`, and alternate
   paths does not enter source-worktree-specific administration;

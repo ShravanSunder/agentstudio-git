@@ -9,7 +9,7 @@ import Foundation
 /// or file flags a failure, so every such rewrite goes through here.
 enum WorktreeForkMetadataPreservingRewrite {
     /// Where a rewritten file's metadata comes from. Each caller names it: a destination copy can stand for a
-    /// different source file than the one being written (a flattened linked worktree's cloned `HEAD` is the
+    /// different source file than the one being written (a linked submodule's cloned `HEAD` is the
     /// common repository's), so the file being replaced is never a fallback.
     enum MetadataSource {
         /// The source file this destination file stands for. When it is not a regular file, the new file
