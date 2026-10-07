@@ -283,13 +283,17 @@ status MUST report that difference.
 
 ### Independent nested Git repositories
 
-An initialized Git repository nested inside ordinary content MUST remain an
-independently usable destination repository with its working files and dirty
-state preserved. A nested gitfile, linked-worktree `commondir`, or object
-alternate MUST be re-homed to destination-owned administration or a
-destination-owned CoW mirror. Blindly copying a source administrative pointer,
-silently treating the nested repository as ordinary non-Git data, or omitting
-it is forbidden.
+A Git repository nested inside ordinary content that is neither a registered
+submodule nor a linked worktree of the source repository (for example a SwiftPM
+checkout under a build folder, or a linked worktree of another repository) is
+copied as content, byte for byte, including its `.git` entry. It is never
+opened. Its administration comes along as it is: a nested gitfile, a
+`commondir`, or an absolute `objects/info/alternates` path keeps pointing where
+it pointed in the source, so a broken one stays broken in the destination and a
+working one keeps reading the source-side store. A broken independent nested
+repository never fails the fork. (Owner, 2026-10-07: the fork is a clone of the
+checkout as it is.) Registered submodules keep the re-homing rules above, and
+same-repository linked worktrees are skipped.
 
 Lock files and live process state inside Git administration MUST not be copied
 as active locks. The destination repository's index MUST be rebuilt from its

@@ -327,13 +327,13 @@ registered submodules:
 3. registered initialized submodule — re-homed beneath the destination
    superproject worktree's `$GIT_DIR/modules/...` hierarchy;
 4. independent nested repository with an embedded `.git` directory — copied
-   into destination-owned nested administration;
-5. independent nested gitfile or linked worktree — its worktree-private and
-   common administration are flattened or mirrored into destination-owned
-   nested administration;
+   as content, byte for byte, never opened;
+5. independent nested gitfile or linked worktree of another repository —
+   copied as content, byte for byte, never opened (a linked worktree of the
+   source repository is skipped instead);
 6. malformed or unresolvable Git pointer — planning failure.
 
-Classification recurses through initialized submodules and nested repositories.
+Classification recurses through initialized submodules only, parent-first by node depth; independent nested repositories are not classified further.
 A directory named `.git` that libgit2 does not recognize as administration is
 still treated conservatively: it must be proven ordinary and safe or the fork
 fails.
