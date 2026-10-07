@@ -210,6 +210,42 @@ struct GitWorktreeForkTopologyIntegrationTests {
         )
     }
 
+    @Test("a nested submodule whose name sorts before `.git` is still classified under its parent submodule")
+    func nestedSubmoduleSortingBeforeGitEntryIsClassifiedUnderParent() async throws {
+        // Arrange: `a/+tools/.git` sorts before `a/.git` as a plain string (`+` < `.`, as are `-`, `!`, `#`, and
+        // space), so the child entry is reached before its parent submodule's registrations are known unless
+        // nodes are visited parent-first. (`git submodule add` itself refuses a path starting with `-`.)
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-submodule-order")
+        defer { fixture.remove() }
+        let root = fixture.repository.root
+        let tools = try makeRepository(at: root.appending(path: "tools"), file: "tools.txt", fixture: fixture)
+        let library = try makeRepository(at: root.appending(path: "library"), file: "library.txt", fixture: fixture)
+        try fixture.git.run(["submodule", "add", "-q", tools.path, "+tools"], currentDirectory: library)
+        try fixture.git.run(["commit", "-qm", "nested submodule"], currentDirectory: library)
+        try fixture.git.run("submodule", "add", "-q", library.path, "a")
+        try fixture.git.run("commit", "-qm", "submodule")
+        try fixture.git.run("submodule", "update", "-q", "--init", "--recursive", "a")
+        let sourceNested = fixture.source.appending(path: "a/+tools")
+        let sourceHead = try fixture.blobID("HEAD", at: sourceNested)
+        let destination = fixture.destination()
+
+        // Act
+        let result = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+
+        // Assert
+        let destinationNested = destination.appending(path: "a/+tools")
+        #expect(try fixture.blobID("HEAD", at: destinationNested) == sourceHead)
+        #expect(
+            try absoluteGitDirectory(destinationNested, fixture)
+                == canonical(fixture.linkedWorktreeAdministration()).appending(path: "modules/a/modules/+tools").path)
+        #expect(try fixture.statusLines(at: destinationNested).isEmpty)
+        guard case .copyOnWrite(let materializationReport) = result.materialization else {
+            Issue.record("expected copy-on-write materialization")
+            return
+        }
+        #expect(materializationReport.preservedGitRepositoryCount == 2)
+    }
+
     @Test("a failure after re-homing removes submodule administration with the rest of the fork")
     func failureAfterRehomingRemovesSubmoduleAdministration() async throws {
         // Arrange

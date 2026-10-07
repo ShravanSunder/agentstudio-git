@@ -31,7 +31,9 @@ struct WorktreeForkGitTopologyPlanner: Sendable {
         ]
         var nodes: [WorktreeForkGitNode] = []
         var embeddedRepositoryGitEntryPaths: [String] = []
-        for gitEntryPath in nestedGitEntryPaths {
+        // A submodule's own registrations must be known before any entry beneath it is classified. A plain sort
+        // is not parent-first: `a/+x/.git` precedes `a/.git` because `+` sorts before `.`.
+        for gitEntryPath in Self.parentFirst(nestedGitEntryPaths) {
             try cancellation.throwIfCancelled()
             let nodePath = WorktreeForkDescriptors.splitParent(gitEntryPath).parent
             let parentPath = nodes.map(\.relativePath).filter { nodePath.hasPrefix($0 + "/") }.max {
@@ -92,6 +94,17 @@ struct WorktreeForkGitTopologyPlanner: Sendable {
             mirroredStoreSymlinks: mirroredStoreSymlinks,
             copiedGitDirectories: copiedGitDirectories
         )
+    }
+
+    /// `.git` entries ordered by the depth of the directory holding them, then by that directory's path.
+    private static func parentFirst(_ gitEntryPaths: [String]) -> [String] {
+        gitEntryPaths.map { (nodePath: WorktreeForkDescriptors.splitParent($0).parent, gitEntryPath: $0) }
+            .sorted {
+                let firstDepth = $0.nodePath.split(separator: "/").count
+                let secondDepth = $1.nodePath.split(separator: "/").count
+                return (firstDepth, $0.nodePath) < (secondDepth, $1.nodePath)
+            }
+            .map(\.gitEntryPath)
     }
 
     /// Object stores outside the source tree that copied Git directories borrow from, with every store those
