@@ -295,12 +295,14 @@ repository never fails the fork. (Owner, 2026-10-07: the fork is a clone of the
 checkout as it is.) Registered submodules keep the re-homing rules above, and
 same-repository linked worktrees are skipped.
 
-Lock files and live process state inside Git administration MUST not be copied
-as active locks. The destination repository's index MUST be rebuilt from its
-captured nested `HEAD`, preserving sparse semantics but not source staging.
-An in-progress merge, rebase, cherry-pick, revert, bisect, or sequencer operation
-is not inherited as an active Git operation; its working files are captured
-under the ordinary dirty-file rules.
+For a registered submodule that is re-homed, lock files and live process state
+inside its Git administration MUST not be copied as active locks. Its index MUST
+be rebuilt from its captured nested `HEAD`, preserving sparse semantics but not
+source staging. An in-progress merge, rebase, cherry-pick, revert, bisect, or
+sequencer operation is not inherited as an active Git operation; its working
+files are captured under the ordinary dirty-file rules. An independent nested
+repository copied as content keeps all of these exactly as they are in the
+source.
 
 ## Completion, cancellation, and failure
 
