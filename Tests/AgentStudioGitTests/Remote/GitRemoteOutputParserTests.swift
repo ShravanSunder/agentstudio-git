@@ -42,6 +42,31 @@ struct GitRemoteOutputParserTests {
                 )))
     }
 
+    @Test("ls-remote parser keeps byte-distinct names apart and ends lines only at newline bytes")
+    func lsRemoteParserKeepsByteDistinctNamesApart() throws {
+        let precomposed = "refs/heads/\u{E9}"
+        let decomposed = "refs/heads/e\u{301}"
+        let separatorInside = "refs/heads/a\u{2028}b"
+        let output = """
+            1111111111111111111111111111111111111111\t\(precomposed)
+            2222222222222222222222222222222222222222\t\(decomposed)
+            3333333333333333333333333333333333333333\t\(separatorInside)
+
+            """
+
+        let references = try GitRemoteOutputParser().parse(output)
+
+        #expect(
+            references.map { Array($0.name.utf8) }
+                == [Array(precomposed.utf8), Array(decomposed.utf8), Array(separatorInside.utf8)])
+        #expect(
+            references.map(\.oid) == [
+                "1111111111111111111111111111111111111111",
+                "2222222222222222222222222222222222222222",
+                "3333333333333333333333333333333333333333",
+            ])
+    }
+
     @Test("ls-remote parser rejects malformed lines")
     func lsRemoteParserRejectsMalformedLines() throws {
         do {

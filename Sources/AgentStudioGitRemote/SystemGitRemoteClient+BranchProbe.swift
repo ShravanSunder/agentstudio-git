@@ -6,7 +6,9 @@ extension SystemGitRemoteClient {
     /// `git ls-remote --exit-code <remote> refs/heads/<branch>`: exit 0 with the exact ref is `present`; exit 2
     /// is `absent`, which Git computes on the client for every transport, so no stderr is read. Any other
     /// outcome (an unreachable remote, a refused protocol, a timeout) is thrown, and nothing is fetched.
-    /// `insteadOf`, credential helpers, and the prompt policy apply exactly as they do for `fetch`.
+    /// `insteadOf`, credential helpers, and the prompt policy apply exactly as they do for `fetch`. With the
+    /// repository's `core.precomposeUnicode` on (the macOS default), git rewrites a decomposed branch name to its
+    /// precomposed form before asking; the line it returns is then another ref, so the probe answers `absent`.
     public func probeRemoteBranch(_ request: GitRemoteBranchProbeRequest) async throws(GitDataPlaneError)
         -> GitRemoteBranchPresence
     {
@@ -28,13 +30,17 @@ extension SystemGitRemoteClient {
             }
             throw error
         }
-        // ls-remote matches patterns by path tail, so only the exact ref answers the question.
-        for line in result.stdout.split(whereSeparator: \.isNewline) {
-            let fields = line.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
-            guard fields.count == 2, fields[1] == referenceName[...] else {
+        // ls-remote matches patterns by path tail, so only the exact ref answers the question. Git refs are bytes:
+        // a line ends only at a "\n" byte (`Character` splitting also breaks at U+2028, U+2029 and U+0085), and the
+        // ref field must equal the requested name byte for byte (`String` equality also accepts a canonically
+        // equivalent name, which is a different ref).
+        let referenceBytes = Array(referenceName.utf8)
+        for line in result.stdout.utf8.split(separator: UInt8(ascii: "\n")) {
+            let fields = line.split(separator: UInt8(ascii: "\t"), maxSplits: 1, omittingEmptySubsequences: false)
+            guard fields.count == 2, fields[1].elementsEqual(referenceBytes) else {
                 continue
             }
-            let commit = String(fields[0])
+            let commit = String(decoding: fields[0], as: UTF8.self)
             guard GitObjectIdentifierText.isFullObjectIdentifier(commit) else {
                 throw .unsupported(message: "ls-remote returned an invalid object identifier")
             }

@@ -4,12 +4,14 @@ import Foundation
 public struct GitRemoteOutputParser: Sendable {
     public init() {}
 
+    /// Git refs are bytes: a line ends only at a "\n" byte, and references are told apart by their names' bytes, since
+    /// `String` keys would merge two canonically equivalent names into one reference.
     public func parse(_ output: String) throws(GitDataPlaneError) -> [GitRemoteReference] {
-        var builders: [String: RemoteReferenceBuilder] = [:]
+        var builders: [[UInt8]: RemoteReferenceBuilder] = [:]
         var orderedNames: [String] = []
 
-        for rawLine in output.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = String(rawLine)
+        for rawLine in output.utf8.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: false) {
+            let line = String(decoding: rawLine, as: UTF8.self)
             if line.isEmpty {
                 continue
             }
@@ -22,10 +24,10 @@ public struct GitRemoteOutputParser: Sendable {
                 }
                 let target = String(parts[0])
                 let name = String(parts[1])
-                if builders[name] == nil {
+                if builders[Array(name.utf8)] == nil {
                     orderedNames.append(name)
                 }
-                builders[name, default: RemoteReferenceBuilder()].symrefTarget = target
+                builders[Array(name.utf8), default: RemoteReferenceBuilder()].symrefTarget = target
                 continue
             }
 
@@ -37,22 +39,22 @@ public struct GitRemoteOutputParser: Sendable {
             let refName = String(parts[1])
             if refName.hasSuffix("^{}") {
                 let baseName = String(refName.dropLast(3))
-                if builders[baseName] == nil {
+                if builders[Array(baseName.utf8)] == nil {
                     orderedNames.append(baseName)
                 }
-                builders[baseName, default: RemoteReferenceBuilder()].peeledOID = oid
+                builders[Array(baseName.utf8), default: RemoteReferenceBuilder()].peeledOID = oid
             } else {
-                if builders[refName] == nil {
+                if builders[Array(refName.utf8)] == nil {
                     orderedNames.append(refName)
                 }
-                builders[refName, default: RemoteReferenceBuilder()].oid = oid
+                builders[Array(refName.utf8), default: RemoteReferenceBuilder()].oid = oid
             }
         }
 
         var references: [GitRemoteReference] = []
         references.reserveCapacity(orderedNames.count)
         for name in orderedNames {
-            guard let builder = builders[name], let oid = builder.oid else {
+            guard let builder = builders[Array(name.utf8)], let oid = builder.oid else {
                 throw .unsupported(message: "malformed ls-remote output")
             }
             references.append(

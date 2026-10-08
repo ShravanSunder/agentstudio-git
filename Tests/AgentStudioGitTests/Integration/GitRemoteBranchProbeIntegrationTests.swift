@@ -51,6 +51,65 @@ struct GitRemoteBranchProbeIntegrationTests {
         #expect(try fixture.git.run("for-each-ref") == localRefsBefore)
     }
 
+    @Test("branch names match by their bytes: a line separator inside a name, and a canonically equivalent pair")
+    func probeMatchesBranchNamesByBytes() async throws {
+        // Arrange: the origin holds `a<U+2028>b`, precomposed `é` and decomposed `e<U+0301>` at three commits. The two
+        // spellings of é stay distinct refs only in packed-refs, because APFS treats their loose file names as one.
+        // Names go in through `update-ref --stdin`: `Process` arguments reach git decomposed.
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-remote-probe-bytes")
+        defer { fixture.remove() }
+        let originPath = fixture.root.appending(path: "origin.git")
+        try fixture.git.run("init", "-q", "--bare", originPath.path, currentDirectory: fixture.root)
+        try fixture.git.run(["config", "core.precomposeUnicode", "false"], currentDirectory: originPath)
+        try fixture.git.run("remote", "add", "origin", originPath.path)
+        var commits: [String] = []
+        for index in 0..<3 {
+            try fixture.write("byte-\(index).txt", contents: "\(index)\n")
+            try fixture.git.run("add", "byte-\(index).txt")
+            try fixture.git.run("commit", "-qm", "byte \(index)")
+            commits.append(try fixture.git.run("rev-parse", "HEAD").trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        try fixture.git.run("push", "-q", "origin", "main")
+        let separatorName = "a\u{2028}b"
+        let precomposed = "\u{E9}"
+        let decomposed = "e\u{301}"
+        #expect(precomposed == decomposed && Array(precomposed.utf8) != Array(decomposed.utf8))
+        for (name, commit) in zip([separatorName, precomposed, decomposed], commits) {
+            try fixture.git.run(
+                ["update-ref", "--stdin"], currentDirectory: originPath,
+                standardInput: Data("update refs/heads/\(name) \(commit)\n".utf8))
+            try fixture.git.run(["pack-refs", "--all"], currentDirectory: originPath)
+        }
+        let originNames = try fixture.git.run(
+            ["for-each-ref", "--format=%(refname)", "refs/heads/"], currentDirectory: originPath)
+        #expect(
+            Set(originNames.utf8.split(separator: UInt8(ascii: "\n")).map { Array($0) })
+                == Set(["main", separatorName, precomposed, decomposed].map { Array("refs/heads/\($0)".utf8) }))
+        let client = SystemGitRemoteClient(configuration: .init(allowedProtocols: [.file]))
+        let probe = { (name: String) async throws -> GitRemoteBranchPresence in
+            try await client.probeRemoteBranch(
+                GitRemoteBranchProbeRequest(
+                    repositoryPath: fixture.repositoryPath, remoteName: "origin", branchName: name))
+        }
+
+        // Act
+        try fixture.git.run("config", "core.precomposeUnicode", "true")
+        let separator = try await probe(separatorName)
+        let precomposedWhilePrecomposing = try await probe(precomposed)
+        let decomposedWhilePrecomposing = try await probe(decomposed)
+        try fixture.git.run("config", "core.precomposeUnicode", "false")
+        let precomposedExact = try await probe(precomposed)
+        let decomposedExact = try await probe(decomposed)
+
+        // Assert
+        #expect(separator == .present(commit: commits[0]))
+        #expect(precomposedWhilePrecomposing == .present(commit: commits[1]))
+        // git asked for the precomposed name; that line is another ref, so not its commit.
+        #expect(decomposedWhilePrecomposing == .absent)
+        #expect(precomposedExact == .present(commit: commits[1]))
+        #expect(decomposedExact == .present(commit: commits[2]))
+    }
+
     @Test("an unreachable remote is thrown, never reported absent")
     func unreachableRemoteIsThrown() async throws {
         // Arrange
