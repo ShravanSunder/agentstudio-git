@@ -4,15 +4,12 @@ import Foundation
 public struct GitRemoteOutputParser: Sendable {
     public init() {}
 
-    /// A line ends only at a "\n" byte, as git frames its output; a ref name may hold U+2028, U+2029 or U+0085.
     public func parse(_ output: String) throws(GitDataPlaneError) -> [GitRemoteReference] {
         var builders: [String: RemoteReferenceBuilder] = [:]
         var orderedNames: [String] = []
 
-        for rawLine in output.utf8.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: false) {
-            guard let line = String(rawLine) else {
-                throw .unsupported(message: "malformed ls-remote output")
-            }
+        for rawLine in output.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = String(rawLine)
             if line.isEmpty {
                 continue
             }
