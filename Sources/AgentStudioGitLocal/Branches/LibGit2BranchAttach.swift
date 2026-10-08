@@ -39,14 +39,24 @@ struct LibGit2BranchAttachLockObserver: Sendable {
     let failed: @Sendable ([GitLockFact]) -> Void
 }
 
+/// Whether, and when, the transaction repository's own `HEAD` is pointed at the branch.
+enum LibGit2BranchAttachHeadMove: Equatable, Sendable {
+    case leaveHead
+    /// `HEAD` is locked and written in the same ref transaction; a failed commit can leave either written, so the
+    /// caller journals what landed.
+    case inTransaction
+    /// `HEAD` is written, still under the branch lock, just before a transaction that holds only the branch ref.
+    /// That single ref is renamed into place last, so a failed commit leaves it unmoved.
+    case beforeReferenceCommit
+}
+
 struct LibGit2BranchAttachRequest {
     /// Any worktree of the repository; branch use is read across every worktree it has.
     let repositoryPath: URL
-    /// The repository whose ref database takes the transaction. With `attachingHead`, its own `HEAD` is pointed at
-    /// the branch in the same transaction.
+    /// The repository whose ref database takes the transaction and whose `HEAD` `headMove` points at the branch.
     let transactionRepository: OpaquePointer
     let target: LibGit2BranchAttachTarget
-    let attachingHead: Bool
+    let headMove: LibGit2BranchAttachHeadMove
 }
 
 /// The one branch attach both worktree creators share. Under the branch's native ref lock it re-reads branch
@@ -95,7 +105,12 @@ struct LibGit2BranchAttach {
 
         let effect = try stageReferenceChange(transactionHandle, refusal: refusal)
         var heldLocks = [referenceLock]
-        if request.attachingHead {
+        switch request.headMove {
+        case .leaveHead:
+            break
+        case .beforeReferenceCommit:
+            try setHead(referenceName, refusal: refusal)
+        case .inTransaction:
             let headLock = try lockFact(.reference(name: "HEAD"), refusal: refusal)
             try lock("HEAD", fact: headLock, transaction: transactionHandle, refusal: refusal)
             heldLocks.append(headLock)
@@ -130,6 +145,27 @@ struct LibGit2BranchAttach {
         transaction = nil
     }
 
+    /// Points `HEAD` at the branch through libgit2's own `HEAD` lock. `HEAD` is detached here, so libgit2's
+    /// checked-out guard does not run; the branch-use re-read above is the guard.
+    private func setHead<Failure: Error>(
+        _ referenceName: String,
+        refusal: (LibGit2BranchAttachRefusal) -> Failure
+    ) throws(Failure) {
+        let headLock = try lockFact(.reference(name: "HEAD"), refusal: refusal)
+        lockObserver.attempting([headLock])
+        errno = 0
+        let headResult = referenceName.withCString { git_repository_set_head(request.transactionRepository, $0) }
+        let headErrorNumber = errno
+        guard headResult >= 0 else {
+            lockObserver.failed([headLock])
+            throw refusal(
+                .gitFailure(
+                    LibGit2ErrorCapture.failure(
+                        code: headResult, lockFacts: [headLock], systemErrorCode: headErrorNumber)
+                ))
+        }
+    }
+
     /// Reads the branch under its lock and stages the creation or fast-forward. Returns nil when the branch is
     /// already at its target and only the lock-guarded checks were needed.
     private func stageReferenceChange<Failure: Error>(
@@ -161,7 +197,8 @@ struct LibGit2BranchAttach {
                 throw refusal(.alreadyExists)
             }
             message = "branch: Created from \(commit)"
-            staged = StagedReferenceChange(value: .created(referenceName: referenceName, commit: commit), newTip: commit)
+            staged = StagedReferenceChange(
+                value: .created(referenceName: referenceName, commit: commit), newTip: commit)
         case .existingBranch(_, let expectedTip, let fastForwardTo):
             guard let currentTip, currentTip.lowercased() == expectedTip.lowercased() else {
                 throw refusal(.moved)

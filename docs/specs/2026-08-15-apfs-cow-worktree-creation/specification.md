@@ -74,13 +74,17 @@ D13–D20) cut the modes over in one pin bump to the fork's branch shapes:
   `branch.<name>.merge`.
 - `.existingBranch(name:expectedTip:fastForwardTo:)`: an existing branch whose
   tip, read under its ref lock, MUST equal `expectedTip` (else `branchMoved`);
-  with `fastForwardTo`, which MUST descend from `expectedTip`, the branch first
-  moves there and moves back if the creation fails.
+  with `fastForwardTo`, which MUST descend from `expectedTip`, the branch
+  moves there.
 - `.detached(startPoint:)`.
 
-The branch step uses the same locked attach as the fork (below) before the
-checkout; `git_worktree_add` keeps its own checked-out guard. A branch held by
-another worktree fails `GitDataPlaneError.branchCheckedOut(worktreePath:)`.
+Every rule is checked before anything is created. The worktree is then
+registered and checked out detached at the pinned start commit, validated, and
+only then attached through the same locked attach as the fork (below): that
+attach is the last step that can fail, apart from a new branch's upstream
+write. A failure therefore never leaves an existing branch moved, and a
+detached checkout creates no branch at all. A branch held by another worktree
+fails `GitDataPlaneError.branchCheckedOut(worktreePath:)`.
 Both tips are full object identifiers; decoding rejects anything else, so an
 `existingBranch` payload without `expectedTip` no longer decodes.
 

@@ -2,6 +2,8 @@ import AgentStudioGit
 import Foundation
 import Testing
 
+@testable import AgentStudioGitLocal
+
 /// The plain checkout (`new --no-fork`) takes the fork's branch shapes: a pinned existing tip, a fast-forward
 /// when strictly behind, a new branch at a pinned commit with an optional upstream, or a detached commit.
 @Suite("Git worktree create branch integration", .serialized)
@@ -26,7 +28,9 @@ struct GitWorktreeCreateBranchIntegrationTests {
         // Assert
         #expect(fastForwarded.worktree.head == GitHeadSnapshot(kind: .branch, oid: tip, shortName: "behind"))
         #expect(try revision("behind", in: fixture) == tip)
-        #expect(FileManager.default.fileExists(atPath: fixture.linkedWorktreePath("behind").appending(path: "tip.txt").path))
+        #expect(
+            FileManager.default.fileExists(atPath: fixture.linkedWorktreePath("behind").appending(path: "tip.txt").path)
+        )
         #expect(parked.worktree.head == GitHeadSnapshot(kind: .branch, oid: base, shortName: "parked"))
         #expect(try revision("parked", in: fixture) == base)
         #expect(try status(fixture.linkedWorktreePath("behind")).isEmpty)
@@ -72,16 +76,61 @@ struct GitWorktreeCreateBranchIntegrationTests {
         }
     }
 
-    @Test("a fast-forward is moved back when the checkout that follows it fails")
-    func fastForwardIsUndoneWhenCheckoutFails() async throws {
+    @Test("a failure right before the attach leaves every branch tip unchanged and no worktree behind")
+    func failureBeforeAttachMovesNothing() async throws {
         // Arrange
-        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-create-undo")
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-create-before-attach")
+        defer { fixture.remove() }
+        let base = try revision("HEAD", in: fixture)
+        try fixture.git.run("branch", "behind")
+        let tip = try commit("tip.txt", in: fixture)
+        let injected = GitDataPlaneError.unsupported(message: "injected before the attach")
+        let client = LibGit2AgentStudioGitLocalClient(
+            worktreeWriter: LibGit2WorktreeWriter(
+                createFaults: WorktreeCreateFaultInjector { point in
+                    if point == .beforeBranchAttach {
+                        throw injected
+                    }
+                }))
+        let branchesBefore = try fixture.git.run("for-each-ref", "refs/heads")
+        let worktreesBefore = try fixture.git.run("worktree", "list", "--porcelain")
+        let modes: [(destination: String, mode: GitWorktreeCreateMode)] = [
+            ("behind", .existingBranch(name: "behind", expectedTip: base, fastForwardTo: tip)),
+            (
+                "fresh",
+                .newBranch(
+                    name: "fresh", startPoint: .named(base),
+                    upstream: GitBranchUpstream(remoteName: "origin", branchName: "fresh"))
+            ),
+            ("detached", .detached(startPoint: .named(base))),
+        ]
+
+        for (destination, mode) in modes {
+            // Act
+            let failure = await failure {
+                _ = try await client.createWorktree(request(fixture, destination, mode))
+            }
+
+            // Assert
+            #expect(failure == injected, "\(destination)")
+            #expect(try fixture.git.run("for-each-ref", "refs/heads") == branchesBefore, "\(destination)")
+            #expect(try fixture.git.run("worktree", "list", "--porcelain") == worktreesBefore, "\(destination)")
+            #expect(!FileManager.default.fileExists(atPath: fixture.linkedWorktreePath(destination).path))
+            #expect(!(try fixture.git.succeeds("config", "--get-regexp", "^branch\\.")), "\(destination)")
+        }
+    }
+
+    @Test("a checkout that fails before the attach leaves an existing branch where it was")
+    func failedCheckoutLeavesBranchUnmoved() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-create-occupied")
         defer { fixture.remove() }
         let base = try revision("HEAD", in: fixture)
         try fixture.git.run("branch", "behind")
         let tip = try commit("tip.txt", in: fixture)
         let occupied = fixture.linkedWorktreePath("occupied")
         try fixture.write("owner.txt", contents: "someone else's directory\n", in: occupied)
+        let branchesBefore = try fixture.git.run("for-each-ref", "refs/heads")
 
         // Act
         let failure = await failure {
@@ -92,7 +141,10 @@ struct GitWorktreeCreateBranchIntegrationTests {
         // Assert
         #expect(failure != nil)
         #expect(try revision("behind", in: fixture) == base)
-        #expect(try String(contentsOf: occupied.appending(path: "owner.txt"), encoding: .utf8) == "someone else's directory\n")
+        #expect(try fixture.git.run("for-each-ref", "refs/heads") == branchesBefore)
+        #expect(
+            try String(contentsOf: occupied.appending(path: "owner.txt"), encoding: .utf8)
+                == "someone else's directory\n")
     }
 
     @Test("a new branch at a pinned commit writes its upstream; a detached checkout sits at its commit")
@@ -111,14 +163,21 @@ struct GitWorktreeCreateBranchIntegrationTests {
                 .newBranch(
                     name: "feat", startPoint: .named(base),
                     upstream: GitBranchUpstream(remoteName: "origin", branchName: "feat"))))
-        let detached = try await client.createWorktree(request(fixture, "detached", .detached(startPoint: .named(base))))
+        let branchesBeforeDetached = try fixture.git.run("for-each-ref", "refs/heads")
+        let detached = try await client.createWorktree(
+            request(fixture, "detached", .detached(startPoint: .named(base))))
 
         // Assert
         #expect(created.worktree.head == GitHeadSnapshot(kind: .branch, oid: base, shortName: "feat"))
         #expect(try fixture.git.run("config", "branch.feat.remote") == "origin\n")
         #expect(try fixture.git.run("config", "branch.feat.merge") == "refs/heads/feat\n")
         #expect(detached.worktree.head == GitHeadSnapshot(kind: .detached, oid: base, shortName: nil))
-        #expect(!FileManager.default.fileExists(atPath: fixture.linkedWorktreePath("detached").appending(path: "tip.txt").path))
+        #expect(try fixture.git.run("for-each-ref", "refs/heads") == branchesBeforeDetached)
+        #expect(try status(fixture.linkedWorktreePath("detached")).isEmpty)
+        #expect(try status(fixture.linkedWorktreePath("feat")).isEmpty)
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: fixture.linkedWorktreePath("detached").appending(path: "tip.txt").path))
     }
 
     private func request(

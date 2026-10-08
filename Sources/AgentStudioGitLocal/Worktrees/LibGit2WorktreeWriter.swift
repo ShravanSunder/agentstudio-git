@@ -7,19 +7,25 @@ struct LibGit2WorktreeWriter: Sendable {
     private let reader: LibGit2WorktreeReader
     private let removalPathObserver: GitWorktreeRemovalPathObserver
     private let largeFileStoreFill: LibGit2LargeFileStoreFill
+    private let createFaults: WorktreeCreateFaultInjector
 
     init(
         runtime: LibGit2Runtime = .shared,
         reader: LibGit2WorktreeReader = LibGit2WorktreeReader(),
         removalPathObserver: GitWorktreeRemovalPathObserver = .live,
-        largeFileStoreFill: LibGit2LargeFileStoreFill = LibGit2LargeFileStoreFill()
+        largeFileStoreFill: LibGit2LargeFileStoreFill = LibGit2LargeFileStoreFill(),
+        createFaults: WorktreeCreateFaultInjector = .production
     ) {
         self.runtime = runtime
         self.reader = reader
         self.removalPathObserver = removalPathObserver
         self.largeFileStoreFill = largeFileStoreFill
+        self.createFaults = createFaults
     }
 
+    /// Plans the branch target, registers and checks out the worktree detached at the pinned start, validates it,
+    /// and only then attaches the branch: the attach is the last step that can fail (a new branch's upstream aside),
+    /// so a failure never leaves an existing branch moved. The LFS fill after it never throws.
     func createWorktree(_ request: GitCreateWorktreeRequest) throws
         -> GitWorktreeCreation
     {
@@ -32,73 +38,30 @@ struct LibGit2WorktreeWriter: Sendable {
             repositoryPath: request.repositoryPath,
             worktreeName: worktreeName
         )
+        let branchAttach = LibGit2WorktreeCreateBranchAttach(repositoryPath: request.repositoryPath)
         let snapshot: GitWorktreeSnapshot
         do {
-            var createdWorktree: OpaquePointer?
-            try withRepository(at: request.repositoryPath) { repository in
-                defer {
-                    if let createdWorktree {
-                        git_worktree_free(createdWorktree)
-                    }
-                }
-                var addOptions = git_worktree_add_options()
-                try initializeWorktreeAddOptions(&addOptions)
-                var referenceToFree: OpaquePointer?
-                var commitObjectToFree: OpaquePointer?
-                defer {
-                    if let referenceToFree {
-                        git_reference_free(referenceToFree)
-                    }
-                    if let commitObjectToFree {
-                        git_object_free(commitObjectToFree)
-                    }
-                }
-
-                let detachedObjectID: UnsafePointer<git_oid>?
-                switch request.mode {
-                case .existingBranch(let name, let expectedTip, let fastForwardTo):
-                    try LibGit2WorktreeCreateBranchAttach(repositoryPath: request.repositoryPath, repository: repository)
-                        .existingBranch(
-                            name, expectedTip: expectedTip, fastForwardTo: fastForwardTo, rollback: &rollback)
-                    referenceToFree = try lookupBranchReference(named: name, repository: repository)
-                    addOptions.ref = referenceToFree
-                    detachedObjectID = nil
-                case .newBranch(let name, let startPoint, let upstream):
-                    let commitObject = try resolveCommit(startPoint, repository: repository)
-                    commitObjectToFree = commitObject
-                    try LibGit2WorktreeCreateBranchAttach(repositoryPath: request.repositoryPath, repository: repository)
-                        .newBranch(name, commit: commitObject, upstream: upstream, rollback: &rollback)
-                    referenceToFree = try lookupBranchReference(named: name, repository: repository)
-                    addOptions.ref = referenceToFree
-                    detachedObjectID = nil
-                case .detached(let startPoint):
-                    let commitObject = try resolveCommit(startPoint, repository: repository)
-                    commitObjectToFree = commitObject
-                    detachedObjectID = git_object_id(commitObject)
-                }
-
-                let addResult = worktreeName.withCString { namePointer in
-                    request.destinationPath.path.withCString { pathPointer in
-                        git_worktree_add(&createdWorktree, repository, namePointer, pathPointer, &addOptions)
-                    }
-                }
-                guard addResult >= 0, createdWorktree != nil else {
-                    throw LibGit2ErrorCapture.failure(code: addResult)
-                }
-                rollback.createdWorktree = true
-
-                if let detachedObjectID, let createdWorktree {
-                    try detach(createdWorktree, oid: detachedObjectID)
-                }
+            let target = try withRepository(at: request.repositoryPath) { repository in
+                let target = try branchAttach.plan(request.mode, repository: repository)
+                try addDetachedWorktree(
+                    WorktreeCreateDetachedAdd(
+                        name: worktreeName, destination: request.destinationPath, start: target.start),
+                    repository: repository,
+                    rollback: &rollback
+                )
+                return target
             }
-
             let validation = try reader.validateWorktree(
                 GitValidateWorktreeRequest(worktreePath: request.destinationPath))
-            guard let createdSnapshot = validation.snapshot, validation.isValid else {
+            guard let detachedSnapshot = validation.snapshot, validation.isValid else {
                 throw GitDataPlaneError.repositoryNotFound(path: request.destinationPath)
             }
+            try createFaults.reach(.beforeBranchAttach)
+            try withRepository(at: request.destinationPath) { destination in
+                try branchAttach.attach(target, destination: destination, rollback: &rollback)
+            }
             rollback.disarm()
-            snapshot = createdSnapshot
+            snapshot = target.attachedSnapshot(detachedSnapshot)
         } catch {
             rollback.rollback(runtime: runtime)
             throw error

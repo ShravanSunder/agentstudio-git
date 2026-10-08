@@ -53,7 +53,7 @@ struct WorktreeForkBranchAttach {
                 repositoryPath: plan.sourceRoot,
                 transactionRepository: repository,
                 target: target,
-                attachingHead: true
+                headMove: .inTransaction
             ),
             lockObserver: lockObserver
         ).run(

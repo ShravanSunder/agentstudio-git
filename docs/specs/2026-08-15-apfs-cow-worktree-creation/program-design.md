@@ -157,9 +157,10 @@ libgit2/Git failures are wrapped as a payload rather than adding cases to
 now refuses through the same attach.
 
 The existing `createWorktree` method and writer path do not delegate through
-fork logic; they share only `LibGit2BranchAttach`, `LibGit2BranchUpstreamWriter`
-and `LibGit2BranchMoveUndo`, which run before `git_worktree_add` and in its
-rollback. An unavailable CoW platform stays irrelevant to normal creation.
+fork logic; they share only `LibGit2BranchAttach` and
+`LibGit2BranchUpstreamWriter`, which run after the checkout as its last
+fallible steps. An unavailable CoW platform stays irrelevant to normal
+creation.
 
 ### Repository mutation submission
 
@@ -525,10 +526,19 @@ realizes it.
   `git_branch_delete`) and `.movedBranch(from:to:)`, undone by
   `LibGit2BranchMoveUndo` under the ref lock only while the branch is still at
   `to`; otherwise residue `branchMoveNotUndone`.
-- **Plain checkout.** `LibGit2WorktreeCreateBranchAttach` runs the same attach
-  without moving any `HEAD`, before `git_worktree_add`; `WorktreeCreateRollback`
-  deletes a created branch and undoes a fast-forward. A failed undo there is
-  not reportable: `GitDataPlaneError` has no residue channel.
+- **Plain checkout.** `LibGit2WorktreeCreateBranchAttach.plan` checks every rule
+  without mutation; `addDetachedWorktree` registers the worktree through a
+  call-owned carrier and checks out the pinned start detached; the worktree is
+  validated; the `beforeBranchAttach` seam follows; then the attach runs with
+  `headMove: .beforeReferenceCommit`: under the ref lock it re-reads branch use,
+  compares the tip, writes the destination `HEAD`, and commits a transaction
+  holding only the branch ref, which libgit2 renames into place last
+  (`refdb_fs.c`, `loose_commit`), so a failed commit leaves the ref unmoved.
+  Nothing that can fail follows a fast-forward, so the plain checkout has no
+  branch-move undo. Only a new branch's upstream write follows its creation;
+  if it fails, `WorktreeCreateRollback` deletes that branch. The returned
+  snapshot is the detached read with the `HEAD` the attach wrote, and the LFS
+  fill after it never throws.
 
 ## Validation and publication
 
