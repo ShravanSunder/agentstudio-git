@@ -69,6 +69,7 @@ suites=(
   GitWorktreeForkStorageIntegrationTests
   GitWorktreeForkRollbackIntegrationTests
   GitWorktreeForkAttachIntegrationTests
+  GitWorktreeForkResetIntegrationTests
   GitWorktreeForkTopologyIntegrationTests
   GitWorktreeForkSparseMatcherFallbackTests
   GitWorktreeForkEligibilityIntegrationTests

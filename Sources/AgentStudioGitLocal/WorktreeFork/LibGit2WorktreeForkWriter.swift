@@ -164,16 +164,22 @@ struct LibGit2WorktreeForkWriter: Sendable {
         try WorktreeForkTopologyValidator(plan: plan).validate(rehomeOutcome.nodes, evidenceByNode: indexes.nodes)
         try faults.reach(.afterValidation)
         try cancellation.throwIfCancelled()
-        let attachedSnapshot = try attachAndValidate(
+        let submodulesNotAtStart =
+            plan.resetsToStart
+            ? try WorktreeForkResetCheckout(faults: faults).checkout(plan, lockTracker: journal.lockTracker) : []
+        try cancellation.throwIfCancelled()
+        let attached = try attachAndValidate(
             plan,
             indexEvidence: indexEvidence,
-            expectedSkipWorktree: plan.gitTopology.rootSparse?.skipWorktreePaths ?? [],
+            destinationRootDescriptor: destinationRootDescriptor,
             journal: &journal,
             cancellation: cancellation
         )
         return GitForkWorktreeResult(
-            worktree: attachedSnapshot,
-            materialization: .copyOnWrite(report(plan, observations))
+            worktree: attached.snapshot,
+            materialization: .copyOnWrite(
+                report(
+                    plan, observations, submodulesNotAtStart: submodulesNotAtStart, largeFiles: attached.largeFiles))
         )
     }
 
@@ -205,7 +211,7 @@ struct LibGit2WorktreeForkWriter: Sendable {
         let indexEvidence = try indexBuilder.buildIndex(
             worktreePath: plan.destinationRoot,
             capturedHead: plan.capturedHead,
-            skipWorktreePaths: plan.gitTopology.rootSparse?.skipWorktreePaths ?? [],
+            skipWorktreePaths: plan.rootSkipWorktreePaths,
             adoption: adoption(plan.gitTopology.rootSourceIndex, prefix: ""),
             lockWorktreePath: plan.destinationRequestPath,
             lockTracker: journal.lockTracker
@@ -227,26 +233,35 @@ struct LibGit2WorktreeForkWriter: Sendable {
         return (indexEvidence, nodeIndexEvidence)
     }
 
-    /// Steps 3 and 4 for every fork: attach the branch target under its ref lock, then prove the result.
+    /// Steps 3 to 5 for every fork: attach the branch target under its ref lock, fill a reset's Git LFS pointers
+    /// from the local store (the fill reads the start through the attached `HEAD`), then prove the result. After a
+    /// reset the checkout refreshed every entry it wrote, so no entry may lack stats.
     private func attachAndValidate(
         _ plan: WorktreeForkPlan,
         indexEvidence: WorktreeForkIndexRefreshEvidence,
-        expectedSkipWorktree: Set<String>,
+        destinationRootDescriptor: Int32,
         journal: inout WorktreeForkRollbackJournal,
         cancellation: WorktreeForkCancellation
-    ) throws(GitWorktreeForkError) -> GitWorktreeSnapshot {
+    ) throws(GitWorktreeForkError) -> (snapshot: GitWorktreeSnapshot, largeFiles: GitLargeFileFill?) {
         try WorktreeForkBranchAttach(faults: faults).attach(plan, journal: &journal)
         try cancellation.throwIfCancelled()
+        var largeFiles: GitLargeFileFill?
+        if plan.resetsToStart {
+            let repository = try WorktreeForkGitHandles.openWorktree(plan.destinationRoot)
+            defer { git_repository_free(repository) }
+            largeFiles = largeFileStoreFill.fill(repository: repository, worktreeRootDescriptor: destinationRootDescriptor)
+        }
         let snapshot = try WorktreeForkValidator(reader: reader, cancellation: cancellation, faults: faults)
             .validateAttached(
                 plan: plan,
-                indexEvidence: indexEvidence,
-                expectedSkipWorktree: expectedSkipWorktree,
+                indexEvidence: plan.resetsToStart
+                    ? WorktreeForkIndexRefreshEvidence(unrefreshedPaths: [], adoptedPaths: []) : indexEvidence,
+                expectedSkipWorktree: plan.rootSkipWorktreePaths,
                 lockTracker: journal.lockTracker
             )
         try faults.reach(.afterAttachValidation)
         try cancellation.throwIfCancelled()
-        return snapshot
+        return (snapshot, largeFiles)
     }
 
     private func executeChangesOnly(
@@ -313,15 +328,15 @@ struct LibGit2WorktreeForkWriter: Sendable {
         try WorktreeForkTopologyValidator(plan: plan).validate(rehomedNodes, evidenceByNode: [:])
         try faults.reach(.afterValidation)
         try cancellation.throwIfCancelled()
-        let attachedSnapshot = try attachAndValidate(
+        let attached = try attachAndValidate(
             plan,
             indexEvidence: indexEvidence,
-            expectedSkipWorktree: [],
+            destinationRootDescriptor: destinationRootDescriptor,
             journal: &journal,
             cancellation: cancellation
         )
         return GitForkWorktreeResult(
-            worktree: attachedSnapshot,
+            worktree: attached.snapshot,
             materialization: .changesOnly(
                 GitChangesOnlyMaterializationReport(
                     trackedChanges: changesOnly.trackedChangeCount,
@@ -431,7 +446,9 @@ struct LibGit2WorktreeForkWriter: Sendable {
 
     private func report(
         _ plan: WorktreeForkPlan,
-        _ observations: WorktreeForkMaterializationObservations
+        _ observations: WorktreeForkMaterializationObservations,
+        submodulesNotAtStart: [String],
+        largeFiles: GitLargeFileFill?
     ) -> GitWorktreeMaterializationReport {
         GitWorktreeMaterializationReport(
             clonedRegularFileCount: observations.clonedRegularFileCount,
@@ -447,7 +464,10 @@ struct LibGit2WorktreeForkWriter: Sendable {
             },
             ignoredIncludedPatterns: plan.ignoredIncludedPatterns,
             ignoredExcludedCount: plan.ignoredExcludedCount,
-            nestedWorktreesSkipped: plan.nestedWorktreesSkipped
+            nestedWorktreesSkipped: plan.nestedWorktreesSkipped,
+            sourceState: plan.resetsToStart ? .reset : .asIs,
+            submodulesNotAtStart: submodulesNotAtStart,
+            largeFiles: largeFiles
         )
     }
 }

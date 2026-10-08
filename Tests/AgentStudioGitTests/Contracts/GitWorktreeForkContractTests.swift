@@ -121,7 +121,10 @@ struct GitWorktreeForkContractTests {
             ],
             ignoredIncludedPatterns: [".build*/", "Frameworks/"],
             ignoredExcludedCount: 42,
-            nestedWorktreesSkipped: [".claude/worktrees/agent"]
+            nestedWorktreesSkipped: [".claude/worktrees/agent"],
+            sourceState: .asIs,
+            submodulesNotAtStart: [],
+            largeFiles: nil
         )
         let result = GitForkWorktreeResult(
             worktree: worktreeSnapshot(), materialization: .copyOnWrite(report))
@@ -137,6 +140,48 @@ struct GitWorktreeForkContractTests {
         }
         #expect(decodedReport.skippedEntries.map(\.relativePath) == ["run/agent.sock"])
         #expect(decodedReport.normalizedEntries.map(\.relativePath) == ["bin/tool", "shared/data"])
+    }
+
+    @Test("a reset report carries its source state, submodules not at the start, and its fill")
+    func resetReportCarriesSourceStateSubmodulesAndFill() throws {
+        // Arrange
+        let largeFiles = GitLargeFileFill(materializedCount: 2, missing: [], residuePaths: [], scan: .complete)
+        let report = GitWorktreeMaterializationReport(
+            clonedRegularFileCount: 1, createdDirectoryCount: 0, recreatedSymbolicLinkCount: 0,
+            preservedHardLinkCount: 0, preservedGitRepositoryCount: 0, recreatedFIFOCount: 0,
+            logicalRegularFileBytes: 6, skippedEntries: [], normalizedEntries: [], ignoredIncludedPatterns: [],
+            ignoredExcludedCount: 0, nestedWorktreesSkipped: [], sourceState: .reset,
+            submodulesNotAtStart: ["vendor/sub"], largeFiles: largeFiles)
+        let base =
+            #""clonedRegularFileCount":1,"createdDirectoryCount":0,"ignoredExcludedCount":0,"#
+            + #""ignoredIncludedPatterns":[],"kind":"copyOnWrite","#
+        let tail =
+            #""logicalRegularFileBytes":6,"nestedWorktreesSkipped":[],"normalizedEntries":[],"#
+            + #""preservedGitRepositoryCount":0,"preservedHardLinkCount":0,"recreatedFIFOCount":0,"#
+            + #""recreatedSymbolicLinkCount":0,"skippedEntries":[],"#
+        let fill = #""largeFiles":{"materializedCount":0,"missing":[],"residuePaths":[],"scan":"complete"},"#
+        let invalidPayloads = [
+            "{" + base + tail + #""sourceState":"asIs","submodulesNotAtStart":["sub"]}"#,
+            "{" + base + fill + tail + #""sourceState":"asIs","submodulesNotAtStart":[]}"#,
+            "{" + base + tail + #""sourceState":"reset","submodulesNotAtStart":[]}"#,
+            "{" + base + tail + #""submodulesNotAtStart":[]}"#,
+        ]
+
+        // Act
+        let encoded = try sortedEncoder().encode(GitWorktreeMaterializationResult.copyOnWrite(report))
+        let decoded = try JSONDecoder().decode(GitWorktreeMaterializationResult.self, from: encoded)
+
+        // Assert
+        #expect(decoded == .copyOnWrite(report))
+        #expect(
+            jsonText(encoded)
+                == "{" + base + #""largeFiles":{"materializedCount":2,"missing":[],"residuePaths":[],"scan":"complete"},"#
+                + tail + #""sourceState":"reset","submodulesNotAtStart":["vendor/sub"]}"#)
+        for payload in invalidPayloads {
+            #expect(throws: DecodingError.self, "\(payload)") {
+                _ = try JSONDecoder().decode(GitWorktreeMaterializationResult.self, from: Data(payload.utf8))
+            }
+        }
     }
 
     @Test("changes-only reports and refusals use explicit tagged payloads")

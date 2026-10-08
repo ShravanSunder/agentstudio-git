@@ -47,7 +47,7 @@ struct WorktreeForkCopyFilterOperationTests {
                 capturedHead: .init(
                     commitOID: try fixture.blobID("HEAD", at: fixture.source),
                     treeOID: try fixture.blobID("HEAD^{tree}", at: fixture.source)),
-                copyRules: .init(ignoredPaths: .copyMatching(patterns))))
+                copyRules: .init(ignoredPaths: .copyMatching(patterns)), resetsToStart: false))
         #expect(result.classifiedPathCount == 1)
         #expect(result.ignoreQueryCount == 1)
         #expect(result.ignoredExcludedCount == (included ? 0 : 55_001))

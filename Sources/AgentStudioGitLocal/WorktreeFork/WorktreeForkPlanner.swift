@@ -88,7 +88,8 @@ struct WorktreeForkPlanner: Sendable {
                         sourceCommonDirectory: gitCapture.commonDirectory,
                         sourceGitDirectory: gitCapture.sourceGitDirectory,
                         capturedHead: gitCapture.capturedHead,
-                        copyRules: request.copyRules
+                        copyRules: request.copyRules,
+                        resetsToStart: gitCapture.start != gitCapture.capturedHead
                     ))
                 filesystem = filtered.filesystem
                 ignoredIncludedPatterns = filtered.ignoredIncludedPatterns
@@ -346,8 +347,6 @@ struct WorktreeForkPlanner: Sendable {
         if request.materialization == .changesOnly || request.copyRules.ignoredPaths == .copyAll {
             throw .rejected(reason: .invalidStart)
         }
-        // The reset copy is not built yet: every start must still be the captured HEAD.
-        throw .rejected(reason: .invalidStart)
     }
 
     private func captureHead(_ repository: OpaquePointer) throws(GitWorktreeForkError) -> WorktreeForkCapturedHead {

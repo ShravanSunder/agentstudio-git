@@ -37,7 +37,7 @@ struct WorktreeForkValidator: Sendable {
         try WorktreeForkIndexValidation.validate(
             worktreePath: plan.destinationRoot,
             treeOID: plan.capturedHead.treeOID,
-            expectedSkipWorktree: plan.gitTopology.rootSparse?.skipWorktreePaths ?? [],
+            expectedSkipWorktree: plan.rootSkipWorktreePaths,
             evidence: indexEvidence,
             reportPrefix: ""
         )

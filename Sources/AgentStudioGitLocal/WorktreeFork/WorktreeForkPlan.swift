@@ -30,6 +30,11 @@ struct WorktreeForkPlan: Sendable {
     var resetsToStart: Bool {
         start.commitOID != capturedHead.commitOID
     }
+
+    /// The root index's skip-worktree set. A reset recreates every path of the start, so it keeps none.
+    var rootSkipWorktreePaths: Set<String> {
+        resetsToStart ? [] : gitTopology.rootSparse?.skipWorktreePaths ?? []
+    }
 }
 
 struct WorktreeForkChangesOnlyPlan: Sendable {

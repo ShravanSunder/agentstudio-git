@@ -262,6 +262,7 @@ struct GitWireEnumSnapshotTests {
             ])
         #expect(
             GitWorktreeForkMaterialization.allCases.map(\.rawValue) == ["copyOnWrite", "changesOnly"])
+        #expect(GitForkSourceState.allCases.map(\.rawValue) == ["asIs", "reset"])
         #expect(
             GitWorktreeWorkingStateRefusalReason.allCases.map(\.rawValue) == [
                 "conflicts", "operationInProgress", "submoduleChanged", "nestedRepository",

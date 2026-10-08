@@ -5,13 +5,18 @@ import Foundation
 
 /// Copy policy needs every index path, including conflicts and intent-to-add. Clean-adoption's
 /// narrower snapshot cannot authorize exclusion. No index or configuration state is refreshed here.
+/// A reset copy counts only the captured `HEAD` tree: an index-only path (a staged addition, intent-to-add)
+/// is work in progress that the reset's baseline would otherwise leave behind as a stray.
 struct WorktreeForkCopyTrackedPaths: Sendable {
     let paths: Set<String>
     let ignoreCase: Bool
 
-    static func capture(sourceRoot: URL, gitDirectory: URL, capturedHead: WorktreeForkCapturedHead)
-        throws(GitWorktreeForkError) -> Self
-    {
+    static func capture(
+        sourceRoot: URL,
+        gitDirectory: URL,
+        capturedHead: WorktreeForkCapturedHead,
+        includingIndex: Bool
+    ) throws(GitWorktreeForkError) -> Self {
         let repository = try WorktreeForkGitHandles.openWorktree(sourceRoot)
         defer { git_repository_free(repository) }
         var configuration: OpaquePointer?
@@ -27,7 +32,7 @@ struct WorktreeForkCopyTrackedPaths: Sendable {
         }
         let ignoreCase = caseResult >= 0 && ignoreCaseValue != 0
         let headPaths = try WorktreeForkGitHandles.treeEntries(capturedHead.treeOID, repository: repository).keys
-        let indexPaths = try readIndexPaths(gitDirectory.appending(path: "index"))
+        let indexPaths = includingIndex ? try readIndexPaths(gitDirectory.appending(path: "index")) : []
         return Self(
             paths: Set((Array(headPaths) + indexPaths).map { ignoreCase ? $0.lowercased() : $0 }),
             ignoreCase: ignoreCase)
