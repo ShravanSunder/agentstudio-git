@@ -40,6 +40,7 @@ public protocol AgentStudioGitLocalClient: Sendable {
     /// Configured remote names, so a `<remote>/<branch>` start can be split at a real remote.
     func remoteNames(for repositoryPath: URL) async throws(GitDataPlaneError) -> [String]
     /// The worktree holding a local branch, by `HEAD`, rebase, or bisect, as `git worktree add` refuses it.
+    /// Administration that cannot be read fails the call; it never reads as `free`.
     func branchUse(_ request: GitBranchUseRequest) async throws(GitDataPlaneError) -> GitBranchUse
     /// Commits only one of two commits has; `countCommitRange` cannot tell behind from diverged.
     func aheadBehind(_ request: GitAheadBehindRequest) async throws(GitDataPlaneError) -> GitAheadBehind

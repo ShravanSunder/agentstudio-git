@@ -1,4 +1,5 @@
 import AgentStudioGit
+import CLibGit2Local
 import Foundation
 import Testing
 import os
@@ -161,7 +162,7 @@ struct GitWorktreeCreateBranchIntegrationTests {
         let client = LibGit2AgentStudioGitLocalClient(
             worktreeWriter: LibGit2WorktreeWriter(
                 createFaults: WorktreeCreateFaultInjector { point in
-                    if point == .beforeUpstreamWrite {
+                    if point == .afterBranchAttached {
                         reached.withLock { $0 = true }
                         throw injected
                     }
@@ -231,7 +232,7 @@ struct GitWorktreeCreateBranchIntegrationTests {
         let client = LibGit2AgentStudioGitLocalClient(
             worktreeWriter: LibGit2WorktreeWriter(
                 createFaults: WorktreeCreateFaultInjector { point in
-                    if point == .beforeUpstreamWrite {
+                    if point == .afterBranchAttached {
                         try fixture.git.run("update-ref", "-m", "another writer", "refs/heads/fresh", tip)
                         try fixture.git.run("config", "branch.fresh.description", "kept by another writer")
                         throw GitDataPlaneError.unsupported(message: "injected upstream write failure")
@@ -254,6 +255,175 @@ struct GitWorktreeCreateBranchIntegrationTests {
         #expect(try fixture.git.run("config", "branch.fresh.description") == "kept by another writer\n")
         #expect(try fixture.git.run("reflog", "-1", "--format=%gs", "fresh") == "another writer\n")
         #expect(!FileManager.default.fileExists(atPath: fixture.linkedWorktreePath("fresh").path))
+    }
+
+    @Test("a fast-forward whose commit fails after the ref rename is moved back, and the call fails with nothing left")
+    func fastForwardLandedDespiteCommitFailureIsMovedBack() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-create-fsync-moved")
+        defer { fixture.remove() }
+        let base = try revision("HEAD", in: fixture)
+        try fixture.git.run("branch", "behind")
+        let tip = try commit("tip.txt", in: fixture)
+        let worktreesBefore = try fixture.git.run("worktree", "list", "--porcelain")
+        let refusingSync = RefusingBranchDirectorySync(fixture)
+        defer { refusingSync.restore() }
+        let client = try refusingSync.client()
+
+        // Act
+        let failure = await failure {
+            _ = try await client.createWorktree(
+                request(fixture, "behind", .existingBranch(name: "behind", expectedTip: base, fastForwardTo: tip)))
+        }
+        refusingSync.restore()
+
+        // Assert: the reflog shows the fast-forward landed and was moved back; the call keeps its own error.
+        #expect(failure == refusingSync.syncFailure)
+        #expect(try revision("behind", in: fixture) == base)
+        #expect(
+            try fixture.git.run("reflog", "-2", "--format=%gs", "behind")
+                == "agentstudio worktree: undo fast-forward to \(tip)\nagentstudio worktree: fast-forward to \(tip)\n")
+        #expect(try fixture.git.run("worktree", "list", "--porcelain") == worktreesBefore)
+        #expect(!FileManager.default.fileExists(atPath: fixture.linkedWorktreePath("behind").path))
+        #expect(!(try fixture.git.run("for-each-ref", "refs/heads").contains("carrier")))
+    }
+
+    @Test("a new branch whose commit fails after the ref rename is removed, and the call fails with nothing left")
+    func createdBranchLandedDespiteCommitFailureIsRemoved() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-create-fsync-created")
+        defer { fixture.remove() }
+        let base = try revision("HEAD", in: fixture)
+        let worktreesBefore = try fixture.git.run("worktree", "list", "--porcelain")
+        let refusingSync = RefusingBranchDirectorySync(fixture)
+        defer { refusingSync.restore() }
+        let client = try refusingSync.client()
+        let referencesBefore = try fixture.git.run("for-each-ref")
+        let configBefore = try fixture.git.run("config", "--local", "--list")
+
+        // Act
+        let failure = await failure {
+            _ = try await client.createWorktree(
+                request(
+                    fixture, "fresh",
+                    .newBranch(
+                        name: "fresh", startPoint: .named(base),
+                        upstream: GitBranchUpstream(remoteName: "origin", branchName: "fresh"))))
+        }
+        refusingSync.restore()
+
+        // Assert
+        #expect(failure == refusingSync.syncFailure)
+        #expect(try fixture.git.run("for-each-ref") == referencesBefore)
+        #expect(try fixture.git.run("config", "--local", "--list") == configBefore)
+        #expect(try fixture.git.run("worktree", "list", "--porcelain") == worktreesBefore)
+        #expect(!FileManager.default.fileExists(atPath: fixture.linkedWorktreePath("fresh").path))
+    }
+
+    @Test("a fast-forward another writer moves before the undo fails branchMoveNotUndone and keeps that tip")
+    func fastForwardMovedAgainIsReportedNotUndone() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-create-move-not-undone")
+        defer { fixture.remove() }
+        let base = try revision("HEAD", in: fixture)
+        try fixture.git.run("branch", "behind")
+        let tip = try commit("tip.txt", in: fixture)
+        let other = try commit("other.txt", in: fixture)
+        let worktreesBefore = try fixture.git.run("worktree", "list", "--porcelain")
+        let client = LibGit2AgentStudioGitLocalClient(
+            worktreeWriter: LibGit2WorktreeWriter(
+                createFaults: WorktreeCreateFaultInjector { point in
+                    if point == .afterBranchAttached {
+                        try fixture.git.run("update-ref", "-m", "another writer", "refs/heads/behind", other)
+                        throw GitDataPlaneError.unsupported(message: "injected after the attach")
+                    }
+                }))
+
+        // Act
+        let failure = await failure {
+            _ = try await client.createWorktree(
+                request(fixture, "behind", .existingBranch(name: "behind", expectedTip: base, fastForwardTo: tip)))
+        }
+
+        // Assert
+        #expect(failure == .branchMoveNotUndone(branchName: "behind", from: base, to: tip))
+        #expect(try revision("behind", in: fixture) == other)
+        #expect(try fixture.git.run("worktree", "list", "--porcelain") == worktreesBefore)
+        #expect(!FileManager.default.fileExists(atPath: fixture.linkedWorktreePath("behind").path))
+    }
+
+    @Test("a branch whose rebase state cannot be searched fails the create with nothing made and nothing moved")
+    func unsearchableRebaseStateFailsCreate() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-create-unsearchable-rebase")
+        defer { fixture.remove() }
+        let rebasing = try fixture.addWorktreeStoppedInRebase(branch: "merging")
+        defer { _ = chmod(rebasing.rebaseState.path, 0o755) }
+        let mergingTip = try revision("merging", in: fixture)
+        let referencesBefore = try fixture.git.run("for-each-ref")
+        let worktreesBefore = try fixture.git.run("worktree", "list", "--porcelain")
+        #expect(chmod(rebasing.rebaseState.path, 0o600) == 0)
+
+        // Act
+        let failure = await failure {
+            _ = try await LibGit2AgentStudioGitLocalClient().createWorktree(
+                request(
+                    fixture, "merging-checkout",
+                    .existingBranch(name: "merging", expectedTip: mergingTip, fastForwardTo: nil)))
+        }
+        _ = chmod(rebasing.rebaseState.path, 0o755)
+
+        // Assert
+        #expect(failure == .unsupported(message: "worktree administration is unreadable"))
+        #expect(try fixture.git.run("for-each-ref") == referencesBefore)
+        #expect(try fixture.git.run("worktree", "list", "--porcelain") == worktreesBefore)
+        #expect(!FileManager.default.fileExists(atPath: fixture.linkedWorktreePath("merging-checkout").path))
+    }
+
+    @Test("an invalid upstream remote or branch, or one with a NUL, fails before anything is made; a valid one works")
+    func invalidUpstreamFailsBeforeAnythingIsMade() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-create-invalid-upstream")
+        defer { fixture.remove() }
+        let base = try revision("HEAD", in: fixture)
+        let client = LibGit2AgentStudioGitLocalClient()
+        let referencesBefore = try fixture.git.run("for-each-ref")
+        let configBefore = try fixture.git.run("config", "--local", "--list")
+        let worktreesBefore = try fixture.git.run("worktree", "list", "--porcelain")
+        let invalidUpstreams = [
+            GitBranchUpstream(remoteName: "bad remote", branchName: "fresh"),
+            GitBranchUpstream(remoteName: "origin", branchName: "bad..branch"),
+            GitBranchUpstream(remoteName: "origin\u{0}x", branchName: "fresh"),
+            GitBranchUpstream(remoteName: "origin", branchName: "fresh\u{0}x"),
+        ]
+
+        for upstream in invalidUpstreams {
+            // Act
+            let failure = await failure {
+                _ = try await client.createWorktree(
+                    request(fixture, "fresh", .newBranch(name: "fresh", startPoint: .named(base), upstream: upstream)))
+            }
+
+            // Assert
+            #expect(
+                failure
+                    == .libgit2Failure(
+                        code: GIT_EINVALIDSPEC.rawValue, klass: 0,
+                        message: "'\(upstream.remoteName)/\(upstream.branchName)' is not a valid upstream"),
+                "\(upstream)")
+            #expect(try fixture.git.run("for-each-ref") == referencesBefore, "\(upstream)")
+            #expect(try fixture.git.run("config", "--local", "--list") == configBefore, "\(upstream)")
+            #expect(try fixture.git.run("worktree", "list", "--porcelain") == worktreesBefore, "\(upstream)")
+            #expect(!FileManager.default.fileExists(atPath: fixture.linkedWorktreePath("fresh").path))
+        }
+        let valid = try await client.createWorktree(
+            request(
+                fixture, "fresh",
+                .newBranch(
+                    name: "fresh", startPoint: .named(base),
+                    upstream: GitBranchUpstream(remoteName: "origin", branchName: "fresh"))))
+        #expect(valid.worktree.head == GitHeadSnapshot(kind: .branch, oid: base, shortName: "fresh"))
+        #expect(try fixture.git.run("config", "branch.fresh.merge") == "refs/heads/fresh\n")
     }
 
     @Test("a new branch at a pinned commit writes its upstream; a detached checkout sits at its commit")
@@ -326,5 +496,43 @@ struct GitWorktreeCreateBranchIntegrationTests {
             Issue.record("unexpected error \(error)")
             return nil
         }
+    }
+}
+
+/// Turns on ref fsync and, at the attach barrier, leaves `refs/heads` write-and-search only. A ref commit then
+/// renames its lock into place, which still works, and fails opening the directory to sync it: libgit2 reports
+/// the commit failed after the ref landed (`filebuf.c` rename, then `git_futils_fsync_parent`).
+private struct RefusingBranchDirectorySync: Sendable {
+    let branchDirectory: URL
+    let repositoryPath: URL
+
+    init(_ fixture: GitFixtureRepository) {
+        branchDirectory = fixture.repositoryPath.appending(path: ".git/refs/heads")
+        repositoryPath = fixture.repositoryPath
+    }
+
+    /// The commit error both the attach and the undo's own commit hit.
+    var syncFailure: GitDataPlaneError {
+        .libgit2Failure(
+            code: -1, klass: Int32(GIT_ERROR_OS.rawValue),
+            message:
+                "failed to open directory '\(GitFixtureRepository.resolvedPath(branchDirectory))' for fsync: Permission denied"
+        )
+    }
+
+    func client() throws -> LibGit2AgentStudioGitLocalClient {
+        try GitProcess(repositoryPath: repositoryPath).run("config", "core.fsyncObjectFiles", "true")
+        let branchDirectory = branchDirectory
+        return LibGit2AgentStudioGitLocalClient(
+            worktreeWriter: LibGit2WorktreeWriter(
+                createFaults: WorktreeCreateFaultInjector { point in
+                    if point == .beforeBranchAttach, chmod(branchDirectory.path, 0o300) != 0 {
+                        throw GitDataPlaneError.unsupported(message: "the fixture could not restrict refs/heads")
+                    }
+                }))
+    }
+
+    func restore() {
+        _ = chmod(branchDirectory.path, 0o755)
     }
 }

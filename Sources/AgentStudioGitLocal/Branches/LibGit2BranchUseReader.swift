@@ -6,8 +6,12 @@ import Foundation
 /// names the branch, or, with `HEAD` detached, it is rebasing that branch (`rebase-merge/head-name`,
 /// `rebase-apply/head-name` outside `git am`) or bisecting from it (`BISECT_START` while `BISECT_LOG` exists).
 /// Each administration directory is read directly, so a worktree whose directory is missing and an unborn
-/// branch still count. Any administration that cannot be read fails the read rather than reporting `free`.
+/// branch still count. Any administration that cannot be read fails the read rather than reporting `free`: only a
+/// file that does not exist (`ENOENT`) is absent; no search permission or an I/O error is a failure.
 struct LibGit2BranchUseReader: Sendable {
+    private static let unreadableAdministration = GitDataPlaneError.unsupported(
+        message: "worktree administration is unreadable")
+
     private let runtime: LibGit2Runtime
 
     init(runtime: LibGit2Runtime = .shared) {
@@ -84,18 +88,18 @@ struct LibGit2BranchUseReader: Sendable {
         if head.hasPrefix("ref: ") {
             return Self.shortBranchName(String(head.dropFirst("ref: ".count))) == branchName
         }
-        if isDirectory(gitDirectory.appending(path: "rebase-apply")) {
-            if !exists(gitDirectory.appending(path: "rebase-apply/applying")),
+        if try isDirectory(gitDirectory.appending(path: "rebase-apply")) {
+            if try !exists(gitDirectory.appending(path: "rebase-apply/applying")),
                 try optionalBranch(gitDirectory.appending(path: "rebase-apply/head-name")) == branchName
             {
                 return true
             }
-        } else if isDirectory(gitDirectory.appending(path: "rebase-merge")),
+        } else if try isDirectory(gitDirectory.appending(path: "rebase-merge")),
             try optionalBranch(gitDirectory.appending(path: "rebase-merge/head-name")) == branchName
         {
             return true
         }
-        guard exists(gitDirectory.appending(path: "BISECT_LOG")) else {
+        guard try exists(gitDirectory.appending(path: "BISECT_LOG")) else {
             return false
         }
         return try optionalBranch(gitDirectory.appending(path: "BISECT_START")) == branchName
@@ -109,7 +113,7 @@ struct LibGit2BranchUseReader: Sendable {
     }
 
     private func optionalBranch(_ file: URL) throws -> String? {
-        guard exists(file) else {
+        guard try exists(file) else {
             return nil
         }
         return Self.shortBranchName(try requiredText(file))
@@ -119,22 +123,26 @@ struct LibGit2BranchUseReader: Sendable {
         do {
             return try String(contentsOf: file, encoding: .utf8)
         } catch {
-            throw GitDataPlaneError.unsupported(message: "worktree administration is unreadable")
+            throw Self.unreadableAdministration
         }
     }
 
-    private func exists(_ url: URL) -> Bool {
-        if case .success = WorktreeForkDescriptors.lstatPath(url) {
-            return true
+    private func exists(_ url: URL) throws -> Bool {
+        guard case .success(let present) = WorktreeForkDescriptors.existence(url) else {
+            throw Self.unreadableAdministration
         }
-        return false
+        return present
     }
 
-    private func isDirectory(_ url: URL) -> Bool {
-        guard case .success(let info) = WorktreeForkDescriptors.lstatPath(url) else {
+    private func isDirectory(_ url: URL) throws -> Bool {
+        switch WorktreeForkDescriptors.lstatPath(url) {
+        case .success(let info):
+            return WorktreeForkEntryKind(mode: info.st_mode) == .directory
+        case .failure(let failure) where failure.code == ENOENT:
             return false
+        case .failure:
+            throw Self.unreadableAdministration
         }
-        return WorktreeForkEntryKind(mode: info.st_mode) == .directory
     }
 }
 

@@ -9,6 +9,18 @@ import Foundation
 struct LibGit2BranchUpstreamWriter {
     let lockObserver: LibGit2BranchAttachLockObserver
 
+    /// Whether `upstream` names a valid remote and a valid branch, with no NUL that a C string would cut short.
+    /// Both creators check it before they mutate anything; whether the remote is configured is not checked.
+    static func isValid(_ upstream: GitBranchUpstream) -> Bool {
+        var isValidRemote: Int32 = 0
+        var isValidBranch: Int32 = 0
+        return !upstream.remoteName.utf8.contains(0) && !upstream.branchName.utf8.contains(0)
+            && upstream.remoteName.withCString({ git_remote_name_is_valid(&isValidRemote, $0) }) >= 0
+            && isValidRemote == 1
+            && upstream.branchName.withCString({ git_branch_name_is_valid(&isValidBranch, $0) }) >= 0
+            && isValidBranch == 1
+    }
+
     func write(
         _ upstream: GitBranchUpstream,
         branchName: String,

@@ -61,8 +61,10 @@ struct LibGit2BranchAttachRequest {
 /// at the branch, and only then commits a transaction holding the branch ref alone. `HEAD` is renamed into place
 /// while the branch lock is held, so any attach that takes the lock after this one already reads the branch as
 /// checked out; a transaction holding both refs would commit them in hash order and could release the branch lock
-/// before `HEAD` lands. The single ref is renamed last, so a failed commit leaves it unmoved. The writer lane only
-/// orders callers inside one process; this lock is what orders two processes attaching the same branch.
+/// before `HEAD` lands. A failed commit is no proof the ref stayed put: the ref database renames the ref into place
+/// and then syncs its directory, so after any commit error the ref is re-read and a change that landed is still
+/// reported through `landed` for the caller to undo. The writer lane only orders callers inside one process; this
+/// lock is what orders two processes attaching the same branch.
 struct LibGit2BranchAttach {
     let request: LibGit2BranchAttachRequest
     let lockObserver: LibGit2BranchAttachLockObserver

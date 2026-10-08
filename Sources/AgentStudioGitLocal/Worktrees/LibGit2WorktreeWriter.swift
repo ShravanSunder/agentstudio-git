@@ -60,15 +60,17 @@ struct LibGit2WorktreeWriter: Sendable {
             try createFaults.reach(.beforeBranchAttach)
             try withRepository(at: request.destinationPath) { destination in
                 try branchAttach.attach(target, destination: destination, rollback: &rollback)
-                if target.upstream != nil {
-                    try createFaults.reach(.beforeUpstreamWrite)
+                if target.attach != nil {
+                    try createFaults.reach(.afterBranchAttached)
                 }
                 try branchAttach.writeUpstream(target, destination: destination)
             }
             rollback.disarm()
             snapshot = target.attachedSnapshot(detachedSnapshot)
         } catch {
-            rollback.rollback(runtime: runtime)
+            if let moveNotUndone = rollback.rollback(runtime: runtime) {
+                throw moveNotUndone
+            }
             throw error
         }
 

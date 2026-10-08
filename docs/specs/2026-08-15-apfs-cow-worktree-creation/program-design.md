@@ -111,7 +111,8 @@ WorktreeForkResetCheckout
 
 LibGit2BranchAttach (shared with LibGit2WorktreeWriter)
   owns the locked branch attach: ref lock, branch-use re-read, tip
-  compare-and-swap or creation, optional HEAD move, commit
+  compare-and-swap or creation, HEAD move, commit, and the re-read that
+  reports a change that landed despite a commit error
   consumed by WorktreeForkBranchAttach and the plain checkout
   changes when the branch-use or tip rule changes
 ```
@@ -511,7 +512,8 @@ realizes it.
 - **Attach.** `WorktreeForkBranchAttach` reaches the `beforeBranchAttach`
   barrier seam, then runs `LibGit2BranchAttach` on a transaction opened on the
   destination repository: lock `refs/heads/<b>` (`afterBranchReferenceLockAcquired`
-  seam), re-read `LibGit2BranchUseReader`, stage the creation or fast-forward,
+  seam), re-read `LibGit2BranchUseReader` (only `ENOENT` is an absent file;
+  any other probe error fails the read), stage the creation or fast-forward,
   write the destination's `HEAD` through libgit2's own `HEAD` lock
   (`afterBranchHeadAttached` seam), and commit a transaction holding only the
   branch ref. A transaction holding both refs is never used: libgit2 commits
@@ -535,20 +537,31 @@ realizes it.
   configuration and reflog before comparing the ref); and
   `.movedBranch(from:to:)`, undone by
   `LibGit2BranchMoveUndo` under the ref lock only while the branch is still at
-  `to`; otherwise residue `branchMoveNotUndone`.
+  `to`; otherwise residue `branchMoveNotUndone`. Both entries are journaled
+  from `landed`, which the attach also calls after a commit error when a
+  re-read finds the ref at its new tip: with ref fsync on, `loose_commit`
+  renames the lock into place and then `git_futils_fsync_parent` can fail
+  (`filebuf.c`), so a commit error is no proof the ref stayed put. The undo
+  re-reads after its own commit for the same reason.
 - **Plain checkout.** `LibGit2WorktreeCreateBranchAttach.plan` checks every rule
   without mutation; `addDetachedWorktree` registers the worktree through a
   call-owned carrier and checks out the pinned start detached; the worktree is
   validated; the `beforeBranchAttach` seam follows; then the same attach runs:
   under the ref lock it re-reads branch use, compares the tip, writes the
-  destination `HEAD`, and commits a transaction holding only the branch ref,
-  which libgit2 renames into place last
-  (`refdb_fs.c`, `loose_commit`), so a failed commit leaves the ref unmoved.
-  Nothing that can fail follows a fast-forward, so the plain checkout has no
-  branch-move undo. Only a new branch's upstream write follows its creation
-  (after the `beforeUpstreamWrite` seam); if it fails, `WorktreeCreateRollback`
-  prunes the worktree and removes that branch through the same
-  `LibGit2CreatedBranchCompensation`, silently (create has no residue channel). Writing it before the branch exists was
+  destination `HEAD`, and commits a transaction holding only the branch ref.
+  That commit can report failure after the ref landed (above), so `landed`
+  records either change on `WorktreeCreateRollback`: `createdBranch` or
+  `movedBranch`. Only a new branch's upstream write follows its creation
+  (after the `afterBranchAttached` seam); if anything fails,
+  `WorktreeCreateRollback` prunes the worktree, removes a created branch
+  through the same `LibGit2CreatedBranchCompensation` (silently: create has no
+  residue channel), and moves a fast-forward back through
+  `LibGit2BranchMoveUndo`. A move it cannot confirm undone replaces the call's
+  error with `GitDataPlaneError.branchMoveNotUndone(branchName:from:to:)`, the
+  one rollback outcome create reports, because a caller told nothing moved
+  would act on a branch that did. `plan` also checks the upstream with
+  `LibGit2BranchUpstreamWriter.isValid`, the fork planner's own rule. Writing
+  the upstream before the branch exists was
   rejected: a failure would leave a `branch.<name>` section that a later branch
   of that name silently inherits as tracking. The returned
   snapshot is the detached read with the `HEAD` the attach wrote, and the LFS

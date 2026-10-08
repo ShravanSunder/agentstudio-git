@@ -132,12 +132,7 @@ struct WorktreeForkBranchTargetPlanner {
     }
 
     private func requireValidUpstream(_ upstream: GitBranchUpstream) throws(GitWorktreeForkError) {
-        var isValidRemote: Int32 = 0
-        var isValidBranch: Int32 = 0
-        guard !upstream.remoteName.utf8.contains(0), !upstream.branchName.utf8.contains(0),
-            upstream.remoteName.withCString({ git_remote_name_is_valid(&isValidRemote, $0) }) >= 0, isValidRemote == 1,
-            upstream.branchName.withCString({ git_branch_name_is_valid(&isValidBranch, $0) }) >= 0, isValidBranch == 1
-        else {
+        guard LibGit2BranchUpstreamWriter.isValid(upstream) else {
             throw .rejected(reason: .invalidUpstream)
         }
     }

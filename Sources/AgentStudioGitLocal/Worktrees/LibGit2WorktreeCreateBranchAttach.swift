@@ -38,7 +38,8 @@ struct LibGit2WorktreeCreateTarget {
 /// The plain checkout's branch step. Every rule is checked before anything is created; the worktree is then
 /// registered and checked out detached at the pinned start, and the locked attach (ref lock, branch-use re-read,
 /// tip compare-and-swap or creation, `HEAD`, commit of the one branch ref) runs last. A failure before the attach
-/// moves no branch, and nothing that can fail follows a fast-forward, so no branch move ever needs undoing.
+/// moves no branch. The attach's commit can still report failure after its ref landed, so whatever landed is
+/// recorded on the rollback: a created branch is removed, and a fast-forward is moved back to its expected tip.
 struct LibGit2WorktreeCreateBranchAttach {
     /// Any worktree of the repository; branch use is read across every worktree it has.
     let repositoryPath: URL
@@ -50,6 +51,11 @@ struct LibGit2WorktreeCreateBranchAttach {
                 start: try resolvedCommit(startPoint, repository: repository), attach: nil, upstream: nil)
         case .newBranch(let name, let startPoint, let upstream):
             try requireValidBranchName(name)
+            if let upstream, !LibGit2BranchUpstreamWriter.isValid(upstream) {
+                throw LibGit2ErrorCapture.fallbackFailure(
+                    code: GIT_EINVALIDSPEC.rawValue,
+                    message: "'\(upstream.remoteName)/\(upstream.branchName)' is not a valid upstream")
+            }
             if try currentTip(name, repository: repository) != nil {
                 throw LibGit2ErrorCapture.fallbackFailure(
                     code: GIT_EEXISTS.rawValue, message: "a branch with that name already exists")
@@ -87,7 +93,8 @@ struct LibGit2WorktreeCreateBranchAttach {
     }
 
     /// The checks repeat under the branch's ref lock, the destination's `HEAD` moves to the branch, and the branch
-    /// ref alone is committed. A new branch is recorded on the rollback, because its upstream write still follows.
+    /// ref alone is committed. Each landed change is recorded on the rollback, including one whose commit reported
+    /// failure: a new branch's upstream write still follows, and a commit error is no proof the ref did not move.
     func attach(
         _ target: LibGit2WorktreeCreateTarget,
         destination: OpaquePointer,
@@ -107,8 +114,11 @@ struct LibGit2WorktreeCreateBranchAttach {
             refusal: Self.dataPlaneError,
             checkpoint: { _ throws(GitDataPlaneError) in },
             landed: { effect in
-                if case .created(_, let commit) = effect {
+                switch effect {
+                case .created(_, let commit):
                     rollback.createdBranch = (branchName, commit)
+                case .fastForwarded(_, let from, let to):
+                    rollback.movedBranch = (branchName, from.lowercased(), to.lowercased())
                 }
             }
         )

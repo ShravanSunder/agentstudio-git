@@ -155,6 +155,71 @@ struct GitWorktreeForkAttachIntegrationTests {
         #expect(try fixture.blobID("feat", at: fixture.source) == elsewhere)
     }
 
+    @Test("a fast-forward whose commit fails after the ref rename is moved back and the fork rolled back")
+    func fastForwardLandedDespiteCommitFailureIsMovedBack() async throws {
+        // Arrange: with fsync on, a write-and-search-only refs/heads lets the ref rename land and fails the
+        // directory open libgit2 syncs it through, so the commit reports failure after the ref moved.
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-attach-fsync")
+        defer { fixture.remove() }
+        let branchDirectory = fixture.source.appending(path: ".git/refs/heads")
+        defer { _ = chmod(branchDirectory.path, 0o755) }
+        let base = try fixture.blobID("HEAD", at: fixture.source)
+        try fixture.git.run("branch", "behind")
+        let tip = try commit("tip.txt", in: fixture)
+        try fixture.git.run("config", "core.fsyncObjectFiles", "true")
+        let client = client(at: .beforeBranchAttach) {
+            guard chmod(branchDirectory.path, 0o300) == 0 else {
+                throw GitWorktreeForkError.gitFailure(
+                    .unsupported(message: "the fixture could not restrict refs/heads"))
+            }
+        }
+
+        // Act
+        let failure = await forkFailure(
+            client, fixture.request(mode: .existingBranch(name: "behind", expectedTip: base, fastForwardTo: tip)))
+        _ = chmod(branchDirectory.path, 0o755)
+
+        // Assert: the reflog shows the fast-forward landed and was moved back; the fork keeps its own error.
+        #expect(
+            failure
+                == .gitFailure(
+                    .libgit2Failure(
+                        code: -1, klass: Int32(GIT_ERROR_OS.rawValue),
+                        message:
+                            "failed to open directory '\(GitFixtureRepository.resolvedPath(branchDirectory))' for fsync: Permission denied"
+                    )))
+        try expectRolledBack(fixture)
+        #expect(try fixture.blobID("behind", at: fixture.source) == base)
+        #expect(
+            try fixture.git.run("reflog", "-2", "--format=%gs", "behind")
+                == "agentstudio worktree: undo fast-forward to \(tip)\nagentstudio worktree: fast-forward to \(tip)\n")
+    }
+
+    @Test("a branch whose rebase state cannot be searched fails the fork before anything is made")
+    func unsearchableRebaseStateFailsFork() async throws {
+        // Arrange
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-attach-unsearchable-rebase")
+        defer { fixture.remove() }
+        let rebasing = try fixture.repository.addWorktreeStoppedInRebase(branch: "merging")
+        defer { _ = chmod(rebasing.rebaseState.path, 0o755) }
+        let mergingTip = try fixture.blobID("merging", at: fixture.source)
+        let referencesBefore = try fixture.git.run("for-each-ref")
+        #expect(chmod(rebasing.rebaseState.path, 0o600) == 0)
+
+        // Act
+        let failure = await forkFailure(
+            LibGit2AgentStudioGitLocalClient(),
+            fixture.request(
+                mode: .existingBranch(name: "merging", expectedTip: mergingTip, fastForwardTo: nil),
+                copyRules: GitWorktreeCopyRules(ignoredPaths: .copyMatching([]))))
+        _ = chmod(rebasing.rebaseState.path, 0o755)
+
+        // Assert
+        #expect(failure == .gitFailure(.unsupported(message: "worktree administration is unreadable")))
+        try expectRolledBack(fixture)
+        #expect(try fixture.git.run("for-each-ref") == referencesBefore)
+    }
+
     @Test("a new branch with an upstream tracks it, so push.default=simple pushes it")
     func upstreamIsWrittenForNewBranch() async throws {
         // Arrange

@@ -1,3 +1,4 @@
+import AgentStudioGitContracts
 import CLibGit2Local
 import Foundation
 
@@ -8,6 +9,9 @@ struct WorktreeCreateRollback {
     var carrierBranchName: String?
     /// A new branch the attach created, until its upstream write succeeds; removed only at that commit.
     var createdBranch: (name: String, commit: String)?
+    /// An existing branch the attach fast-forwarded. Its commit can report failure after the ref landed, so a
+    /// failed call moves it back to `from` under its ref lock.
+    var movedBranch: (name: String, from: String, to: String)?
     var createdWorktree = false
     private var isArmed = true
 
@@ -20,14 +24,19 @@ struct WorktreeCreateRollback {
         isArmed = false
     }
 
-    func rollback(runtime: LibGit2Runtime) {
+    /// Removes what the failed call made and moves a fast-forwarded branch back. Returns the error that replaces the
+    /// call's own when that move cannot be confirmed undone.
+    func rollback(runtime: LibGit2Runtime) -> GitDataPlaneError? {
         guard isArmed else {
-            return
+            return nil
+        }
+        let moveNotUndone = movedBranch.map {
+            GitDataPlaneError.branchMoveNotUndone(branchName: $0.name, from: $0.from, to: $0.to)
         }
         do {
             try runtime.ensureInitialized()
         } catch {
-            return
+            return moveNotUndone
         }
 
         var repository: OpaquePointer?
@@ -35,7 +44,7 @@ struct WorktreeCreateRollback {
             git_repository_open_ext(&repository, pathPointer, 0, nil)
         }
         guard openResult >= 0, let repository else {
-            return
+            return moveNotUndone
         }
         defer { git_repository_free(repository) }
 
@@ -49,6 +58,12 @@ struct WorktreeCreateRollback {
             _ = LibGit2CreatedBranchCompensation(repositoryPath: repositoryPath, runtime: runtime)
                 .remove(branchName: createdBranch.name, createdAt: createdBranch.commit)
         }
+        guard let movedBranch else {
+            return nil
+        }
+        let restored = LibGit2BranchMoveUndo(lockObserver: .untracked).undo(
+            "refs/heads/\(movedBranch.name)", from: movedBranch.from, to: movedBranch.to, repository: repository)
+        return restored ? nil : moveNotUndone
     }
 }
 

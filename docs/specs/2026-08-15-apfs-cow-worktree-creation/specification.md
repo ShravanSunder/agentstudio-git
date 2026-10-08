@@ -78,13 +78,20 @@ D13–D20) cut the modes over in one pin bump to the fork's branch shapes:
   moves there.
 - `.detached(startPoint:)`.
 
-Every rule is checked before anything is created. The worktree is then
-registered and checked out detached at the pinned start commit, validated, and
-only then attached through the same locked attach as the fork (below): that
-attach is the last step that can fail, apart from a new branch's upstream
-write. A failure therefore never leaves an existing branch moved, and a
-detached checkout creates no branch at all. A branch held by another worktree
-fails `GitDataPlaneError.branchCheckedOut(worktreePath:)`.
+Every rule is checked before anything is created, including the fork's
+upstream rule (a valid remote name and branch name, no NUL). The worktree is
+then registered and checked out detached at the pinned start commit,
+validated, and only then attached through the same locked attach as the fork
+(below): that attach is the last step that can fail, apart from a new branch's
+upstream write. A failure before the attach moves no branch. The attach's
+commit can report failure after the ref landed (below), so the call re-reads
+the ref: a created branch is removed as after a failed upstream write, and a
+fast-forward is moved back to `expectedTip` under the ref lock only while the
+branch is still at `fastForwardTo`. A move it cannot confirm undone fails
+`GitDataPlaneError.branchMoveNotUndone(branchName:from:to:)` in place of the
+call's own error; otherwise the call's own error stands. A detached checkout
+creates no branch at all. A branch held by another worktree fails
+`GitDataPlaneError.branchCheckedOut(worktreePath:)`.
 Both tips are full object identifiers; decoding rejects anything else, so an
 `existingBranch` payload without `expectedTip` no longer decodes.
 
@@ -367,20 +374,27 @@ transaction, so any failure rolls the whole fork back.
    captured `HEAD` and attaches the branch target only now, under the branch's
    native ref lock. With the lock held the SDK re-reads branch use (a
    worktree's `HEAD` naming the branch, or, with `HEAD` detached, a rebase of
-   it or a bisect from it) and refuses `branchCheckedOut(worktreePath:)`;
+   it or a bisect from it; administration it cannot read, other than a file
+   that does not exist, fails the read rather than counting as free) and
+   refuses `branchCheckedOut(worktreePath:)`;
    checks an existing tip against `expectedTip` (`branchMoved`) or proves a new
    name free; points the destination's `HEAD` at the branch; and only then
    commits the branch ref (the fast-forward or the creation) on its own. `HEAD`
    lands while the lock is held, so any attach that takes the lock next already
    reads the branch as checked out, and the lone ref lands entirely or not at
-   all. A detached target is detached at the start. An upstream is written
+   all. A commit that reports failure may still have landed it: with ref
+   fsync on, libgit2 renames the ref into place and then syncs its directory,
+   so the SDK re-reads the ref after any commit error and journals a change
+   that landed. A detached target is detached at the start. An upstream is written
    after the branch exists. Each landed change is journaled: rollback removes a
    created branch, with its upstream, only while it is still at the start,
    through the same locked expected-commit deletion branch deletion uses (a
    branch another writer moved keeps its ref, configuration and reflog and is
    residue `createdBranch`), and moves a fast-forward back only while the
    branch is still at its new tip; otherwise the residue is
-   `branchMoveNotUndone` with the full ref name.
+   `branchMoveNotUndone` with the full ref name. The undo's own commit can
+   report failure after it landed too, so the branch counts as restored when a
+   re-read finds it at `expectedTip`.
 4. **Validation after the attach.** `HEAD` names the branch at the start (or is
    detached there), the index tree equals the start's tree under the existing
    stat-evidence rule (after a reset every entry has stats), no lock this fork
@@ -493,7 +507,7 @@ contract identities:
 | V-06 | U-09 | Unit coverage for entry policy and stable report counts, skipped entries, and normalized entries plus integration fixtures for FIFO recreation, socket skipping, metadata normalization, unsupported special entries, and dataless clone failure without source materialization where available. |
 | V-07 | U-10 | Same-repository concurrent mutation integration proves non-interleaving while an unrelated repository can progress; executor responsiveness is observed independently of wall-clock sleeps. |
 | V-08 | U-13 | Representative ordinary, 50,000-file, and prepared-cache benchmarks report preflight, planning, materialization, index, validation, first-status, and physical-allocation phases without replacing behavioral tests. |
-| V-09 | U-03 (D13–D20) | Real repositories with backdated sources: a dirty source reset onto another branch (start's files and index, `HEAD` and snapshot on the branch, no untracked or staged-only strays, included ignored files and a nested repository with source timestamps, unchanged tracked files still clones, a modified one rewritten, the start's content over an included ignored path); submodules changed, new and removed; an unchanged LFS file kept and a changed one filled; a sparse source full; a barrier seam where another worktree takes the branch (`branchCheckedOut`, rolled back); a moved tip (`branchMoved`); a fast-forward undone after each later phase and a blocked undo reported as residue; upstream with `push.default=simple`; the plain checkout's same shapes. |
+| V-09 | U-03 (D13–D20) | Real repositories with backdated sources: a dirty source reset onto another branch (start's files and index, `HEAD` and snapshot on the branch, no untracked or staged-only strays, included ignored files and a nested repository with source timestamps, unchanged tracked files still clones, a modified one rewritten, the start's content over an included ignored path); submodules changed, new and removed; an unchanged LFS file kept and a changed one filled; a sparse source full; a barrier seam where another worktree takes the branch (`branchCheckedOut`, rolled back); a moved tip (`branchMoved`); a fast-forward undone after each later phase and a blocked undo reported as residue; a ref commit that fails after its rename (fsync on, an unreadable `refs/heads`) moved back in both creators, and a plain-checkout undo another writer blocks failing `branchMoveNotUndone`; unsearchable rebase state failing both creators; invalid upstream names refused before mutation; upstream with `push.default=simple`; the plain checkout's same shapes. |
 
 ## Negative space
 

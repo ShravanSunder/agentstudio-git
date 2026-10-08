@@ -5,7 +5,8 @@ import Foundation
 
 /// Moves a fast-forwarded branch back to its previous tip under the branch's ref lock, only while it still points
 /// where the failed creation moved it. A branch someone else moved meanwhile is left alone: the undo reports
-/// failure rather than overwrite another writer's move.
+/// failure rather than overwrite another writer's move. The commit renames the ref into place before it syncs the
+/// directory, so a commit error can follow an undo that landed; the ref is re-read either way.
 struct LibGit2BranchMoveUndo {
     let lockObserver: LibGit2BranchAttachLockObserver
 
@@ -43,9 +44,8 @@ struct LibGit2BranchMoveUndo {
         guard setResult >= 0 else {
             return false
         }
-        guard git_transaction_commit(transaction) >= 0 else {
+        if git_transaction_commit(transaction) < 0 {
             lockObserver.failed([referenceLockFact])
-            return false
         }
         return referenceTip(referenceName, repository: repository) == fromOID.lowercased()
     }

@@ -163,6 +163,32 @@ struct GitCreationReadIntegrationTests {
         #expect(invalid == .unsupported(message: "branch name is invalid"))
     }
 
+    @Test("branch use fails, never reads free, when rebase state cannot be searched; missing state is absent")
+    func branchUseFailsWhenRebaseStateIsUnsearchable() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-branch-use-unsearchable")
+        defer { fixture.remove() }
+        let rebasing = try fixture.addWorktreeStoppedInRebase(branch: "merging")
+        defer { _ = chmod(rebasing.rebaseState.path, 0o755) }
+        let client = LibGit2AgentStudioGitLocalClient()
+        let request = GitBranchUseRequest(repositoryPath: fixture.repositoryPath, branchName: "merging")
+        // The detached worktree has no rebase-apply directory and no BISECT_LOG: missing files are absent.
+        let searchable = try await client.branchUse(request)
+        let unrelated = try await client.branchUse(
+            GitBranchUseRequest(repositoryPath: fixture.repositoryPath, branchName: "never-created"))
+        #expect(chmod(rebasing.rebaseState.path, 0o600) == 0)
+
+        // Act
+        let unsearchable = await dataPlaneFailure {
+            _ = try await client.branchUse(request)
+        }
+
+        // Assert
+        #expect(searchable == .inUse(worktreePath: canonical(rebasing.worktree)))
+        #expect(unrelated == .free)
+        #expect(unsearchable == .unsupported(message: "worktree administration is unreadable"))
+    }
+
     /// A linked worktree on `branch` stopped mid-rebase onto `main` by a conflict, with `HEAD` detached.
     private func conflictedRebase(
         _ fixture: GitFixtureRepository,
