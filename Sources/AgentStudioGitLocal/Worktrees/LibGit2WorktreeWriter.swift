@@ -24,8 +24,9 @@ struct LibGit2WorktreeWriter: Sendable {
     }
 
     /// Plans the branch target, registers and checks out the worktree detached at the pinned start, validates it,
-    /// and only then attaches the branch: the attach is the last step that can fail (a new branch's upstream aside),
-    /// so a failure never leaves an existing branch moved. The LFS fill after it never throws.
+    /// and only then attaches the branch. The attach is the last step that can fail, except a new branch's upstream
+    /// write, whose failure deletes that new branch; so a failure never leaves an existing branch moved and no
+    /// fast-forward needs undoing. The LFS fill after it never throws.
     func createWorktree(_ request: GitCreateWorktreeRequest) throws
         -> GitWorktreeCreation
     {
@@ -59,6 +60,10 @@ struct LibGit2WorktreeWriter: Sendable {
             try createFaults.reach(.beforeBranchAttach)
             try withRepository(at: request.destinationPath) { destination in
                 try branchAttach.attach(target, destination: destination, rollback: &rollback)
+                if target.upstream != nil {
+                    try createFaults.reach(.beforeUpstreamWrite)
+                }
+                try branchAttach.writeUpstream(target, destination: destination)
             }
             rollback.disarm()
             snapshot = target.attachedSnapshot(detachedSnapshot)

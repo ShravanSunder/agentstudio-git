@@ -4,7 +4,7 @@ import Foundation
 struct WorktreeCreateRollback {
     let repositoryPath: URL
     let worktreeName: String
-    /// The carrier branch while it exists, or a new branch the attach created before its upstream write.
+    /// The carrier branch while it exists, or a new branch the attach created, until its upstream write succeeds.
     var createdBranchName: String?
     var createdWorktree = false
     private var isArmed = true

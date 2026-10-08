@@ -535,8 +535,11 @@ realizes it.
   holding only the branch ref, which libgit2 renames into place last
   (`refdb_fs.c`, `loose_commit`), so a failed commit leaves the ref unmoved.
   Nothing that can fail follows a fast-forward, so the plain checkout has no
-  branch-move undo. Only a new branch's upstream write follows its creation;
-  if it fails, `WorktreeCreateRollback` deletes that branch. The returned
+  branch-move undo. Only a new branch's upstream write follows its creation
+  (after the `beforeUpstreamWrite` seam); if it fails, `WorktreeCreateRollback`
+  deletes that branch and the worktree. Writing it before the branch exists was
+  rejected: a failure would leave a `branch.<name>` section that a later branch
+  of that name silently inherits as tracking. The returned
   snapshot is the detached read with the `HEAD` the attach wrote, and the LFS
   fill after it never throws.
 

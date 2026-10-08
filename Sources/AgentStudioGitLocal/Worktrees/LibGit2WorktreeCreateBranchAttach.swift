@@ -87,8 +87,7 @@ struct LibGit2WorktreeCreateBranchAttach {
     }
 
     /// The checks repeat under the branch's ref lock, the destination's `HEAD` moves to the branch, and the branch
-    /// ref alone is committed. Only a new branch's upstream follows, and only a branch this call created can then
-    /// need removing.
+    /// ref alone is committed. A new branch is recorded on the rollback, because its upstream write still follows.
     func attach(
         _ target: LibGit2WorktreeCreateTarget,
         destination: OpaquePointer,
@@ -114,10 +113,17 @@ struct LibGit2WorktreeCreateBranchAttach {
                 }
             }
         )
-        if let upstream = target.upstream {
-            try LibGit2BranchUpstreamWriter(lockObserver: .untracked).write(
-                upstream, branchName: branchName, repository: destination)
+    }
+
+    /// The one step after the attach that can fail, and only for a new branch: if it does, rollback deletes the
+    /// branch this call just created. Writing it before the branch exists would leave a `branch.<name>` section that
+    /// a later branch of that name silently inherits as its tracking.
+    func writeUpstream(_ target: LibGit2WorktreeCreateTarget, destination: OpaquePointer) throws {
+        guard let upstream = target.upstream, let branchName = target.branchName else {
+            return
         }
+        try LibGit2BranchUpstreamWriter(lockObserver: .untracked).write(
+            upstream, branchName: branchName, repository: destination)
     }
 
     private func resolvedCommit(_ startPoint: GitRevisionTarget, repository: OpaquePointer) throws -> String {

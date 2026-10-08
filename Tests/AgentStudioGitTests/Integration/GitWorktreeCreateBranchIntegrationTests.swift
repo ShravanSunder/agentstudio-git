@@ -1,6 +1,7 @@
 import AgentStudioGit
 import Foundation
 import Testing
+import os
 
 @testable import AgentStudioGitLocal
 
@@ -120,8 +121,8 @@ struct GitWorktreeCreateBranchIntegrationTests {
         }
     }
 
-    @Test("a checkout that fails before the attach leaves an existing branch where it was")
-    func failedCheckoutLeavesBranchUnmoved() async throws {
+    @Test("a checkout failure moves nothing")
+    func checkoutFailureMovesNothing() async throws {
         // Arrange
         let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-create-occupied")
         defer { fixture.remove() }
@@ -145,6 +146,47 @@ struct GitWorktreeCreateBranchIntegrationTests {
         #expect(
             try String(contentsOf: occupied.appending(path: "owner.txt"), encoding: .utf8)
                 == "someone else's directory\n")
+    }
+
+    @Test("a failed upstream write removes the new branch and the worktree, and nothing else changes")
+    func failedUpstreamWriteRemovesNewBranchAndWorktree() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-create-upstream-failure")
+        defer { fixture.remove() }
+        let base = try revision("HEAD", in: fixture)
+        try fixture.git.run("branch", "parked")
+        _ = try commit("tip.txt", in: fixture)
+        let injected = GitDataPlaneError.unsupported(message: "injected upstream write failure")
+        let reached = OSAllocatedUnfairLock(initialState: false)
+        let client = LibGit2AgentStudioGitLocalClient(
+            worktreeWriter: LibGit2WorktreeWriter(
+                createFaults: WorktreeCreateFaultInjector { point in
+                    if point == .beforeUpstreamWrite {
+                        reached.withLock { $0 = true }
+                        throw injected
+                    }
+                }))
+        let referencesBefore = try fixture.git.run("for-each-ref")
+        let worktreesBefore = try fixture.git.run("worktree", "list", "--porcelain")
+        let configBefore = try fixture.git.run("config", "--local", "--list")
+
+        // Act
+        let failure = await failure {
+            _ = try await client.createWorktree(
+                request(
+                    fixture, "fresh",
+                    .newBranch(
+                        name: "fresh", startPoint: .named(base),
+                        upstream: GitBranchUpstream(remoteName: "origin", branchName: "fresh"))))
+        }
+
+        // Assert
+        #expect(reached.withLock { $0 })
+        #expect(failure == injected)
+        #expect(try fixture.git.run("for-each-ref") == referencesBefore)
+        #expect(try fixture.git.run("worktree", "list", "--porcelain") == worktreesBefore)
+        #expect(try fixture.git.run("config", "--local", "--list") == configBefore)
+        #expect(!FileManager.default.fileExists(atPath: fixture.linkedWorktreePath("fresh").path))
     }
 
     @Test("a new branch at a pinned commit writes its upstream; a detached checkout sits at its commit")
