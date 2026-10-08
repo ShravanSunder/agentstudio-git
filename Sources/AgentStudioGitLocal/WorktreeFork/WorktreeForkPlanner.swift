@@ -31,6 +31,7 @@ struct WorktreeForkPlanner: Sendable {
             throw .rejected(reason: .overlappingRoots)
         }
         let gitCapture = try captureGitState(sourceRoot: sourceRoot, destination: destination, mode: request.mode)
+        try requireSupportedStart(gitCapture, request: request)
         let eligibilityFacts: WorktreeForkEligibilityFacts?
         if request.materialization == .copyOnWrite {
             let facts = WorktreeForkEligibilityFacts(
@@ -141,6 +142,7 @@ struct WorktreeForkPlanner: Sendable {
                 homeDirectory: WorktreeForkSourcePathRelocation.canonicalized(
                     absolutePath: hostFacts.homeDirectory().path),
                 capturedHead: gitCapture.capturedHead,
+                start: gitCapture.start,
                 branchIdentity: gitCapture.branchIdentity,
                 materialization: request.materialization,
                 filesystem: plannedFilesystem,
@@ -321,13 +323,31 @@ struct WorktreeForkPlanner: Sendable {
         if case .success = WorktreeForkDescriptors.lstatPath(administrationPath) {
             throw .rejected(reason: .linkedWorktreeNameInUse)
         }
-        let branchIdentity = try validateBranchIdentity(mode, capturedHead: capturedHead, repository: repository)
+        let target = try WorktreeForkBranchTargetPlanner(sourceRoot: sourceRoot, capturedHead: capturedHead)
+            .plan(mode, repository: repository)
         return WorktreeForkGitCapture(
             commonDirectory: commonDirectory,
             sourceGitDirectory: sourceGitDirectory,
             capturedHead: capturedHead,
-            branchIdentity: branchIdentity
+            start: target.start,
+            branchIdentity: target.identity
         )
+    }
+
+    /// A changes-only copy carries changes made at the captured `HEAD`, and `.copyAll` would carry every
+    /// untracked file onto another commit, so both start only at the captured `HEAD`.
+    private func requireSupportedStart(
+        _ gitCapture: WorktreeForkGitCapture,
+        request: GitForkWorktreeRequest
+    ) throws(GitWorktreeForkError) {
+        guard gitCapture.start != gitCapture.capturedHead else {
+            return
+        }
+        if request.materialization == .changesOnly || request.copyRules.ignoredPaths == .copyAll {
+            throw .rejected(reason: .invalidStart)
+        }
+        // The reset copy is not built yet: every start must still be the captured HEAD.
+        throw .rejected(reason: .invalidStart)
     }
 
     private func captureHead(_ repository: OpaquePointer) throws(GitWorktreeForkError) -> WorktreeForkCapturedHead {
@@ -344,53 +364,6 @@ struct WorktreeForkPlanner: Sendable {
             throw .rejected(reason: .sourceHeadUnavailable)
         }
         return WorktreeForkCapturedHead(commitOID: oidString(&headOID), treeOID: oidString(treeOID))
-    }
-
-    private func validateBranchIdentity(
-        _ mode: GitForkWorktreeMode,
-        capturedHead: WorktreeForkCapturedHead,
-        repository: OpaquePointer
-    ) throws(GitWorktreeForkError) -> WorktreeForkBranchIdentity {
-        switch mode {
-        case .detached:
-            return .detached
-        case .newBranch(let name):
-            try requireValidBranchName(name)
-            var existing: OpaquePointer?
-            let lookupResult = name.withCString { git_branch_lookup(&existing, repository, $0, GIT_BRANCH_LOCAL) }
-            if let existing {
-                git_reference_free(existing)
-            }
-            guard lookupResult == GIT_ENOTFOUND.rawValue else {
-                throw lookupResult >= 0
-                    ? .rejected(reason: .branchAlreadyExists)
-                    : .gitFailure(LibGit2ErrorCapture.failure(code: lookupResult))
-            }
-            return .newBranch(referenceName: "refs/heads/\(name)")
-        case .existingBranch(let name):
-            try requireValidBranchName(name)
-            var reference: OpaquePointer?
-            let lookupResult = name.withCString { git_branch_lookup(&reference, repository, $0, GIT_BRANCH_LOCAL) }
-            guard lookupResult >= 0, let reference else {
-                throw lookupResult == GIT_ENOTFOUND.rawValue
-                    ? .rejected(reason: .branchNotFound) : .gitFailure(LibGit2ErrorCapture.failure(code: lookupResult))
-            }
-            defer { git_reference_free(reference) }
-            guard let target = git_reference_target(reference), oidString(target) == capturedHead.commitOID else {
-                throw .rejected(reason: .branchNotAtCapturedHead)
-            }
-            guard git_branch_is_checked_out(reference) == 0 else {
-                throw .rejected(reason: .branchCheckedOut)
-            }
-            return .existingBranch(referenceName: "refs/heads/\(name)")
-        }
-    }
-
-    private func requireValidBranchName(_ name: String) throws(GitWorktreeForkError) {
-        var isValid: Int32 = 0
-        guard name.withCString({ git_branch_name_is_valid(&isValid, $0) }) >= 0, isValid == 1 else {
-            throw .rejected(reason: .invalidBranchName)
-        }
     }
 
     /// Both roots are realpath-canonical. Foundation standardization is deliberately avoided: it strips a
@@ -420,5 +393,6 @@ struct WorktreeForkGitCapture: Sendable {
     let commonDirectory: URL
     let sourceGitDirectory: URL
     let capturedHead: WorktreeForkCapturedHead
+    let start: WorktreeForkCapturedHead
     let branchIdentity: WorktreeForkBranchIdentity
 }

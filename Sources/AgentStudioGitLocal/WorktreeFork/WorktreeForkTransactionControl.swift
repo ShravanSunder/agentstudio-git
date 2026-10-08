@@ -46,6 +46,10 @@ enum WorktreeForkFaultPoint: Hashable, Sendable {
     case afterIndexesBuilt
     case afterChangesOnlyContentRehash
     case afterValidation
+    /// The barrier seam before the branch attach: everything is copied and validated, nothing is attached.
+    case beforeBranchAttach
+    case afterBranchAttached
+    case afterAttachValidation
     case rollbackRemovingDestination
     case afterRollback
 }

@@ -263,7 +263,7 @@ struct GitWorktreeForkNestedIncludeIntegrationTests {
             GitForkWorktreeRequest(
                 sourceWorktreePath: linkedSource,
                 destinationPath: destination,
-                mode: .newBranch(name: "fork"),
+                mode: .newBranch(name: "fork", start: .sourceHead, upstream: nil),
                 materialization: .copyOnWrite,
                 copyRules: GitWorktreeCopyRules(ignoredPaths: .copyAll)
             ))

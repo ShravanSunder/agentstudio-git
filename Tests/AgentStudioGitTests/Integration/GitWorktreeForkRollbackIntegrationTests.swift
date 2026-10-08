@@ -110,8 +110,11 @@ struct GitWorktreeForkRollbackIntegrationTests {
             .afterDirectoryMetadataApplied,
             .afterIndexesBuilt,
             .afterValidation,
+            .beforeBranchAttach,
+            .afterBranchAttached,
+            .afterAttachValidation,
         ],
-        [GitForkWorktreeMode.newBranch(name: "fork"), .detached]
+        [GitForkWorktreeMode.newBranch(name: "fork", start: .sourceHead, upstream: nil), .detached(start: .sourceHead)]
     )
     func failureAfterEachPhaseRollsBack(point: WorktreeForkFaultPoint, mode: GitForkWorktreeMode) async throws {
         // Arrange

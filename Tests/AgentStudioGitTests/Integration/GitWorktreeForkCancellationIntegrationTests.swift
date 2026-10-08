@@ -93,7 +93,7 @@ struct GitWorktreeForkCancellationIntegrationTests {
                 _ = try await client.forkWorktree(
                     fixture.request(
                         destination: destination,
-                        mode: .newBranch(name: name),
+                        mode: .newBranch(name: name, start: .sourceHead, upstream: nil),
                         materialization: .changesOnly
                     )
                 )
@@ -133,7 +133,7 @@ struct GitWorktreeForkCancellationIntegrationTests {
         )
         let request = fixture.request(
             destination: destination,
-            mode: .newBranch(name: branchName),
+            mode: .newBranch(name: branchName, start: .sourceHead, upstream: nil),
             materialization: materialization
         )
 

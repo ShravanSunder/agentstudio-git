@@ -15,6 +15,8 @@ struct WorktreeForkPlan: Sendable {
     /// Canonical directory that `~/` names in configuration paths, captured once from the host facts.
     let homeDirectory: URL
     let capturedHead: WorktreeForkCapturedHead
+    /// The commit the branch target ends at (E16). Equal to `capturedHead` for an as-is copy.
+    let start: WorktreeForkCapturedHead
     let branchIdentity: WorktreeForkBranchIdentity
     let materialization: GitWorktreeForkMaterialization
     let filesystem: WorktreeForkFilesystemPlan
@@ -23,6 +25,11 @@ struct WorktreeForkPlan: Sendable {
     let nestedWorktreesSkipped: [String]
     let changesOnly: WorktreeForkChangesOnlyPlan?
     let gitTopology: WorktreeForkGitTopology
+
+    /// A start other than the captured `HEAD` resets the copied files to it.
+    var resetsToStart: Bool {
+        start.commitOID != capturedHead.commitOID
+    }
 }
 
 struct WorktreeForkChangesOnlyPlan: Sendable {
@@ -71,15 +78,15 @@ struct WorktreeForkCapturedHead: Equatable, Sendable {
     let treeOID: String
 }
 
-/// The validated destination identity; every variant resolves to the captured `HEAD`.
+/// The validated branch target the copy attaches to once it is complete.
 enum WorktreeForkBranchIdentity: Equatable, Sendable {
-    case existingBranch(referenceName: String)
-    case newBranch(referenceName: String)
+    case existingBranch(referenceName: String, expectedTip: String, fastForwardTo: String?)
+    case newBranch(referenceName: String, upstream: GitBranchUpstream?)
     case detached
 
     var referenceName: String? {
         switch self {
-        case .existingBranch(let referenceName), .newBranch(let referenceName):
+        case .existingBranch(let referenceName, _, _), .newBranch(let referenceName, _):
             referenceName
         case .detached:
             nil

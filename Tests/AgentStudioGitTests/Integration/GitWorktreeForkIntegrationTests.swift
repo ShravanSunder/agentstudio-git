@@ -61,7 +61,7 @@ struct GitWorktreeForkIntegrationTests {
         #expect(materializationReport.skippedEntries.isEmpty)
     }
 
-    @Test("new, existing, and detached modes all resolve to the captured HEAD")
+    @Test("new, existing, and detached modes at the captured HEAD attach after the copy and report the branch")
     func branchModesResolveToCapturedHead() async throws {
         // Arrange
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-modes")
@@ -72,12 +72,16 @@ struct GitWorktreeForkIntegrationTests {
         let client = LibGit2AgentStudioGitLocalClient()
 
         // Act
-        _ = try await client.forkWorktree(
-            fixture.request(destination: fixture.destination("new"), mode: .newBranch(name: "fork-new")))
-        _ = try await client.forkWorktree(
-            fixture.request(destination: fixture.destination("existing"), mode: .existingBranch(name: "parked")))
-        _ = try await client.forkWorktree(
-            fixture.request(destination: fixture.destination("detached"), mode: .detached))
+        let newBranch = try await client.forkWorktree(
+            fixture.request(
+                destination: fixture.destination("new"),
+                mode: .newBranch(name: "fork-new", start: .sourceHead, upstream: nil)))
+        let existingBranch = try await client.forkWorktree(
+            fixture.request(
+                destination: fixture.destination("existing"),
+                mode: .existingBranch(name: "parked", expectedTip: capturedHead, fastForwardTo: nil)))
+        let detached = try await client.forkWorktree(
+            fixture.request(destination: fixture.destination("detached"), mode: .detached(start: .commit(capturedHead))))
 
         // Assert
         #expect(try fixture.blobID("HEAD", at: fixture.destination("new")) == capturedHead)
@@ -92,6 +96,10 @@ struct GitWorktreeForkIntegrationTests {
             !(try fixture.git.succeeds("symbolic-ref", "-q", "HEAD", currentDirectory: fixture.destination("detached")))
         )
         #expect(try fixture.branchNames() == (branchesBefore + ["refs/heads/fork-new"]).sorted())
+        #expect(newBranch.worktree.head == GitHeadSnapshot(kind: .branch, oid: capturedHead, shortName: "fork-new"))
+        #expect(existingBranch.worktree.head == GitHeadSnapshot(kind: .branch, oid: capturedHead, shortName: "parked"))
+        #expect(detached.worktree.head == GitHeadSnapshot(kind: .detached, oid: capturedHead, shortName: nil))
+        #expect(!(try fixture.git.succeeds("config", "--get-regexp", "^branch\\.")))
     }
 
     @Test("preflight rejections happen before any branch, administration, or destination exists")
@@ -103,31 +111,74 @@ struct GitWorktreeForkIntegrationTests {
         try fixture.git.run("add", "second.txt")
         try fixture.git.run("commit", "-m", "second")
         try fixture.git.run("branch", "behind", "HEAD~1")
+        try fixture.git.run("branch", "parked")
         try fixture.git.run("branch", "taken")
-        _ = try fixture.repository.addLinkedWorktree(named: "taken-worktree", branch: nil)
-        try fixture.git.run(
-            ["checkout", "-q", "taken"], currentDirectory: fixture.repository.linkedWorktreePath("taken-worktree"))
+        let head = try fixture.blobID("HEAD", at: fixture.source)
+        let behind = try fixture.blobID("behind", at: fixture.source)
+        let unknown = String(repeating: "a", count: 40)
+        let takenWorktree = try fixture.repository.addLinkedWorktree(named: "taken-worktree", branch: nil)
+        try fixture.git.run(["checkout", "-q", "taken"], currentDirectory: takenWorktree)
         let existing = fixture.destination("exists")
         try FileManager.default.createDirectory(at: existing, withIntermediateDirectories: true)
         let branchesBefore = try fixture.branchNames()
-        let cases: [(GitForkWorktreeRequest, GitWorktreeForkRejectionReason)] = [
-            (fixture.request(destination: existing), .destinationExists),
-            (fixture.request(destination: fixture.destination("missing/child")), .destinationParentMissing),
-            (fixture.request(destination: fixture.source.appending(path: "inside")), .overlappingRoots),
-            (fixture.request(mode: .newBranch(name: "behind")), .branchAlreadyExists),
-            (fixture.request(mode: .newBranch(name: "bad..name")), .invalidBranchName),
-            (fixture.request(mode: .existingBranch(name: "absent")), .branchNotFound),
-            (fixture.request(mode: .existingBranch(name: "behind")), .branchNotAtCapturedHead),
-            (fixture.request(mode: .existingBranch(name: "taken")), .branchCheckedOut),
+        func newBranch(
+            _ name: String,
+            start: GitForkStart = .sourceHead,
+            upstream: GitBranchUpstream? = nil
+        ) -> GitForkWorktreeMode {
+            .newBranch(name: name, start: start, upstream: upstream)
+        }
+        let cases: [(GitForkWorktreeRequest, GitWorktreeForkError)] = [
+            (fixture.request(destination: existing), .rejected(reason: .destinationExists)),
+            (
+                fixture.request(destination: fixture.destination("missing/child")),
+                .rejected(reason: .destinationParentMissing)
+            ),
+            (
+                fixture.request(destination: fixture.source.appending(path: "inside")),
+                .rejected(reason: .overlappingRoots)
+            ),
+            (fixture.request(mode: newBranch("behind")), .rejected(reason: .branchAlreadyExists)),
+            (fixture.request(mode: newBranch("bad..name")), .rejected(reason: .invalidBranchName)),
+            (
+                fixture.request(mode: newBranch("fresh", upstream: GitBranchUpstream(remoteName: "bad remote", branchName: "x"))),
+                .rejected(reason: .invalidUpstream)
+            ),
+            (
+                fixture.request(mode: newBranch("fresh", start: .commit(unknown))),
+                .gitFailure(.requiredObjectNotFound(oid: unknown))
+            ),
+            (
+                fixture.request(mode: newBranch("fresh", start: .commit(behind)), materialization: .changesOnly),
+                .rejected(reason: .invalidStart)
+            ),
+            (fixture.request(mode: newBranch("fresh", start: .commit(behind))), .rejected(reason: .invalidStart)),
+            (
+                fixture.request(mode: .existingBranch(name: "absent", expectedTip: head, fastForwardTo: nil)),
+                .rejected(reason: .branchNotFound)
+            ),
+            (
+                fixture.request(mode: .existingBranch(name: "behind", expectedTip: head, fastForwardTo: nil)),
+                .rejected(reason: .branchMoved)
+            ),
+            (
+                fixture.request(mode: .existingBranch(name: "parked", expectedTip: head, fastForwardTo: behind)),
+                .rejected(reason: .fastForwardNotDescendant)
+            ),
+            (
+                fixture.request(mode: .existingBranch(name: "taken", expectedTip: head, fastForwardTo: nil)),
+                .branchCheckedOut(worktreePath: takenWorktree)
+            ),
+            (fixture.request(mode: newBranch("main")), .rejected(reason: .branchAlreadyExists)),
         ]
         let client = LibGit2AgentStudioGitLocalClient()
 
-        for (request, expectedReason) in cases {
+        for (request, expectedFailure) in cases {
             // Act
             let failure = await forkFailure(client, request)
 
             // Assert
-            #expect(failure == .rejected(reason: expectedReason), "\(request.destinationPath.path) \(request.mode)")
+            #expect(failure == expectedFailure, "\(request.destinationPath.path) \(request.mode)")
             #expect(!GitWorktreeForkFileProbe.exists(fixture.destination()))
             #expect(!GitWorktreeForkFileProbe.exists(fixture.linkedWorktreeAdministration()))
             #expect(try fixture.branchNames() == branchesBefore)
@@ -144,7 +195,7 @@ struct GitWorktreeForkIntegrationTests {
         let request = GitForkWorktreeRequest(
             sourceWorktreePath: subdirectory,
             destinationPath: fixture.destination(),
-            mode: .detached,
+            mode: .detached(start: .sourceHead),
             materialization: .copyOnWrite,
             copyRules: GitWorktreeCopyRules(ignoredPaths: .copyAll)
         )

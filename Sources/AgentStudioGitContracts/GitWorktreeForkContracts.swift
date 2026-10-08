@@ -1,18 +1,5 @@
 import Foundation
 
-/// Selects the destination Git identity of a Worktree Fork. Every mode resolves to the source
-/// worktree's captured `HEAD`; there is deliberately no start point, because a different base
-/// would turn the copied filesystem into an ambiguous overlay.
-public enum GitForkWorktreeMode: Equatable, Hashable, Sendable {
-    /// Check out an existing local branch that already points at the captured `HEAD` and is not
-    /// checked out in another worktree.
-    case existingBranch(name: String)
-    /// Create a new local branch at the captured `HEAD`.
-    case newBranch(name: String)
-    /// Detach the destination at the captured `HEAD` without creating any branch.
-    case detached
-}
-
 /// Selects how the destination worktree receives its filesystem contents.
 public enum GitWorktreeForkMaterialization: String, Codable, CaseIterable, Hashable, Sendable {
     /// Strict APFS clone of the source worktree's filesystem.
@@ -81,52 +68,6 @@ public struct GitWorktreeCopyRules: Codable, Equatable, Hashable, Sendable {
 
     public init(ignoredPaths: GitIgnoredPathPolicy) {
         self.ignoredPaths = ignoredPaths
-    }
-}
-
-extension GitForkWorktreeMode: Codable {
-    private enum CodingKeys: String, CodingKey {
-        case kind
-        case name
-    }
-
-    private enum Kind: String, Codable {
-        case existingBranch
-        case newBranch
-        case detached
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        switch try container.decode(Kind.self, forKey: .kind) {
-        case .existingBranch:
-            self = .existingBranch(name: try container.decode(String.self, forKey: .name))
-        case .newBranch:
-            self = .newBranch(name: try container.decode(String.self, forKey: .name))
-        case .detached:
-            guard !container.contains(.name) else {
-                throw DecodingError.dataCorrupted(
-                    DecodingError.Context(
-                        codingPath: decoder.codingPath,
-                        debugDescription: "detached fork modes must not carry a branch name"
-                    ))
-            }
-            self = .detached
-        }
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        switch self {
-        case .existingBranch(let name):
-            try container.encode(Kind.existingBranch, forKey: .kind)
-            try container.encode(name, forKey: .name)
-        case .newBranch(let name):
-            try container.encode(Kind.newBranch, forKey: .kind)
-            try container.encode(name, forKey: .name)
-        case .detached:
-            try container.encode(Kind.detached, forKey: .kind)
-        }
     }
 }
 

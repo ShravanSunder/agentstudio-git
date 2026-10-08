@@ -4,13 +4,20 @@ import Testing
 
 @Suite("Git worktree fork contracts")
 struct GitWorktreeForkContractTests {
-    @Test("fork modes use explicit kind discriminators without start points")
+    @Test("fork modes carry an explicit kind, a start or pinned tips, and an optional upstream")
     func forkModesUseExplicitKindDiscriminators() throws {
         // Arrange
+        let tip = "0123456789abcdef0123456789abcdef01234567"
+        let next = "89abcdef0123456789abcdef0123456789abcdef"
         let modes: [GitForkWorktreeMode] = [
-            .existingBranch(name: "feature"),
-            .newBranch(name: "fork-feature"),
-            .detached,
+            .existingBranch(name: "feature", expectedTip: tip, fastForwardTo: nil),
+            .existingBranch(name: "feature", expectedTip: tip, fastForwardTo: next),
+            .newBranch(name: "fork-feature", start: .sourceHead, upstream: nil),
+            .newBranch(
+                name: "feat", start: .commit(next),
+                upstream: GitBranchUpstream(remoteName: "origin", branchName: "feat")),
+            .detached(start: .sourceHead),
+            .detached(start: .commit(tip)),
         ]
 
         // Act
@@ -21,10 +28,41 @@ struct GitWorktreeForkContractTests {
         #expect(decodedModes == modes)
         #expect(
             encodedModes.map { jsonText($0) } == [
-                #"{"kind":"existingBranch","name":"feature"}"#,
-                #"{"kind":"newBranch","name":"fork-feature"}"#,
-                #"{"kind":"detached"}"#,
+                #"{"expectedTip":"\#(tip)","kind":"existingBranch","name":"feature"}"#,
+                #"{"expectedTip":"\#(tip)","fastForwardTo":"\#(next)","kind":"existingBranch","name":"feature"}"#,
+                #"{"kind":"newBranch","name":"fork-feature","start":{"kind":"sourceHead"}}"#,
+                #"{"kind":"newBranch","name":"feat","start":{"commit":"\#(next)","kind":"commit"},"#
+                    + #""upstream":{"branchName":"feat","remoteName":"origin"}}"#,
+                #"{"kind":"detached","start":{"kind":"sourceHead"}}"#,
+                #"{"kind":"detached","start":{"commit":"\#(tip)","kind":"commit"}}"#,
             ])
+    }
+
+    @Test("fork mode decoding rejects missing starts, abbreviated tips, and stray fields")
+    func forkModeDecodingRejectsInvalidShapes() {
+        // Arrange
+        let tip = "0123456789abcdef0123456789abcdef01234567"
+        let payloads = [
+            #"{"kind":"newBranch","name":"feat"}"#,
+            #"{"kind":"newBranch","name":"feat","start":{"kind":"commit","commit":"main"}}"#,
+            #"{"kind":"newBranch","name":"feat","start":{"kind":"sourceHead","commit":"\#(tip)"}}"#,
+            #"{"kind":"newBranch","name":"feat","start":{"kind":"sourceHead"},"expectedTip":"\#(tip)"}"#,
+            #"{"kind":"newBranch","name":"feat","start":{"kind":"sourceHead"},"#
+                + #""upstream":{"remoteName":"","branchName":"x"}}"#,
+            #"{"kind":"existingBranch","name":"feat"}"#,
+            #"{"kind":"existingBranch","name":"feat","expectedTip":"0123456"}"#,
+            #"{"kind":"existingBranch","name":"feat","expectedTip":"\#(tip)","fastForwardTo":"HEAD"}"#,
+            #"{"kind":"existingBranch","name":"feat","expectedTip":"\#(tip)","start":{"kind":"sourceHead"}}"#,
+            #"{"kind":"detached"}"#,
+            #"{"kind":"detached","name":"stray","start":{"kind":"sourceHead"}}"#,
+        ]
+
+        // Act / Assert
+        for payload in payloads {
+            #expect(throws: DecodingError.self, "\(payload)") {
+                _ = try JSONDecoder().decode(GitForkWorktreeMode.self, from: Data(payload.utf8))
+            }
+        }
     }
 
     @Test("fork requests round-trip with stable field names")
@@ -33,7 +71,7 @@ struct GitWorktreeForkContractTests {
         let request = GitForkWorktreeRequest(
             sourceWorktreePath: URL(fileURLWithPath: "/tmp/source"),
             destinationPath: URL(fileURLWithPath: "/tmp/destination"),
-            mode: .newBranch(name: "fork"),
+            mode: .newBranch(name: "fork", start: .sourceHead, upstream: nil),
             materialization: .copyOnWrite,
             copyRules: GitWorktreeCopyRules(ignoredPaths: .copyAll)
         )
@@ -46,7 +84,7 @@ struct GitWorktreeForkContractTests {
         #expect(decoded == request)
         #expect(
             jsonText(encoded)
-                == #"{"copyRules":{"ignoredPaths":{"kind":"copyAll"}},"destinationPath":"file:///tmp/destination","materialization":"copyOnWrite","mode":{"kind":"newBranch","name":"fork"},"#
+                == #"{"copyRules":{"ignoredPaths":{"kind":"copyAll"}},"destinationPath":"file:///tmp/destination","materialization":"copyOnWrite","mode":{"kind":"newBranch","name":"fork","start":{"kind":"sourceHead"}},"#
                 + #""sourceWorktreePath":"file:///tmp/source"}"#
         )
     }
@@ -152,6 +190,7 @@ struct GitWorktreeForkContractTests {
         let errors: [GitWorktreeForkError] = [
             .rejected(reason: .clientCapabilityUnavailable),
             .rejected(reason: .destinationExists),
+            .branchCheckedOut(worktreePath: URL(fileURLWithPath: "/tmp/repository.feat")),
             .workingStateUnsupported(
                 GitWorktreeWorkingStateRefusal(reason: .nestedRepository, relativePath: "vendor/module")),
             .workingStateUnsupported(
@@ -169,6 +208,7 @@ struct GitWorktreeForkContractTests {
                     GitWorktreeForkResidue(kind: .linkedWorktreeAdministration, location: "worktrees/fork"),
                     GitWorktreeForkResidue(kind: .createdBranch, location: "refs/heads/fork"),
                     GitWorktreeForkResidue(kind: .lockFile, location: "worktrees/fork/index.lock"),
+                    GitWorktreeForkResidue(kind: .branchMoveNotUndone, location: "refs/heads/feat"),
                 ]
             ),
         ]
@@ -182,12 +222,14 @@ struct GitWorktreeForkContractTests {
         #expect(
             jsonText(encoded[0]) == #"{"rejected":{"reason":"clientCapabilityUnavailable"}}"#)
         #expect(
-            jsonText(encoded[3])
+            jsonText(encoded[2]) == #"{"branchCheckedOut":{"worktreePath":"file:///tmp/repository.feat"}}"#)
+        #expect(
+            jsonText(encoded[4])
                 == #"{"workingStateUnsupported":{"refusal":{"reason":"attributesChanged","relativePath":".gitattributes"}}}"#
         )
-        #expect(jsonText(encoded[7]) == #"{"cancelled":{}}"#)
+        #expect(jsonText(encoded[8]) == #"{"cancelled":{}}"#)
         #expect(
-            jsonText(encoded[4]) == #"{"gitFailure":{"error":{"headUnavailable":{}}}}"#
+            jsonText(encoded[5]) == #"{"gitFailure":{"error":{"headUnavailable":{}}}}"#
         )
     }
 
@@ -210,9 +252,6 @@ struct GitWorktreeForkContractTests {
         }
         #expect(throws: DecodingError.self) {
             _ = try JSONDecoder().decode(GitForkWorktreeMode.self, from: Data(payloads[4].utf8))
-        }
-        #expect(throws: DecodingError.self) {
-            _ = try JSONDecoder().decode(GitForkWorktreeMode.self, from: Data(#"{"kind":"newBranch"}"#.utf8))
         }
     }
 
@@ -309,7 +348,7 @@ struct GitWorktreeForkContractTests {
         let request = GitForkWorktreeRequest(
             sourceWorktreePath: URL(fileURLWithPath: "/tmp/source"),
             destinationPath: URL(fileURLWithPath: "/tmp/destination"),
-            mode: .detached,
+            mode: .detached(start: .sourceHead),
             materialization: .copyOnWrite,
             copyRules: GitWorktreeCopyRules(ignoredPaths: .copyAll)
         )

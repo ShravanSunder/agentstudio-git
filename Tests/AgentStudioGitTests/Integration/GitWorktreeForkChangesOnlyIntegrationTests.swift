@@ -46,7 +46,7 @@ struct GitWorktreeForkChangesOnlyIntegrationTests {
         let request = GitForkWorktreeRequest(
             sourceWorktreePath: fixture.source,
             destinationPath: destination,
-            mode: .newBranch(name: "fork-changes-only"),
+            mode: .newBranch(name: "fork-changes-only", start: .sourceHead, upstream: nil),
             materialization: .changesOnly,
             copyRules: GitWorktreeCopyRules(ignoredPaths: .copyAll)
         )
@@ -241,7 +241,7 @@ struct GitWorktreeForkChangesOnlyIntegrationTests {
             do {
                 _ = try await phaseClient.forkWorktree(
                     fixture.request(
-                        destination: destination, mode: .newBranch(name: name), materialization: .changesOnly))
+                        destination: destination, mode: .newBranch(name: name, start: .sourceHead, upstream: nil), materialization: .changesOnly))
                 failure = nil
             } catch {
                 failure = error
@@ -332,7 +332,7 @@ struct GitWorktreeForkChangesOnlyIntegrationTests {
             do {
                 _ = try await client.forkWorktree(
                     fixture.request(
-                        destination: destination, mode: .newBranch(name: name), materialization: .changesOnly))
+                        destination: destination, mode: .newBranch(name: name, start: .sourceHead, upstream: nil), materialization: .changesOnly))
                 failure = nil
             } catch {
                 failure = error

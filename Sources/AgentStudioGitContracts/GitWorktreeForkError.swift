@@ -4,8 +4,13 @@ import Foundation
 /// downstream exhaustive switches over the existing error keep compiling; Git failures ride inside
 /// `gitFailure`. Paths are worktree-relative unless the failing value is the public input path itself.
 public indirect enum GitWorktreeForkError: Error, Equatable, Sendable {
-    /// Rejected before any mutation: host, volume, request, or branch-mode preconditions.
+    /// Rejected before any mutation, or at the branch attach with every mutation rolled back: host, volume,
+    /// request, or branch-target preconditions.
     case rejected(reason: GitWorktreeForkRejectionReason)
+    /// The branch target is held by the worktree at `worktreePath` (an absolute path): its `HEAD` names the
+    /// branch, or it is rebasing or bisecting it. Refused before mutation, or at the attach with everything
+    /// the fork made rolled back.
+    case branchCheckedOut(worktreePath: URL)
     /// The source has a Git state that changes-only materialization cannot verify safely.
     case workingStateUnsupported(GitWorktreeWorkingStateRefusal)
     case gitFailure(GitDataPlaneError)
@@ -40,8 +45,15 @@ public enum GitWorktreeForkRejectionReason: String, Codable, CaseIterable, Senda
     case invalidBranchName
     case branchNotFound
     case branchAlreadyExists
-    case branchNotAtCapturedHead
-    case branchCheckedOut
+    /// An existing branch's tip is not the request's `expectedTip`, read before mutation or under the ref lock.
+    case branchMoved
+    /// The start is not a commit this materialization or copy policy can start at (changes-only and `.copyAll`
+    /// copies start only at the captured `HEAD`).
+    case invalidStart
+    /// `fastForwardTo` does not descend from `expectedTip`.
+    case fastForwardNotDescendant
+    /// The upstream's remote or branch name is not a valid name.
+    case invalidUpstream
     /// The source root or destination parent is managed by a File Provider (iCloud Drive, CloudStorage).
     case fileProviderManagedLocation
     /// The source contains a dataless (not-downloaded) regular file or directory.
@@ -167,11 +179,14 @@ public enum GitWorktreeForkResidueKind: String, Codable, CaseIterable, Sendable 
     case createdBranch
     case temporaryArtifact
     case lockFile
+    /// A fast-forward the fork made whose undo failed; `location` is the full ref name, left at the new tip.
+    case branchMoveNotUndone
 }
 
 extension GitWorktreeForkError: Codable {
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case rejected
+        case branchCheckedOut
         case workingStateUnsupported
         case gitFailure
         case sourceChanged
@@ -189,6 +204,7 @@ extension GitWorktreeForkError: Codable {
         case errorNumber
         case primary
         case residue
+        case worktreePath
     }
 
     public init(from decoder: Decoder) throws {
@@ -205,6 +221,8 @@ extension GitWorktreeForkError: Codable {
         switch decodedCase {
         case .rejected:
             self = .rejected(reason: try payload.decode(GitWorktreeForkRejectionReason.self, forKey: .reason))
+        case .branchCheckedOut:
+            self = .branchCheckedOut(worktreePath: try payload.decode(URL.self, forKey: .worktreePath))
         case .workingStateUnsupported:
             self = .workingStateUnsupported(
                 try payload.decode(GitWorktreeWorkingStateRefusal.self, forKey: .refusal))
@@ -242,6 +260,9 @@ extension GitWorktreeForkError: Codable {
         case .rejected(let reason):
             var payload = container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .rejected)
             try payload.encode(reason, forKey: .reason)
+        case .branchCheckedOut(let worktreePath):
+            var payload = container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .branchCheckedOut)
+            try payload.encode(worktreePath, forKey: .worktreePath)
         case .workingStateUnsupported(let refusal):
             var payload = container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .workingStateUnsupported)
             try payload.encode(refusal, forKey: .refusal)

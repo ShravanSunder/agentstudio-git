@@ -91,7 +91,7 @@ struct GitWorktreeForkEmbeddedRepositoryIntegrationTests {
             GitForkWorktreeRequest(
                 sourceWorktreePath: sourceRoot,
                 destinationPath: fixture.destination(),
-                mode: .newBranch(name: "fork"),
+                mode: .newBranch(name: "fork", start: .sourceHead, upstream: nil),
                 materialization: .copyOnWrite,
                 copyRules: try includingBuildFolder()
             ))

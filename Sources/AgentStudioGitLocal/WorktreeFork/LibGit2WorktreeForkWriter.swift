@@ -4,9 +4,10 @@ import Darwin
 import Foundation
 
 /// Owns the complete Worktree Fork transaction on the repository lane's serial queue:
-/// planning → identity → linked worktree → materialization → Git-state re-homing → indexes → validation,
-/// with every failure or cancellation after the first mutation compensated through the rollback journal
-/// before the lane is released. Only this writer turns validator evidence into a successful result.
+/// planning → detached linked worktree → materialization → Git-state re-homing → indexes → validation → branch
+/// attach → attach validation, with every failure or cancellation after the first mutation compensated through
+/// the rollback journal before the lane is released. Only this writer turns validator evidence into a successful
+/// result.
 struct LibGit2WorktreeForkWriter: Sendable {
     private let runtime: LibGit2Runtime
     private let reader: LibGit2WorktreeReader
@@ -143,6 +144,50 @@ struct LibGit2WorktreeForkWriter: Sendable {
         try faults.reach(.afterDirectoryMetadataApplied)
         try cancellation.throwIfCancelled()
 
+        let indexes = try buildCopyIndexes(
+            plan, observations: observations, rehomeOutcome: rehomeOutcome, journal: journal,
+            cancellation: cancellation)
+        let indexEvidence = indexes.root
+        // Nested index writes are the last administration writes; restrictive source metadata lands after them.
+        observations.normalizedEntries += try rehomeOutcome.finalizeAdministrationDirectories()
+        try faults.reach(.afterIndexesBuilt)
+        try cancellation.throwIfCancelled()
+
+        // The copy is proven while still detached at the captured HEAD; the attach is proven separately below.
+        _ = try WorktreeForkValidator(reader: reader, cancellation: cancellation, faults: faults).validate(
+            plan: plan,
+            observations: observations,
+            destinationRootDescriptor: destinationRootDescriptor,
+            indexEvidence: indexEvidence,
+            lockTracker: journal.lockTracker
+        )
+        try WorktreeForkTopologyValidator(plan: plan).validate(rehomeOutcome.nodes, evidenceByNode: indexes.nodes)
+        try faults.reach(.afterValidation)
+        try cancellation.throwIfCancelled()
+        let attachedSnapshot = try attachAndValidate(
+            plan,
+            indexEvidence: indexEvidence,
+            expectedSkipWorktree: plan.gitTopology.rootSparse?.skipWorktreePaths ?? [],
+            journal: &journal,
+            cancellation: cancellation
+        )
+        return GitForkWorktreeResult(
+            worktree: attachedSnapshot,
+            materialization: .copyOnWrite(report(plan, observations))
+        )
+    }
+
+    /// Rebuilds the root and every re-homed submodule index from its captured `HEAD`, adopting the clone's stats
+    /// where the source index proves an entry clean.
+    private func buildCopyIndexes(
+        _ plan: WorktreeForkPlan,
+        observations: WorktreeForkMaterializationObservations,
+        rehomeOutcome: WorktreeForkRehomeOutcome,
+        journal: WorktreeForkRollbackJournal,
+        cancellation: WorktreeForkCancellation
+    ) throws(GitWorktreeForkError) -> (
+        root: WorktreeForkIndexRefreshEvidence, nodes: [String: WorktreeForkIndexRefreshEvidence]
+    ) {
         let indexBuilder = WorktreeForkIndexBuilder(faults: faults)
         let plannedStats = Self.plannedRegularFileStats(plan.filesystem)
         // A clone whose bytes re-homing replaced no longer vouches for captured `HEAD`; it must be hashed.
@@ -179,25 +224,29 @@ struct LibGit2WorktreeForkWriter: Sendable {
             nodeIndexEvidence[rehomed.node.relativePath] = evidence
             indexObserver.observe(rehomed.node.relativePath, evidence)
         }
-        // Nested index writes are the last administration writes; restrictive source metadata lands after them.
-        observations.normalizedEntries += try rehomeOutcome.finalizeAdministrationDirectories()
-        try faults.reach(.afterIndexesBuilt)
-        try cancellation.throwIfCancelled()
+        return (indexEvidence, nodeIndexEvidence)
+    }
 
-        let snapshot = try WorktreeForkValidator(reader: reader, cancellation: cancellation, faults: faults).validate(
-            plan: plan,
-            observations: observations,
-            destinationRootDescriptor: destinationRootDescriptor,
-            indexEvidence: indexEvidence,
-            lockTracker: journal.lockTracker
-        )
-        try WorktreeForkTopologyValidator(plan: plan).validate(rehomeOutcome.nodes, evidenceByNode: nodeIndexEvidence)
-        try faults.reach(.afterValidation)
+    /// Steps 3 and 4 for every fork: attach the branch target under its ref lock, then prove the result.
+    private func attachAndValidate(
+        _ plan: WorktreeForkPlan,
+        indexEvidence: WorktreeForkIndexRefreshEvidence,
+        expectedSkipWorktree: Set<String>,
+        journal: inout WorktreeForkRollbackJournal,
+        cancellation: WorktreeForkCancellation
+    ) throws(GitWorktreeForkError) -> GitWorktreeSnapshot {
+        try WorktreeForkBranchAttach(faults: faults).attach(plan, journal: &journal)
         try cancellation.throwIfCancelled()
-        return GitForkWorktreeResult(
-            worktree: snapshot,
-            materialization: .copyOnWrite(report(plan, observations))
-        )
+        let snapshot = try WorktreeForkValidator(reader: reader, cancellation: cancellation, faults: faults)
+            .validateAttached(
+                plan: plan,
+                indexEvidence: indexEvidence,
+                expectedSkipWorktree: expectedSkipWorktree,
+                lockTracker: journal.lockTracker
+            )
+        try faults.reach(.afterAttachValidation)
+        try cancellation.throwIfCancelled()
+        return snapshot
     }
 
     private func executeChangesOnly(
@@ -252,7 +301,7 @@ struct LibGit2WorktreeForkWriter: Sendable {
         try faults.reach(.afterIndexesBuilt)
         try cancellation.throwIfCancelled()
 
-        let snapshot = try WorktreeForkValidator(reader: reader, cancellation: cancellation, faults: faults)
+        _ = try WorktreeForkValidator(reader: reader, cancellation: cancellation, faults: faults)
             .validateChangesOnly(
                 plan: plan,
                 changesOnly: changesOnly,
@@ -264,8 +313,15 @@ struct LibGit2WorktreeForkWriter: Sendable {
         try WorktreeForkTopologyValidator(plan: plan).validate(rehomedNodes, evidenceByNode: [:])
         try faults.reach(.afterValidation)
         try cancellation.throwIfCancelled()
+        let attachedSnapshot = try attachAndValidate(
+            plan,
+            indexEvidence: indexEvidence,
+            expectedSkipWorktree: [],
+            journal: &journal,
+            cancellation: cancellation
+        )
         return GitForkWorktreeResult(
-            worktree: snapshot,
+            worktree: attachedSnapshot,
             materialization: .changesOnly(
                 GitChangesOnlyMaterializationReport(
                     trackedChanges: changesOnly.trackedChangeCount,
@@ -276,9 +332,9 @@ struct LibGit2WorktreeForkWriter: Sendable {
         )
     }
 
-    /// Creates the destination branch identity and registers the linked worktree with an empty checkout.
-    /// A detached fork is registered through a transaction-owned carrier branch that is deleted once
-    /// `HEAD` is detached, because `git_worktree_add` otherwise names a new branch after the worktree.
+    /// Registers the linked worktree detached at the captured `HEAD` with an empty checkout, for every branch
+    /// target: the branch itself is attached only after the copy is validated. `git_worktree_add` needs a branch,
+    /// so a transaction-owned carrier branch registers the worktree and is deleted once `HEAD` is detached.
     private func createLinkedWorktree(
         _ plan: WorktreeForkPlan,
         journal: inout WorktreeForkRollbackJournal
@@ -286,39 +342,21 @@ struct LibGit2WorktreeForkWriter: Sendable {
         let repository = try WorktreeForkGitHandles.openWorktree(plan.sourceRoot)
         defer { git_repository_free(repository) }
 
-        let addReferenceName: String
-        var carrierReferenceName: String?
-        switch plan.branchIdentity {
-        case .existingBranch(let referenceName):
-            addReferenceName = referenceName
-        case .newBranch(let referenceName):
-            try WorktreeForkGitHandles.createBranch(
-                referenceName: referenceName,
-                commitOID: plan.capturedHead.commitOID,
-                repository: repository,
-                faults: faults,
-                lockTracker: journal.lockTracker,
-                onCreated: {
-                    journal.record(.createdBranch(referenceName: referenceName, targetOID: plan.capturedHead.commitOID))
-                }
-            )
-            addReferenceName = referenceName
-        case .detached:
-            let carrierShortName = "agentstudio-fork-carrier/\(UUID().uuidString.lowercased())"
-            let referenceName = "refs/heads/\(carrierShortName)"
-            try WorktreeForkGitHandles.createBranch(
-                referenceName: referenceName,
-                commitOID: plan.capturedHead.commitOID,
-                repository: repository,
-                faults: faults,
-                lockTracker: journal.lockTracker,
-                onCreated: {
-                    journal.record(.createdBranch(referenceName: referenceName, targetOID: plan.capturedHead.commitOID))
-                }
-            )
-            addReferenceName = referenceName
-            carrierReferenceName = referenceName
-        }
+        // A flat name keeps the carrier's lock directly in refs/heads, which already exists, so a lock or
+        // permission failure names a real directory and no carrier namespace directory is left behind.
+        let carrierShortName = "agentstudio-fork-carrier-\(UUID().uuidString.lowercased())"
+        let carrierReferenceName = "refs/heads/\(carrierShortName)"
+        try WorktreeForkGitHandles.createBranch(
+            referenceName: carrierReferenceName,
+            commitOID: plan.capturedHead.commitOID,
+            repository: repository,
+            faults: faults,
+            lockTracker: journal.lockTracker,
+            onCreated: {
+                journal.record(
+                    .createdBranch(referenceName: carrierReferenceName, targetOID: plan.capturedHead.commitOID))
+            }
+        )
         try faults.reach(.afterIdentityCreated)
 
         // Journal before the call: libgit2 can create administration and then fail on the working tree.
@@ -332,7 +370,7 @@ struct LibGit2WorktreeForkWriter: Sendable {
         try WorktreeForkGitHandles.addWorktree(
             name: plan.worktreeName,
             destination: plan.destinationRoot,
-            branchReferenceName: addReferenceName,
+            branchReferenceName: carrierReferenceName,
             repository: repository,
             lockTracker: journal.lockTracker
         )
@@ -344,17 +382,15 @@ struct LibGit2WorktreeForkWriter: Sendable {
         if case .success(let info) = WorktreeForkDescriptors.lstatPath(administration) {
             journal.confirmLinkedWorktreeAdministration(WorktreeForkEntryIdentity(info))
         }
-        if let carrierReferenceName {
-            try WorktreeForkGitHandles.detachHead(
-                worktreePath: plan.destinationRoot,
-                commitOID: plan.capturedHead.commitOID,
-                lockTracker: journal.lockTracker
-            )
-            try faults.reach(.beforeCarrierBranchDeletion(referenceName: carrierReferenceName))
-            try WorktreeForkGitHandles.deleteBranch(
-                referenceName: carrierReferenceName, repository: repository, lockTracker: journal.lockTracker)
-            journal.forgetBranch(referenceName: carrierReferenceName)
-        }
+        try WorktreeForkGitHandles.detachHead(
+            worktreePath: plan.destinationRoot,
+            commitOID: plan.capturedHead.commitOID,
+            lockTracker: journal.lockTracker
+        )
+        try faults.reach(.beforeCarrierBranchDeletion(referenceName: carrierReferenceName))
+        try WorktreeForkGitHandles.deleteBranch(
+            referenceName: carrierReferenceName, repository: repository, lockTracker: journal.lockTracker)
+        journal.forgetBranch(referenceName: carrierReferenceName)
     }
 
     private func openDestinationRoot(

@@ -39,7 +39,7 @@ struct GitWorktreeForkPackedReferenceLockIntegrationTests {
         let failure: GitWorktreeForkError?
         do {
             _ = try await client.forkWorktree(
-                fixture.request(destination: fixture.destination("carrier-packed-lock"), mode: .detached)
+                fixture.request(destination: fixture.destination("carrier-packed-lock"), mode: .detached(start: .sourceHead))
             )
             failure = nil
         } catch {

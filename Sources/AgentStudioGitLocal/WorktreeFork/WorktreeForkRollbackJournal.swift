@@ -11,6 +11,8 @@ enum WorktreeForkJournalEntry: Equatable, Sendable {
     /// Same ownership rule as the destination: confirmed only after `git_worktree_add` succeeded.
     case linkedWorktreeAdministration(name: String, path: URL, identity: WorktreeForkEntryIdentity?)
     case createdBranch(referenceName: String, targetOID: String)
+    /// A fast-forward the attach landed; rollback moves the branch back only if it is still at `toOID`.
+    case movedBranch(referenceName: String, fromOID: String, toOID: String)
     /// `identity` is filled once the transaction's own `mkdir` succeeded; nil means creation was attempted
     /// but not confirmed, so a present path may belong to someone else and is never deleted.
     case nestedAdministration(path: URL, reportLocation: String, identity: WorktreeForkEntryIdentity?)
@@ -135,6 +137,13 @@ struct WorktreeForkRollbackJournal {
                 !deleteBranch(referenceName, targetOID: targetOID)
             {
                 residue.append(GitWorktreeForkResidue(kind: .createdBranch, location: referenceName))
+            }
+        }
+        for entry in entries {
+            if case .movedBranch(let referenceName, let fromOID, let toOID) = entry,
+                !undoBranchMove(referenceName, from: fromOID, to: toOID)
+            {
+                residue.append(GitWorktreeForkResidue(kind: .branchMoveNotUndone, location: referenceName))
             }
         }
         let reportedLockLocations = Set(residue.filter { $0.kind == .lockFile }.map(\.location))
@@ -297,6 +306,80 @@ struct WorktreeForkRollbackJournal {
             git_reference_free(probe)
         }
         return probeResult == GIT_ENOTFOUND.rawValue
+    }
+}
+
+extension WorktreeForkRollbackJournal {
+    /// Moves a fast-forwarded branch back under its ref lock, only while it still points where the fork moved
+    /// it. A branch someone else moved meanwhile is left alone and reported, never overwritten.
+    private func undoBranchMove(_ referenceName: String, from fromOID: String, to toOID: String) -> Bool {
+        guard (try? runtime.ensureInitialized()) != nil, var previousTip = WorktreeForkObjectID.parse(fromOID) else {
+            return false
+        }
+        var repository: OpaquePointer?
+        let openResult = commonDirectory.path.withCString { git_repository_open_bare(&repository, $0) }
+        guard openResult >= 0, let repository else {
+            return false
+        }
+        defer { git_repository_free(repository) }
+        guard
+            let referenceLockFact = try? LibGit2LockPathResolver.fact(
+                for: .reference(name: referenceName), repository: repository)
+        else {
+            return false
+        }
+        var transaction: OpaquePointer?
+        guard git_transaction_new(&transaction, repository) >= 0, let transaction else {
+            return false
+        }
+        defer { git_transaction_free(transaction) }
+        lockTracker.beginAttempt(for: [referenceLockFact])
+        errno = 0
+        let lockResult = referenceName.withCString { git_transaction_lock_ref(transaction, $0) }
+        let lockErrorNumber = errno
+        guard lockResult >= 0 else {
+            lockTracker.recordFailure(for: [referenceLockFact])
+            let lockFailure = LibGit2ErrorCapture.failure(
+                code: lockResult, lockFacts: [referenceLockFact], systemErrorCode: lockErrorNumber)
+            if case .lockHeld(let fact) = lockFailure {
+                lockTracker.recordForeignLock(fact)
+            }
+            return false
+        }
+        lockTracker.recordAcquisition(of: referenceLockFact)
+        var reference: OpaquePointer?
+        let lookupResult = referenceName.withCString { git_reference_lookup(&reference, repository, $0) }
+        guard lookupResult >= 0, let reference else {
+            return false
+        }
+        defer { git_reference_free(reference) }
+        guard let currentTip = git_reference_target(reference), oidString(currentTip) == toOID.lowercased() else {
+            return false
+        }
+        let message = "agentstudio worktree: undo fast-forward to \(toOID)"
+        let setResult = referenceName.withCString { referencePointer in
+            message.withCString { git_transaction_set_target(transaction, referencePointer, &previousTip, nil, $0) }
+        }
+        guard setResult >= 0 else {
+            return false
+        }
+        errno = 0
+        let commitResult = git_transaction_commit(transaction)
+        guard commitResult >= 0 else {
+            lockTracker.recordFailure(for: [referenceLockFact])
+            return false
+        }
+        var probe: OpaquePointer?
+        let probeResult = referenceName.withCString { git_reference_lookup(&probe, repository, $0) }
+        defer {
+            if let probe {
+                git_reference_free(probe)
+            }
+        }
+        guard probeResult >= 0, let probe, let probeTip = git_reference_target(probe) else {
+            return false
+        }
+        return oidString(probeTip) == fromOID.lowercased()
     }
 }
 

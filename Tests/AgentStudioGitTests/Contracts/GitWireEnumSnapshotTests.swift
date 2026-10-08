@@ -252,7 +252,8 @@ struct GitWireEnumSnapshotTests {
                 "sourceHeadUnavailable",
                 "invalidDestinationPath", "destinationParentMissing", "destinationExists", "overlappingRoots",
                 "linkedWorktreeNameInUse", "invalidBranchName", "branchNotFound", "branchAlreadyExists",
-                "branchNotAtCapturedHead", "branchCheckedOut", "fileProviderManagedLocation", "datalessContent",
+                "branchMoved", "invalidStart", "fastForwardNotDescendant", "invalidUpstream",
+                "fileProviderManagedLocation", "datalessContent",
             ])
         #expect(
             GitWorktreeForkSourceRaceReason.allCases.map(\.rawValue) == [
@@ -281,7 +282,7 @@ struct GitWireEnumSnapshotTests {
         #expect(
             GitWorktreeForkResidueKind.allCases.map(\.rawValue) == [
                 "destinationContent", "linkedWorktreeAdministration", "nestedAdministration", "createdBranch",
-                "temporaryArtifact", "lockFile",
+                "temporaryArtifact", "lockFile", "branchMoveNotUndone",
             ])
     }
 }

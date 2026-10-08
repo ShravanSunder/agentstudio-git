@@ -28,7 +28,7 @@ struct WorktreeForkValidator: Sendable {
         lockTracker: WorktreeForkLockTracker
     ) throws(GitWorktreeForkError) -> GitWorktreeSnapshot {
         let snapshot = try validateRegistration(plan)
-        try validateHead(plan)
+        try validateDetachedRegistration(plan)
         try validateCounts(plan.filesystem, observations)
         try validateDestinationTree(
             plan.filesystem,
@@ -41,7 +41,7 @@ struct WorktreeForkValidator: Sendable {
             evidence: indexEvidence,
             reportPrefix: ""
         )
-        try validateNoTransactionArtifacts(plan, lockTracker: lockTracker)
+        try validateNoTransactionArtifacts(plan, lockTracker: lockTracker, includingBranchReference: false)
         return snapshot
     }
 
@@ -54,7 +54,7 @@ struct WorktreeForkValidator: Sendable {
         lockTracker: WorktreeForkLockTracker
     ) throws(GitWorktreeForkError) -> GitWorktreeSnapshot {
         let snapshot = try validateRegistration(plan)
-        try validateHead(plan)
+        try validateDetachedRegistration(plan)
         let sourceRepository = try WorktreeForkGitHandles.openWorktree(plan.sourceRoot)
         defer { git_repository_free(sourceRepository) }
         let gitSnapshotReader = WorktreeForkChangesOnlyGitSnapshotReader(cancellation: cancellation)
@@ -107,7 +107,7 @@ struct WorktreeForkValidator: Sendable {
             evidence: indexEvidence,
             reportPrefix: ""
         )
-        try validateNoTransactionArtifacts(plan, lockTracker: lockTracker)
+        try validateNoTransactionArtifacts(plan, lockTracker: lockTracker, includingBranchReference: false)
         return snapshot
     }
 
@@ -191,22 +191,52 @@ struct WorktreeForkValidator: Sendable {
         return snapshot
     }
 
-    private func validateHead(_ plan: WorktreeForkPlan) throws(GitWorktreeForkError) {
+    /// Step 4 of every fork: after the attach, `HEAD` names the branch target at the start (or is detached there),
+    /// the index is the start's tree under the existing stat-evidence rule, no lock this fork took remains, and the
+    /// returned snapshot is read again so it reports the branch rather than the detached copy.
+    func validateAttached(
+        plan: WorktreeForkPlan,
+        indexEvidence: WorktreeForkIndexRefreshEvidence,
+        expectedSkipWorktree: Set<String>,
+        lockTracker: WorktreeForkLockTracker
+    ) throws(GitWorktreeForkError) -> GitWorktreeSnapshot {
+        try validateHead(plan, commitOID: plan.start.commitOID, identity: plan.branchIdentity)
+        try WorktreeForkIndexValidation.validate(
+            worktreePath: plan.destinationRoot,
+            treeOID: plan.start.treeOID,
+            expectedSkipWorktree: expectedSkipWorktree,
+            evidence: indexEvidence,
+            reportPrefix: ""
+        )
+        try validateNoTransactionArtifacts(plan, lockTracker: lockTracker, includingBranchReference: true)
+        return try validateRegistration(plan)
+    }
+
+    /// The copy is validated before any branch exists: its registration is detached at the captured `HEAD`.
+    private func validateDetachedRegistration(_ plan: WorktreeForkPlan) throws(GitWorktreeForkError) {
+        try validateHead(plan, commitOID: plan.capturedHead.commitOID, identity: .detached)
+    }
+
+    private func validateHead(
+        _ plan: WorktreeForkPlan,
+        commitOID: String,
+        identity: WorktreeForkBranchIdentity
+    ) throws(GitWorktreeForkError) {
         let repository = try WorktreeForkGitHandles.openWorktree(plan.destinationRoot)
         defer { git_repository_free(repository) }
         var headOID = git_oid()
         guard git_reference_name_to_id(&headOID, repository, "HEAD") >= 0,
-            oidString(&headOID) == plan.capturedHead.commitOID
+            oidString(&headOID) == commitOID
         else {
             throw .validationFailed(reason: .headMismatch, relativePath: nil)
         }
         try validateConfiguredWorktree(repository, plan: plan)
-        switch plan.branchIdentity {
+        switch identity {
         case .detached:
             guard git_repository_head_detached(repository) == 1 else {
                 throw .validationFailed(reason: .branchMismatch, relativePath: nil)
             }
-        case .existingBranch(let referenceName), .newBranch(let referenceName):
+        case .existingBranch(let referenceName, _, _), .newBranch(let referenceName, _):
             var head: OpaquePointer?
             guard git_repository_head(&head, repository) >= 0, let head else {
                 throw .validationFailed(reason: .branchMismatch, relativePath: nil)
@@ -288,7 +318,8 @@ struct WorktreeForkValidator: Sendable {
 
     private func validateNoTransactionArtifacts(
         _ plan: WorktreeForkPlan,
-        lockTracker: WorktreeForkLockTracker
+        lockTracker: WorktreeForkLockTracker,
+        includingBranchReference: Bool
     ) throws(GitWorktreeForkError) {
         let administration = plan.commonDirectory.appending(path: "worktrees").appending(path: plan.worktreeName)
         var lockFacts = [
@@ -305,7 +336,7 @@ struct WorktreeForkValidator: Sendable {
                 resource: .config
             ),
         ]
-        if let referenceName = plan.branchIdentity.referenceName {
+        if includingBranchReference, let referenceName = plan.branchIdentity.referenceName {
             lockFacts.append(
                 GitLockFact(
                     path: plan.commonDirectory.appending(path: "\(referenceName).lock").standardizedFileURL,
