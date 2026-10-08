@@ -232,6 +232,24 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
         }
     }
 
+    public func remoteNames(for repositoryPath: URL) async throws(GitDataPlaneError) -> [String] {
+        try await executeBlockingRead {
+            try LibGit2RemoteNameReader().remoteNames(for: repositoryPath)
+        }
+    }
+
+    public func branchUse(_ request: GitBranchUseRequest) async throws(GitDataPlaneError) -> GitBranchUse {
+        try await executeBlockingRead {
+            try LibGit2BranchUseReader().branchUse(request)
+        }
+    }
+
+    public func aheadBehind(_ request: GitAheadBehindRequest) async throws(GitDataPlaneError) -> GitAheadBehind {
+        try await executeBlockingRead {
+            try LibGit2AheadBehindReader().aheadBehind(request)
+        }
+    }
+
     public func assessBranchIntegration(_ request: GitBranchIntegrationRequest) async throws(GitDataPlaneError)
         -> GitBranchIntegrationReport
     {

@@ -18,6 +18,7 @@ suites=(
   GitRedactionTests
   GitWorktreeForkContractTests
   GitWorktreeCopyRulesContractTests
+  GitCreationReadContractTests
   GitPathPatternTests
   GitPathPatternReviewTests
   GitPathPatternNativeParityTests
@@ -54,6 +55,8 @@ suites=(
   GitWorktreeLargeFileFillIntegrationTests
   GitWorktreeRemovalIntegrationTests
   GitFetchIntegrationTests
+  GitRemoteBranchProbeIntegrationTests
+  GitCreationReadIntegrationTests
   GitLockIntegrationTests
   GitLockAcquisitionRetirementIntegrationTests
   GitLockRemoteIntegrationTests

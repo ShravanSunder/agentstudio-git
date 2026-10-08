@@ -83,6 +83,18 @@ struct LegacyLocalClientDouble: AgentStudioGitLocalClient {
         throw unavailable
     }
 
+    func remoteNames(for repositoryPath: URL) async throws(GitDataPlaneError) -> [String] {
+        throw unavailable
+    }
+
+    func branchUse(_ request: GitBranchUseRequest) async throws(GitDataPlaneError) -> GitBranchUse {
+        throw unavailable
+    }
+
+    func aheadBehind(_ request: GitAheadBehindRequest) async throws(GitDataPlaneError) -> GitAheadBehind {
+        throw unavailable
+    }
+
     func assessBranchIntegration(_ request: GitBranchIntegrationRequest) async throws(GitDataPlaneError)
         -> GitBranchIntegrationReport
     {
