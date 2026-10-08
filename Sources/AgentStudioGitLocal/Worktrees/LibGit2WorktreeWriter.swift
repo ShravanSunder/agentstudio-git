@@ -56,16 +56,19 @@ struct LibGit2WorktreeWriter: Sendable {
 
                 let detachedObjectID: UnsafePointer<git_oid>?
                 switch request.mode {
-                case .existingBranch(let name):
+                case .existingBranch(let name, let expectedTip, let fastForwardTo):
+                    try LibGit2WorktreeCreateBranchAttach(repositoryPath: request.repositoryPath, repository: repository)
+                        .existingBranch(
+                            name, expectedTip: expectedTip, fastForwardTo: fastForwardTo, rollback: &rollback)
                     referenceToFree = try lookupBranchReference(named: name, repository: repository)
                     addOptions.ref = referenceToFree
                     detachedObjectID = nil
-                case .newBranch(let name, let startPoint):
+                case .newBranch(let name, let startPoint, let upstream):
                     let commitObject = try resolveCommit(startPoint, repository: repository)
                     commitObjectToFree = commitObject
-                    referenceToFree = try createBranchReference(
-                        named: name, commit: commitObject, repository: repository)
-                    rollback.createdBranchName = name
+                    try LibGit2WorktreeCreateBranchAttach(repositoryPath: request.repositoryPath, repository: repository)
+                        .newBranch(name, commit: commitObject, upstream: upstream, rollback: &rollback)
+                    referenceToFree = try lookupBranchReference(named: name, repository: repository)
                     addOptions.ref = referenceToFree
                     detachedObjectID = nil
                 case .detached(let startPoint):

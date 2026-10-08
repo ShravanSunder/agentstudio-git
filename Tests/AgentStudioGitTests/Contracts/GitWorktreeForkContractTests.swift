@@ -344,46 +344,58 @@ struct GitWorktreeForkContractTests {
         #expect(eligibility == .unavailable(.clientCapabilityUnavailable))
     }
 
-    @Test("normal create requests keep their pre-fork wire shape and legacy payloads decode")
-    func normalCreateRequestsKeepPreForkWireShape() throws {
+    @Test("create requests use case-keyed modes with pinned tips and an optional upstream")
+    func createRequestsUseCaseKeyedModes() throws {
         // Arrange
         let repositoryPath = URL(fileURLWithPath: "/tmp/repo")
         let destinationPath = URL(fileURLWithPath: "/tmp/wt")
-        let requests = [
-            GitCreateWorktreeRequest(
-                repositoryPath: repositoryPath,
-                destinationPath: destinationPath,
-                mode: .existingBranch(name: "main")
-            ),
-            GitCreateWorktreeRequest(
-                repositoryPath: repositoryPath,
-                destinationPath: destinationPath,
-                mode: .newBranch(name: "feature", startPoint: .named("HEAD"))
-            ),
-            GitCreateWorktreeRequest(
-                repositoryPath: repositoryPath,
-                destinationPath: destinationPath,
-                mode: .detached(startPoint: .named("HEAD"))
-            ),
+        let tip = "0123456789abcdef0123456789abcdef01234567"
+        let next = "89abcdef0123456789abcdef0123456789abcdef"
+        let modes: [GitWorktreeCreateMode] = [
+            .existingBranch(name: "main", expectedTip: tip, fastForwardTo: nil),
+            .existingBranch(name: "main", expectedTip: tip, fastForwardTo: next),
+            .newBranch(name: "feature", startPoint: .named("HEAD"), upstream: nil),
+            .newBranch(
+                name: "feature", startPoint: .named(next),
+                upstream: GitBranchUpstream(remoteName: "origin", branchName: "feature")),
+            .detached(startPoint: .named("HEAD")),
         ]
-        let legacyPayloads = [
-            #"{"destinationPath":"file:///tmp/wt","mode":{"existingBranch":{"name":"main"}},"#
-                + #""repositoryPath":"file:///tmp/repo"}"#,
-            #"{"destinationPath":"file:///tmp/wt","mode":{"newBranch":{"name":"feature","startPoint":{"name":"HEAD"}}},"#
-                + #""repositoryPath":"file:///tmp/repo"}"#,
-            #"{"destinationPath":"file:///tmp/wt","mode":{"detached":{"startPoint":{"name":"HEAD"}}},"#
-                + #""repositoryPath":"file:///tmp/repo"}"#,
+        let payloads = [
+            #"{"existingBranch":{"expectedTip":"\#(tip)","name":"main"}}"#,
+            #"{"existingBranch":{"expectedTip":"\#(tip)","fastForwardTo":"\#(next)","name":"main"}}"#,
+            #"{"newBranch":{"name":"feature","startPoint":{"name":"HEAD"}}}"#,
+            #"{"newBranch":{"name":"feature","startPoint":{"name":"\#(next)"},"#
+                + #""upstream":{"branchName":"feature","remoteName":"origin"}}}"#,
+            #"{"detached":{"startPoint":{"name":"HEAD"}}}"#,
+        ]
+        let invalidPayloads = [
+            #"{"existingBranch":{"name":"main"}}"#,
+            #"{"existingBranch":{"name":"main","expectedTip":"0123456"}}"#,
+            #"{"existingBranch":{"name":"main","expectedTip":"\#(tip)","fastForwardTo":"origin/main"}}"#,
+            #"{"detached":{"startPoint":{"name":"HEAD"}},"newBranch":{"name":"x","startPoint":{"name":"HEAD"}}}"#,
+            #"{"teleported":{}}"#,
         ]
 
         // Act
-        let encoded = try requests.map { jsonText(try sortedEncoder().encode($0)) }
-        let decoded = try legacyPayloads.map {
-            try JSONDecoder().decode(GitCreateWorktreeRequest.self, from: Data($0.utf8))
+        let encoded = try modes.map {
+            jsonText(
+                try sortedEncoder().encode(
+                    GitCreateWorktreeRequest(repositoryPath: repositoryPath, destinationPath: destinationPath, mode: $0)))
         }
+        let decoded = try payloads.map { try JSONDecoder().decode(GitWorktreeCreateMode.self, from: Data($0.utf8)) }
 
         // Assert
-        #expect(encoded == legacyPayloads)
-        #expect(decoded == requests)
+        #expect(
+            encoded
+                == payloads.map {
+                    #"{"destinationPath":"file:///tmp/wt","mode":"# + $0 + #","repositoryPath":"file:///tmp/repo"}"#
+                })
+        #expect(decoded == modes)
+        for payload in invalidPayloads {
+            #expect(throws: DecodingError.self, "\(payload)") {
+                _ = try JSONDecoder().decode(GitWorktreeCreateMode.self, from: Data(payload.utf8))
+            }
+        }
     }
 
     @Test("existing conformers without a fork implementation compile and report the capability unavailable")

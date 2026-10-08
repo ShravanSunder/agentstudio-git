@@ -66,10 +66,87 @@ public struct GitWorktreeValidation: Codable, Equatable, Hashable, Sendable {
     }
 }
 
-public enum GitWorktreeCreateMode: Codable, Equatable, Hashable, Sendable {
-    case existingBranch(name: String)
-    case newBranch(name: String, startPoint: GitRevisionTarget)
+/// The branch a plain checkout (`createWorktree`) ends on. The branch shapes match `GitForkWorktreeMode`: an
+/// existing branch is checked against its pinned tip and fast-forwarded under the same locked attach.
+public enum GitWorktreeCreateMode: Equatable, Hashable, Sendable {
+    /// A new local branch at `startPoint`. `upstream` writes branch.<name>.remote and .merge.
+    case newBranch(name: String, startPoint: GitRevisionTarget, upstream: GitBranchUpstream?)
+    /// An existing local branch no worktree holds whose tip, read under its ref lock, is `expectedTip` (else
+    /// `branchMoved`). With `fastForwardTo`, the ref first moves to that descendant commit; a failed creation
+    /// moves it back.
+    case existingBranch(name: String, expectedTip: String, fastForwardTo: String?)
     case detached(startPoint: GitRevisionTarget)
+}
+
+extension GitWorktreeCreateMode: Codable {
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case newBranch
+        case existingBranch
+        case detached
+    }
+
+    private enum PayloadKeys: String, CodingKey {
+        case name
+        case startPoint
+        case upstream
+        case expectedTip
+        case fastForwardTo
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let decodedCases = CodingKeys.allCases.filter { container.contains($0) }
+        guard decodedCases.count == 1, let decodedCase = decodedCases.first else {
+            throw Self.invalidPayload(decoder, "a create mode carries exactly one known case")
+        }
+        let payload = try container.nestedContainer(keyedBy: PayloadKeys.self, forKey: decodedCase)
+        switch decodedCase {
+        case .newBranch:
+            self = .newBranch(
+                name: try payload.decode(String.self, forKey: .name),
+                startPoint: try payload.decode(GitRevisionTarget.self, forKey: .startPoint),
+                upstream: try payload.decodeIfPresent(GitBranchUpstream.self, forKey: .upstream)
+            )
+        case .existingBranch:
+            let expectedTip = try payload.decode(String.self, forKey: .expectedTip)
+            let fastForwardTo = try payload.decodeIfPresent(String.self, forKey: .fastForwardTo)
+            guard GitObjectIdentifierText.isFullObjectIdentifier(expectedTip),
+                fastForwardTo.map(GitObjectIdentifierText.isFullObjectIdentifier) ?? true
+            else {
+                throw Self.invalidPayload(decoder, "an existing branch pins full commit identifiers")
+            }
+            self = .existingBranch(
+                name: try payload.decode(String.self, forKey: .name),
+                expectedTip: expectedTip,
+                fastForwardTo: fastForwardTo
+            )
+        case .detached:
+            self = .detached(startPoint: try payload.decode(GitRevisionTarget.self, forKey: .startPoint))
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .newBranch(let name, let startPoint, let upstream):
+            var payload = container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .newBranch)
+            try payload.encode(name, forKey: .name)
+            try payload.encode(startPoint, forKey: .startPoint)
+            try payload.encodeIfPresent(upstream, forKey: .upstream)
+        case .existingBranch(let name, let expectedTip, let fastForwardTo):
+            var payload = container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .existingBranch)
+            try payload.encode(name, forKey: .name)
+            try payload.encode(expectedTip, forKey: .expectedTip)
+            try payload.encodeIfPresent(fastForwardTo, forKey: .fastForwardTo)
+        case .detached(let startPoint):
+            var payload = container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .detached)
+            try payload.encode(startPoint, forKey: .startPoint)
+        }
+    }
+
+    private static func invalidPayload(_ decoder: Decoder, _ description: String) -> DecodingError {
+        .dataCorrupted(DecodingError.Context(codingPath: decoder.codingPath, debugDescription: description))
+    }
 }
 
 public struct GitCreateWorktreeRequest: Codable, Equatable, Hashable, Sendable {

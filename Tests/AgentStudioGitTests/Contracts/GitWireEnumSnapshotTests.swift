@@ -39,6 +39,21 @@ struct GitWireEnumSnapshotTests {
         try expectWireSnapshot(GitDataPlaneError.permissionDenied(path: nil), expected: #"{"permissionDenied":{}}"#)
     }
 
+    @Test("branch attach refusals keep explicit stable wire tags")
+    func branchAttachRefusalsKeepExplicitStableWireTags() throws {
+        let holder = GitDataPlaneError.branchCheckedOut(worktreePath: URL(fileURLWithPath: "/tmp/repository.feat"))
+
+        try expectWireSnapshot(GitDataPlaneError.branchMoved, expected: #"{"branchMoved":{}}"#)
+        try expectWireSnapshot(
+            holder, expected: #"{"branchCheckedOut":{"worktreePath":"file:\/\/\/tmp\/repository.feat"}}"#)
+        #expect(try JSONDecoder().decode(GitDataPlaneError.self, from: JSONEncoder().encode(holder)) == holder)
+        #expect(
+            try JSONDecoder().decode(GitDataPlaneError.self, from: Data(#"{"branchMoved":{}}"#.utf8)) == .branchMoved)
+        #expect(throws: DecodingError.self) {
+            _ = try JSONDecoder().decode(GitDataPlaneError.self, from: Data(#"{"branchCheckedOut":{}}"#.utf8))
+        }
+    }
+
     @Test("branch deletion payloads keep explicit stable wire tags")
     func branchDeletionPayloadsKeepExplicitStableWireTags() throws {
         let repositoryPath = URL(fileURLWithPath: "/tmp/repository")

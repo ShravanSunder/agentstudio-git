@@ -5,6 +5,8 @@ struct WorktreeCreateRollback {
     let repositoryPath: URL
     let worktreeName: String
     var createdBranchName: String?
+    /// A fast-forward the attach landed, moved back only while the branch is still at its new tip.
+    var movedBranch: (referenceName: String, fromOID: String, toOID: String)?
     var createdWorktree = false
     private var isArmed = true
 
@@ -41,6 +43,12 @@ struct WorktreeCreateRollback {
         }
         if let createdBranchName {
             deleteLocalBranchIfPresent(named: createdBranchName, repository: repository)
+        }
+        // A failed undo cannot be reported: GitDataPlaneError has no residue channel. The original failure
+        // still reaches the caller.
+        if let movedBranch {
+            _ = LibGit2BranchMoveUndo(lockObserver: .untracked).undo(
+                movedBranch.referenceName, from: movedBranch.fromOID, to: movedBranch.toOID, repository: repository)
         }
     }
 }

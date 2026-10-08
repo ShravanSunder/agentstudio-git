@@ -182,7 +182,7 @@ struct GitWorktreeLargeFileFillIntegrationTests {
             GitCreateWorktreeRequest(
                 repositoryPath: fixture.repository.repositoryPath,
                 destinationPath: destination,
-                mode: .newBranch(name: "lfs-temp-collision", startPoint: .named("HEAD"))
+                mode: .newBranch(name: "lfs-temp-collision", startPoint: .named("HEAD"), upstream: nil)
             )
         )
 
@@ -216,7 +216,7 @@ struct GitWorktreeLargeFileFillIntegrationTests {
                 GitCreateWorktreeRequest(
                     repositoryPath: fixture.repository.repositoryPath,
                     destinationPath: destination,
-                    mode: .newBranch(name: "lfs-copy-fallback-\(index)", startPoint: .named("HEAD"))
+                    mode: .newBranch(name: "lfs-copy-fallback-\(index)", startPoint: .named("HEAD"), upstream: nil)
                 )
             )
 
@@ -254,7 +254,7 @@ struct GitWorktreeLargeFileFillIntegrationTests {
             GitCreateWorktreeRequest(
                 repositoryPath: fixture.repository.repositoryPath,
                 destinationPath: destination,
-                mode: .newBranch(name: "lfs-temp-residue", startPoint: .named("HEAD"))
+                mode: .newBranch(name: "lfs-temp-residue", startPoint: .named("HEAD"), upstream: nil)
             )
         )
         let restorePermissionsResult = destination.path.withCString { chmod($0, 0o755) }
@@ -400,7 +400,7 @@ struct GitWorktreeLargeFileFillIntegrationTests {
             GitCreateWorktreeRequest(
                 repositoryPath: fixture.repository.repositoryPath,
                 destinationPath: destination,
-                mode: .newBranch(name: "lfs-index-lock", startPoint: .named("HEAD"))
+                mode: .newBranch(name: "lfs-index-lock", startPoint: .named("HEAD"), upstream: nil)
             )
         )
 
@@ -442,7 +442,7 @@ struct GitWorktreeLargeFileFillIntegrationTests {
             GitCreateWorktreeRequest(
                 repositoryPath: fixture.repository.repositoryPath,
                 destinationPath: destination,
-                mode: .newBranch(name: "lfs-stage-during-fill", startPoint: .named("HEAD"))
+                mode: .newBranch(name: "lfs-stage-during-fill", startPoint: .named("HEAD"), upstream: nil)
             )
         )
 
@@ -465,7 +465,7 @@ struct GitWorktreeLargeFileFillIntegrationTests {
             GitCreateWorktreeRequest(
                 repositoryPath: fixture.repository.repositoryPath,
                 destinationPath: destination,
-                mode: .newBranch(name: branch, startPoint: .named("HEAD"))
+                mode: .newBranch(name: branch, startPoint: .named("HEAD"), upstream: nil)
             )
         )
     }

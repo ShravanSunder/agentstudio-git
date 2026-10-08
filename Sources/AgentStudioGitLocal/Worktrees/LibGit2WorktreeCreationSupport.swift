@@ -29,21 +29,6 @@ func lookupBranchReference(named name: String, repository: OpaquePointer) throws
     return reference
 }
 
-func createBranchReference(
-    named name: String,
-    commit: OpaquePointer,
-    repository: OpaquePointer
-) throws -> OpaquePointer {
-    var reference: OpaquePointer?
-    let createResult = name.withCString { namePointer in
-        git_branch_create(&reference, repository, namePointer, commit, 0)
-    }
-    guard createResult >= 0, let reference else {
-        throw LibGit2ErrorCapture.failure(code: createResult)
-    }
-    return reference
-}
-
 func resolveCommit(_ target: GitRevisionTarget, repository: OpaquePointer) throws
     -> OpaquePointer
 {

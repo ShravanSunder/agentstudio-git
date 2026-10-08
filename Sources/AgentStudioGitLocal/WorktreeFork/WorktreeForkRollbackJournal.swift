@@ -310,10 +310,8 @@ struct WorktreeForkRollbackJournal {
 }
 
 extension WorktreeForkRollbackJournal {
-    /// Moves a fast-forwarded branch back under its ref lock, only while it still points where the fork moved
-    /// it. A branch someone else moved meanwhile is left alone and reported, never overwritten.
     private func undoBranchMove(_ referenceName: String, from fromOID: String, to toOID: String) -> Bool {
-        guard (try? runtime.ensureInitialized()) != nil, var previousTip = WorktreeForkObjectID.parse(fromOID) else {
+        guard (try? runtime.ensureInitialized()) != nil else {
             return false
         }
         var repository: OpaquePointer?
@@ -322,64 +320,8 @@ extension WorktreeForkRollbackJournal {
             return false
         }
         defer { git_repository_free(repository) }
-        guard
-            let referenceLockFact = try? LibGit2LockPathResolver.fact(
-                for: .reference(name: referenceName), repository: repository)
-        else {
-            return false
-        }
-        var transaction: OpaquePointer?
-        guard git_transaction_new(&transaction, repository) >= 0, let transaction else {
-            return false
-        }
-        defer { git_transaction_free(transaction) }
-        lockTracker.beginAttempt(for: [referenceLockFact])
-        errno = 0
-        let lockResult = referenceName.withCString { git_transaction_lock_ref(transaction, $0) }
-        let lockErrorNumber = errno
-        guard lockResult >= 0 else {
-            lockTracker.recordFailure(for: [referenceLockFact])
-            let lockFailure = LibGit2ErrorCapture.failure(
-                code: lockResult, lockFacts: [referenceLockFact], systemErrorCode: lockErrorNumber)
-            if case .lockHeld(let fact) = lockFailure {
-                lockTracker.recordForeignLock(fact)
-            }
-            return false
-        }
-        lockTracker.recordAcquisition(of: referenceLockFact)
-        var reference: OpaquePointer?
-        let lookupResult = referenceName.withCString { git_reference_lookup(&reference, repository, $0) }
-        guard lookupResult >= 0, let reference else {
-            return false
-        }
-        defer { git_reference_free(reference) }
-        guard let currentTip = git_reference_target(reference), oidString(currentTip) == toOID.lowercased() else {
-            return false
-        }
-        let message = "agentstudio worktree: undo fast-forward to \(toOID)"
-        let setResult = referenceName.withCString { referencePointer in
-            message.withCString { git_transaction_set_target(transaction, referencePointer, &previousTip, nil, $0) }
-        }
-        guard setResult >= 0 else {
-            return false
-        }
-        errno = 0
-        let commitResult = git_transaction_commit(transaction)
-        guard commitResult >= 0 else {
-            lockTracker.recordFailure(for: [referenceLockFact])
-            return false
-        }
-        var probe: OpaquePointer?
-        let probeResult = referenceName.withCString { git_reference_lookup(&probe, repository, $0) }
-        defer {
-            if let probe {
-                git_reference_free(probe)
-            }
-        }
-        guard probeResult >= 0, let probe, let probeTip = git_reference_target(probe) else {
-            return false
-        }
-        return oidString(probeTip) == fromOID.lowercased()
+        return LibGit2BranchMoveUndo(lockObserver: .tracking(lockTracker))
+            .undo(referenceName, from: fromOID, to: toOID, repository: repository)
     }
 }
 
