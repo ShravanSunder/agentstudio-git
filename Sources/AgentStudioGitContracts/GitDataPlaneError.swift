@@ -28,10 +28,6 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
     /// The branch is held by the worktree at `worktreePath`: its `HEAD` names it, or it is rebasing or bisecting
     /// it. Nothing changed.
     case branchCheckedOut(worktreePath: URL)
-    /// The failed call moved `branchName` from `from` to `to` and could not confirm moving it back: under the
-    /// branch's ref lock it no longer pointed at `to`, or the undo itself failed. The branch may still be at `to`,
-    /// or another writer's tip; the call's own failure is replaced by this one.
-    case branchMoveNotUndone(branchName: String, from: String, to: String)
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case repositoryNotFound
@@ -58,7 +54,6 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
         case unsupported
         case branchMoved
         case branchCheckedOut
-        case branchMoveNotUndone
     }
 
     private enum PayloadKeys: String, CodingKey {
@@ -79,9 +74,6 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
         case fact
         case resource
         case worktreePath
-        case branchName
-        case from
-        case to
     }
 
     public init(from decoder: Decoder) throws {
@@ -208,14 +200,6 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
             let payload = try container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .branchCheckedOut)
             return try .branchCheckedOut(worktreePath: payload.decode(URL.self, forKey: .worktreePath))
         }
-        if container.contains(.branchMoveNotUndone) {
-            let payload = try container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .branchMoveNotUndone)
-            return try .branchMoveNotUndone(
-                branchName: payload.decode(String.self, forKey: .branchName),
-                from: payload.decode(String.self, forKey: .from),
-                to: payload.decode(String.self, forKey: .to)
-            )
-        }
         return nil
     }
 
@@ -325,11 +309,6 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
         case .branchCheckedOut(let worktreePath):
             var payload = container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .branchCheckedOut)
             try payload.encode(worktreePath, forKey: .worktreePath)
-        case .branchMoveNotUndone(let branchName, let from, let to):
-            var payload = container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .branchMoveNotUndone)
-            try payload.encode(branchName, forKey: .branchName)
-            try payload.encode(from, forKey: .from)
-            try payload.encode(to, forKey: .to)
         }
     }
 }

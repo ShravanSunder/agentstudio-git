@@ -39,7 +39,8 @@ struct LibGit2WorktreeCreateTarget {
 /// registered and checked out detached at the pinned start, and the locked attach (ref lock, branch-use re-read,
 /// tip compare-and-swap or creation, `HEAD`, commit of the one branch ref) runs last. A failure before the attach
 /// moves no branch. The attach's commit can still report failure after its ref landed, so whatever landed is
-/// recorded on the rollback: a created branch is removed, and a fast-forward is moved back to its expected tip.
+/// recorded on the rollback: a created branch is removed, and a fast-forward is moved back to its expected tip while
+/// the branch still points where the attach left it.
 struct LibGit2WorktreeCreateBranchAttach {
     /// Any worktree of the repository; branch use is read across every worktree it has.
     let repositoryPath: URL

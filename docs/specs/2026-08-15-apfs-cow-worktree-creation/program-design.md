@@ -556,10 +556,10 @@ realizes it.
   `WorktreeCreateRollback` prunes the worktree, removes a created branch
   through the same `LibGit2CreatedBranchCompensation` (silently: create has no
   residue channel), and moves a fast-forward back through
-  `LibGit2BranchMoveUndo`. A move it cannot confirm undone replaces the call's
-  error with `GitDataPlaneError.branchMoveNotUndone(branchName:from:to:)`, the
-  one rollback outcome create reports, because a caller told nothing moved
-  would act on a branch that did. `plan` also checks the upstream with
+  `LibGit2BranchMoveUndo`. The call fails with its own error either way.
+  Provisional: whether that undo was confirmed is not reported yet; the owner
+  will choose the reporting (a typed error, or the existing error with an
+  explanation). `plan` also checks the upstream with
   `LibGit2BranchUpstreamWriter.isValid`, the fork planner's own rule. Writing
   the upstream before the branch exists was
   rejected: a failure would leave a `branch.<name>` section that a later branch

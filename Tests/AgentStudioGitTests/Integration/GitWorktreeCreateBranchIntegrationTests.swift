@@ -320,8 +320,10 @@ struct GitWorktreeCreateBranchIntegrationTests {
         #expect(!FileManager.default.fileExists(atPath: fixture.linkedWorktreePath("fresh").path))
     }
 
-    @Test("a fast-forward another writer moves before the undo fails branchMoveNotUndone and keeps that tip")
-    func fastForwardMovedAgainIsReportedNotUndone() async throws {
+    /// Provisional behavior, pinned until the owner decides how an unconfirmed restore is reported: the undo
+    /// leaves another writer's move alone and the call fails with its own error, saying nothing about the branch.
+    @Test("a fast-forward another writer moves before the undo keeps that tip and the call fails with its own error")
+    func fastForwardMovedAgainKeepsThatTipAndFailsWithItsOwnError() async throws {
         // Arrange
         let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-create-move-not-undone")
         defer { fixture.remove() }
@@ -345,8 +347,8 @@ struct GitWorktreeCreateBranchIntegrationTests {
                 request(fixture, "behind", .existingBranch(name: "behind", expectedTip: base, fastForwardTo: tip)))
         }
 
-        // Assert
-        #expect(failure == .branchMoveNotUndone(branchName: "behind", from: base, to: tip))
+        // Assert: the branch's state comes from this re-read, not from the SDK.
+        #expect(failure == .unsupported(message: "injected after the attach"))
         #expect(try revision("behind", in: fixture) == other)
         #expect(try fixture.git.run("worktree", "list", "--porcelain") == worktreesBefore)
         #expect(!FileManager.default.fileExists(atPath: fixture.linkedWorktreePath("behind").path))

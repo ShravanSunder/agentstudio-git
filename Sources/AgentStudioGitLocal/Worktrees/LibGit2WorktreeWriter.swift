@@ -68,9 +68,7 @@ struct LibGit2WorktreeWriter: Sendable {
             rollback.disarm()
             snapshot = target.attachedSnapshot(detachedSnapshot)
         } catch {
-            if let moveNotUndone = rollback.rollback(runtime: runtime) {
-                throw moveNotUndone
-            }
+            rollback.rollback(runtime: runtime)
             throw error
         }
 
