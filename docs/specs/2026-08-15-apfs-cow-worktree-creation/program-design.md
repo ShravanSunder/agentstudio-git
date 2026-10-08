@@ -98,6 +98,22 @@ WorktreeForkRollbackJournal
   owns transaction-created artifact identity, compensation, and residue proof
   consumed only by the fork writer
   changes when a phase creates a new recoverable side effect
+
+WorktreeForkBranchTargetPlanner
+  owns the pre-mutation branch rules and the start commit of one fork
+  consumed by the planner
+  changes when a branch target gains or loses a precondition
+
+WorktreeForkResetCheckout
+  owns the reset copy's forced checkout and its submodule listing
+  consumed by the fork writer after the copy validates
+  changes when the reset overlay rules change
+
+LibGit2BranchAttach (shared with LibGit2WorktreeWriter)
+  owns the locked branch attach: ref lock, branch-use re-read, tip
+  compare-and-swap or creation, optional HEAD move, commit
+  consumed by WorktreeForkBranchAttach and the plain checkout
+  changes when the branch-use or tip rule changes
 ```
 
 These boundaries are not general-purpose copy or transaction frameworks.
@@ -117,6 +133,7 @@ because ordinary `validateWorktree` does not prove the fork contract.
 | Working-entry creation | `APFSStrictCloneMaterializer` | validator observes results | Git-state code copying arbitrary working payloads |
 | Submodule/nested Git administration and index state | `GitRepositoryStateRehomer` | validator | ordinary entry copying of `.git`, `commondir`, alternates, indexes, or locks |
 | Compensation and residue report | `WorktreeForkRollbackJournal` | fork writer | best-effort cleanup whose errors are discarded |
+| Branch creation, fast-forward, and the destination's branch `HEAD` | `LibGit2BranchAttach` under the branch's ref lock | fork attach and plain checkout | attaching a branch through `git_worktree_add` or without re-reading branch use under the lock |
 | Final success | `WorktreeForkValidator` supplies evidence; fork writer publishes | public client | returning the ordinary snapshot validation as fork success |
 
 Production code MUST NOT invoke the Git CLI. Libgit2 owns Git identity and
@@ -135,13 +152,14 @@ identity.
 
 Fork-only failures live in the new `GitWorktreeForkError` union. Existing
 libgit2/Git failures are wrapped as a payload rather than adding cases to
-`GitDataPlaneError`; this preserves the latter's encoding and downstream
-exhaustive switches.
+`GitDataPlaneError`. The creation follow-up adds exactly two cases there,
+`branchMoved` and `branchCheckedOut(worktreePath:)`, because the plain checkout
+now refuses through the same attach.
 
-The existing `createWorktree` method, request, writer path, and return value do
-not delegate through fork logic. This makes an unavailable CoW platform
-irrelevant to normal creation and preserves normal request encoding without
-custom compatibility shims.
+The existing `createWorktree` method and writer path do not delegate through
+fork logic; they share only `LibGit2BranchAttach`, `LibGit2BranchUpstreamWriter`
+and `LibGit2BranchMoveUndo`, which run before `git_worktree_add` and in its
+rollback. An unavailable CoW platform stays irrelevant to normal creation.
 
 ### Repository mutation submission
 
@@ -168,8 +186,10 @@ contract does not promise read isolation or external-process isolation.
 
 - canonical source and destination roots plus open root descriptors;
 - runtime/volume capability evidence;
-- captured root and nested repository `HEAD` OIDs;
-- selected branch mode and its validated destination identity;
+- captured root and nested repository `HEAD` OIDs, and the start commit and
+  tree (equal to the captured `HEAD` for an as-is copy);
+- the validated branch target: new branch with optional upstream, existing
+  branch with its pinned tip and optional fast-forward, or detached;
 - parent-before-child directories and child-before-parent metadata finalizers;
 - regular files, symbolic links, FIFOs, unsupported entries, and Unix sockets;
 - `(device, inode)` hard-link groups;
@@ -232,14 +252,19 @@ The new fork path has no predecessor:
 client.forkWorktree(request)
   ──► resolve source repository identity and writer lane
   ──► enqueue one complete blocking transaction
-      ──► capture HEAD and build WorktreeForkPlan
-      ──► create/validate destination branch identity
-      ──► git_worktree_add with GIT_CHECKOUT_NONE
+      ──► capture HEAD, validate the branch target and start, build WorktreeForkPlan
+      ──► carrier branch ──► git_worktree_add with GIT_CHECKOUT_NONE
+          ──► detach HEAD at the captured commit ──► delete the carrier
       ──► materialize working entries with bounded strict-clone workers
+          (a reset's copy filter keeps only HEAD paths and included ignored paths)
       ──► re-home initialized submodule and nested-repository administration
       ──► rebuild root and nested indexes from captured HEAD trees
-      ──► reapply sparse configuration and skip-worktree semantics
-      ──► validate every plan/result/Git-isolation invariant
+      ──► reapply sparse configuration and skip-worktree semantics (as-is only)
+      ──► validate the copy, still detached at the captured HEAD
+      ──► reset only: forced checkout of the start, baseline = rebuilt index
+      ──► attach under the branch's ref lock (barrier seam before it)
+      ──► reset only: fill the start's LFS pointers from the local store
+      ──► validate HEAD, index tree and stats against the start; re-read snapshot
       ◄── GitForkWorktreeResult
 
   any failure or cancellation after mutation
@@ -257,13 +282,16 @@ pointer or mutable rollback journal.
 | State | Mutation present | Legal next state | Invariant |
 | --- | --- | --- | --- |
 | `queued` | No | `planning`, `failedClean` | No work executes outside lane order. Cancellation before execution returns cleanly. |
-| `planning` | No | `creatingIdentity`, `failedClean` | Source is read-only; planning failure or cancellation has nothing to compensate. |
-| `creatingIdentity` | Branch may exist | `creatingWorktree`, `rollingBack` | Every attempted artifact is journaled even if libgit2 returns failure. |
-| `creatingWorktree` | Branch, admin, or destination may exist | `materializing`, `rollingBack` | Root `.git` is destination-created, never source-copied. |
+| `planning` | No | `creatingCarrier`, `failedClean` | Source is read-only; planning failure or cancellation has nothing to compensate. |
+| `creatingCarrier` | Carrier branch may exist | `creatingWorktree`, `rollingBack` | Every attempted artifact is journaled even if libgit2 returns failure. |
+| `creatingWorktree` | Carrier, admin, or destination may exist | `materializing`, `rollingBack` | Root `.git` is destination-created, never source-copied; the registration ends detached at the captured `HEAD` with the carrier deleted. |
 | `materializing` | Partial destination | `rehomingGitState`, `rollingBack` | Only planned entries appear; no byte-copy fallback. |
 | `rehomingGitState` | Partial nested administration | `buildingIndexes`, `rollingBack` | No copied pointer is accepted as final administration. |
 | `buildingIndexes` | Working tree complete; indexes provisional | `validating`, `rollingBack` | Every index derives from its captured HEAD plus sparse flags, never source staging. |
-| `validating` | Complete but unpublished to caller | `succeeded`, `rollingBack` | Full fork-specific validation, not ordinary worktree validation alone. |
+| `validating` | Complete copy, detached | `resetting`, `attaching`, `rollingBack` | Full fork-specific validation of the copy, not ordinary worktree validation alone. |
+| `resetting` | Copy being checked out to the start | `attaching`, `rollingBack` | Reset only; the rebuilt index is the explicit baseline. |
+| `attaching` | Branch target may be created, fast-forwarded, or checked out | `validatingAttach`, `rollingBack` | Under the branch's ref lock with branch use re-read; each landed change is journaled. |
+| `validatingAttach` | Complete but unpublished to caller | `succeeded`, `rollingBack` | `HEAD`, index tree and stats against the start; the snapshot is re-read. |
 | `rollingBack` | Residue possible | `failedClean`, `failedWithResidue` | No new work admitted; every journal entry receives a verified disposition. |
 | `succeeded` | Valid destination | Terminal | Return snapshot/report and release lane. |
 | `failedClean` | None created by transaction | Terminal | Return primary failure and release lane. |
@@ -444,13 +472,72 @@ and a sparse-index source must all reach the refresh path and report their
 true status through real `git status`, while clean entries are adopted without
 hashing.
 
+## Start, reset copy, and branch attach
+
+The Agent Studio worktree lifecycle Program Design (r35, "Creation follow-up
+(D13–D20)") is the binding contract; this section records how the SDK
+realizes it.
+
+- **Start and target, before mutation.** `WorktreeForkBranchTargetPlanner`
+  resolves the mode into a `WorktreeForkBranchTarget` (identity plus start
+  commit and tree): name validity, existence, `expectedTip` against the
+  branch's current tip, `fastForwardTo` descending from it
+  (`git_graph_descendant_of`), upstream names, and branch use. The planner then
+  refuses a start other than the captured `HEAD` for `.changesOnly` and
+  `.copyAll`. `WorktreeForkPlan.resetsToStart` is the one switch every later
+  phase reads.
+- **Detached registration for every fork.** `git_worktree_add` needs a branch,
+  so a transaction-owned carrier (`refs/heads/agentstudio-fork-carrier-<uuid>`,
+  a flat name so its lock sits in `refs/heads`) registers the worktree; `HEAD`
+  is detached at the captured commit and the carrier is deleted before any
+  content is written. The copy's validator checks that detached registration.
+- **Reset copy filter.** `WorktreeForkCopyFilter` gains a reset mode over the
+  same walked plan: the tracked set is the captured `HEAD` tree only; each
+  pending node carries the include patterns its ancestors matched, so an
+  ignored entry under a matched but unignored folder still counts as included;
+  `ignoredExcludedCount` counts only ignored exclusions.
+- **Reset checkout.** `WorktreeForkResetCheckout` opens the destination, reads
+  the rebuilt index, and runs `git_checkout_tree` with `GIT_CHECKOUT_FORCE` and
+  `baseline_index` set to that index. libgit2 trusts an entry's cached stats
+  (`checkout.c`, `checkout_is_workdir_modified`), so files equal at both
+  commits are left alone, while unrefreshed (dirty or missing) entries are
+  rewritten or recreated (`RECREATE_MISSING` is implied by `FORCE`). It then
+  lists the start's gitlinks whose copied checkout is not at that commit.
+- **Sparse state.** For a reset, the rehomer skips the root's
+  `info/sparse-checkout` and `config.worktree`, the root index gets no
+  skip-worktree bits, and both validations expect an empty skip-worktree set
+  (`WorktreeForkPlan.rootSkipWorktreePaths`).
+- **Attach.** `WorktreeForkBranchAttach` reaches the `beforeBranchAttach`
+  barrier seam, then runs `LibGit2BranchAttach` on a transaction opened on the
+  destination repository: lock `refs/heads/<b>` (`afterBranchReferenceLockAcquired`
+  seam), re-read `LibGit2BranchUseReader`, stage the creation or fast-forward,
+  lock and set the destination's `HEAD` symbolically, commit. A detached target
+  only detaches `HEAD` at the start when it differs. `LibGit2BranchUpstreamWriter`
+  then writes both upstream keys in one lock of the repository-level config.
+  `afterBranchAttached` follows.
+- **Fill and final validation.** A reset fills LFS pointers through the fork's
+  own destination descriptor after the attach, because the fill enumerates
+  `HEAD`'s tree. `WorktreeForkValidator.validateAttached` checks `HEAD`, the
+  index tree against the start (with empty unrefreshed evidence after a reset),
+  lock artifacts including the branch ref, and re-reads the snapshot;
+  `afterAttachValidation` is the last seam.
+- **Journal.** `.createdBranch` (deleted with its config section by
+  `git_branch_delete`) and `.movedBranch(from:to:)`, undone by
+  `LibGit2BranchMoveUndo` under the ref lock only while the branch is still at
+  `to`; otherwise residue `branchMoveNotUndone`.
+- **Plain checkout.** `LibGit2WorktreeCreateBranchAttach` runs the same attach
+  without moving any `HEAD`, before `git_worktree_add`; `WorktreeCreateRollback`
+  deletes a created branch and undoes a fast-forward. A failed undo there is
+  not reportable: `GitDataPlaneError` has no residue channel.
+
 ## Validation and publication
 
 `WorktreeForkValidator` is separate from `LibGit2WorktreeReader` because the
 latter proves only that a worktree can be opened and described. Fork validation
 checks:
 
-- root worktree identity, branch/detached mode, and captured `HEAD` OID;
+- root worktree identity, detached at the captured `HEAD` OID before the attach,
+  and after it the branch target at the start commit;
 - plan-versus-destination path kinds and counts;
 - one successful strict clone observation per required regular payload;
 - destination inode equality within each hard-link group and separation from
@@ -476,7 +563,8 @@ transaction.
 The rollback journal is created before the first mutation. It records the
 preflight absence/presence and expected identity of:
 
-- a transaction-created branch;
+- a transaction-created branch (the carrier, or the attached new branch);
+- a fast-forward the attach landed, with its previous and new tips;
 - the linked-worktree name and administrative path;
 - the destination root;
 - each destination-owned nested/submodule administrative root;
@@ -494,7 +582,8 @@ stop admission and join all leaf workers
   ──► close destination Git/index handles
   ──► remove journaled working and nested-administration paths
   ──► prune journaled linked-worktree administration
-  ──► delete only the journaled transaction-created branch
+  ──► delete only the journaled transaction-created branches
+  ──► move a journaled fast-forward back while it is still at its new tip
   ──► re-probe every journal entry
   ──► return primary error when clean
        or cleanup-incomplete error with ordered residue
@@ -567,6 +656,7 @@ normal create, or fallback from fork to normal checkout.
 | U-10 | nonblocking caller execution and same-repository non-interleaving | blocking writer lane and bounded workers | deterministic concurrent-mutation integration |
 | U-11 | mixed-time contract and independent post-clone divergence | planner race rules and APFS clone | controlled source mutation plus bidirectional divergence fixture |
 | U-13 | behavioral, Git, APFS, rollback, concurrency, and performance evidence | all owners expose real seams above | unit/integration/performance evidence kept distinct |
+| U-03 (D13–D20) | as-is or reset copy; one locked attach for every fork and the plain checkout | branch-target planner, reset copy filter, reset checkout, shared attach, journal | reset and attach integration suites with backdated sources and barrier/fault seams; create-branch suite |
 
 The production path itself is the integration-test path: fixtures use real
 libgit2, filesystem entries, APFS clones, Git administration, and indexes.
@@ -578,7 +668,8 @@ allocation measurements supplement rather than replace behavioral assertions.
 
 This design intentionally does not include product topology hiding, progress
 callbacks, persistent recovery, secret filtering, source locking, a generic
-filesystem copier, a directory-clone fast path, or an alternate-base overlay.
+filesystem copier, a directory-clone fast path, or a merge of source changes
+onto another start.
 
 Reopen the structure if evidence shows one of these:
 
