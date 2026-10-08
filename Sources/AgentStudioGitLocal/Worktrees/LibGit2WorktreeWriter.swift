@@ -24,9 +24,11 @@ struct LibGit2WorktreeWriter: Sendable {
     }
 
     /// Plans the branch target, registers and checks out the worktree detached at the pinned start, validates it,
-    /// and only then attaches the branch. The attach is the last step that can fail, except a new branch's upstream
-    /// write, whose failure deletes that new branch; so a failure never leaves an existing branch moved and no
-    /// fast-forward needs undoing. The LFS fill after it never throws.
+    /// and only then attaches the branch; the attach and a new branch's upstream write after it are the last steps
+    /// that can fail. The attach's commit can fail after its ref landed, so the ref is re-read after a commit error:
+    /// rollback removes a new branch that landed and moves a landed fast-forward back under the ref lock, re-reading
+    /// it after its own commit. How a restore that cannot be confirmed is reported is still pending; for now the call
+    /// throws its own error either way. The LFS fill after the attach never throws.
     func createWorktree(_ request: GitCreateWorktreeRequest) throws
         -> GitWorktreeCreation
     {

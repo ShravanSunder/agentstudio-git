@@ -158,10 +158,12 @@ libgit2/Git failures are wrapped as a payload rather than adding cases to
 now refuses through the same attach.
 
 The existing `createWorktree` method and writer path do not delegate through
-fork logic; they share only `LibGit2BranchAttach` and
-`LibGit2BranchUpstreamWriter`, which run after the checkout as its last
-fallible steps. An unavailable CoW platform stays irrelevant to normal
-creation.
+fork logic. They share `LibGit2BranchAttach` and `LibGit2BranchUpstreamWriter`,
+which run after the checkout as its last fallible steps, and the rollback
+primitives `LibGit2CreatedBranchCompensation` and `LibGit2BranchMoveUndo`, which
+undo whatever the attach landed (how create reports an undo it cannot confirm
+is pending; see the plain-checkout bullet). An unavailable CoW platform stays
+irrelevant to normal creation.
 
 ### Repository mutation submission
 
