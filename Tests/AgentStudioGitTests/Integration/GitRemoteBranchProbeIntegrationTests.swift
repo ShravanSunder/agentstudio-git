@@ -51,8 +51,8 @@ struct GitRemoteBranchProbeIntegrationTests {
         #expect(try fixture.git.run("for-each-ref") == localRefsBefore)
     }
 
-    @Test("branch names match by their bytes: a line separator inside a name, and a canonically equivalent pair")
-    func probeMatchesBranchNamesByBytes() async throws {
+    @Test("a line separator inside a name stays one line, and a canonically equivalent pair resolves as git does")
+    func probeSplitsLinesByBytesAndMatchesNamesAsGitDoes() async throws {
         // Arrange: the origin holds `a<U+2028>b`, precomposed `é` and decomposed `e<U+0301>` at three commits. The two
         // spellings of é stay distinct refs only in packed-refs, because APFS treats their loose file names as one.
         // Names go in through `update-ref --stdin`: `Process` arguments reach git decomposed.
@@ -104,8 +104,8 @@ struct GitRemoteBranchProbeIntegrationTests {
         // Assert
         #expect(separator == .present(commit: commits[0]))
         #expect(precomposedWhilePrecomposing == .present(commit: commits[1]))
-        // git asked for the precomposed name; that line is another ref, so not its commit.
-        #expect(decomposedWhilePrecomposing == .absent)
+        // git asked for the precomposed name and found that branch, the one git on macOS means.
+        #expect(decomposedWhilePrecomposing == .present(commit: commits[1]))
         #expect(precomposedExact == .present(commit: commits[1]))
         #expect(decomposedExact == .present(commit: commits[2]))
     }

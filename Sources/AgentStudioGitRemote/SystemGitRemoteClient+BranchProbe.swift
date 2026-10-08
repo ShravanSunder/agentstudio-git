@@ -8,7 +8,7 @@ extension SystemGitRemoteClient {
     /// outcome (an unreachable remote, a refused protocol, a timeout) is thrown, and nothing is fetched.
     /// `insteadOf`, credential helpers, and the prompt policy apply exactly as they do for `fetch`. With the
     /// repository's `core.precomposeUnicode` on (the macOS default), git rewrites a decomposed branch name to its
-    /// precomposed form before asking; the line it returns is then another ref, so the probe answers `absent`.
+    /// precomposed form before asking, and the probe answers for the branch git found, as git on macOS does.
     public func probeRemoteBranch(_ request: GitRemoteBranchProbeRequest) async throws(GitDataPlaneError)
         -> GitRemoteBranchPresence
     {
@@ -30,14 +30,15 @@ extension SystemGitRemoteClient {
             }
             throw error
         }
-        // ls-remote matches patterns by path tail, so only the exact ref answers the question. Git refs are bytes:
-        // a line ends only at a "\n" byte (`Character` splitting also breaks at U+2028, U+2029 and U+0085), and the
-        // ref field must equal the requested name byte for byte (`String` equality also accepts a canonically
-        // equivalent name, which is a different ref).
-        let referenceBytes = Array(referenceName.utf8)
+        // ls-remote matches patterns by path tail, so only the exact ref answers the question. A line ends only at a
+        // "\n" byte: `Character` splitting also breaks at U+2028, U+2029 and U+0085, which a branch name may hold.
+        // The ref field is compared canonically, not byte for byte. Every returned line byte-tail-matches the name git
+        // actually sent, so a line canonically equal to `referenceName` is that ref: with `core.precomposeUnicode`
+        // on, git sends a decomposed name precomposed and returns the precomposed ref, the branch git means; with it
+        // off, git sends the decomposed bytes and only that ref comes back.
         for line in result.stdout.utf8.split(separator: UInt8(ascii: "\n")) {
             let fields = line.split(separator: UInt8(ascii: "\t"), maxSplits: 1, omittingEmptySubsequences: false)
-            guard fields.count == 2, fields[1].elementsEqual(referenceBytes) else {
+            guard fields.count == 2, let referenceField = String(fields[1]), referenceField == referenceName else {
                 continue
             }
             guard let commit = String(fields[0]), GitObjectIdentifierText.isFullObjectIdentifier(commit) else {
