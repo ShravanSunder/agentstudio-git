@@ -81,7 +81,8 @@ struct GitWorktreeForkIntegrationTests {
                 destination: fixture.destination("existing"),
                 mode: .existingBranch(name: "parked", expectedTip: capturedHead, fastForwardTo: nil)))
         let detached = try await client.forkWorktree(
-            fixture.request(destination: fixture.destination("detached"), mode: .detached(start: .commit(capturedHead))))
+            fixture.request(destination: fixture.destination("detached"), mode: .detached(start: .commit(capturedHead)))
+        )
 
         // Assert
         #expect(try fixture.blobID("HEAD", at: fixture.destination("new")) == capturedHead)
@@ -141,12 +142,17 @@ struct GitWorktreeForkIntegrationTests {
             (fixture.request(mode: newBranch("behind")), .rejected(reason: .branchAlreadyExists)),
             (fixture.request(mode: newBranch("bad..name")), .rejected(reason: .invalidBranchName)),
             (
-                fixture.request(mode: newBranch("fresh", upstream: GitBranchUpstream(remoteName: "bad remote", branchName: "x"))),
+                fixture.request(
+                    mode: newBranch("fresh", upstream: GitBranchUpstream(remoteName: "bad remote", branchName: "x"))),
                 .rejected(reason: .invalidUpstream)
             ),
             (
                 fixture.request(mode: newBranch("fresh", start: .commit(unknown))),
                 .gitFailure(.requiredObjectNotFound(oid: unknown))
+            ),
+            (
+                fixture.request(mode: newBranch("fresh", start: .commit(head + String(repeating: "0", count: 24)))),
+                .gitFailure(.unsupported(message: "start must be a full object identifier"))
             ),
             (
                 fixture.request(mode: newBranch("fresh", start: .commit(behind)), materialization: .changesOnly),

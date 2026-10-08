@@ -47,6 +47,11 @@ struct GitCreationReadIntegrationTests {
         let client = LibGit2AgentStudioGitLocalClient()
         let cases: [(local: String, expected: GitDataPlaneError)] = [
             (String(head.prefix(12)), .unsupported(message: "localCommit must be a full object identifier")),
+            // A SHA-256-length text whose first 40 digits name a commit must not be truncated to that commit.
+            (
+                head + String(repeating: "0", count: 24),
+                .unsupported(message: "localCommit must be a full object identifier")
+            ),
             (unknown, .requiredObjectNotFound(oid: unknown)),
             (tree, .unsupported(message: "localCommit does not name a commit")),
         ]

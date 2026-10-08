@@ -66,7 +66,7 @@ func addDetachedWorktree(
         throw LibGit2ErrorCapture.failure(code: createResult)
     }
     defer { git_reference_free(carrier) }
-    rollback.createdBranchName = carrierName
+    rollback.carrierBranchName = carrierName
 
     var addOptions = git_worktree_add_options()
     try initializeWorktreeAddOptions(&addOptions)
@@ -99,5 +99,5 @@ func addDetachedWorktree(
     guard deleteResult >= 0 else {
         throw LibGit2ErrorCapture.failure(code: deleteResult)
     }
-    rollback.createdBranchName = nil
+    rollback.carrierBranchName = nil
 }

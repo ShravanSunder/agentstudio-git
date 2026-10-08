@@ -72,8 +72,8 @@ public enum GitWorktreeCreateMode: Equatable, Hashable, Sendable {
     /// A new local branch at `startPoint`. `upstream` writes branch.<name>.remote and .merge.
     case newBranch(name: String, startPoint: GitRevisionTarget, upstream: GitBranchUpstream?)
     /// An existing local branch no worktree holds whose tip, read under its ref lock, is `expectedTip` (else
-    /// `branchMoved`). With `fastForwardTo`, the ref first moves to that descendant commit; a failed creation
-    /// moves it back.
+    /// `branchMoved`). With `fastForwardTo`, the ref moves to that descendant commit as the last step, after the
+    /// checkout is validated, so a failure never leaves it moved.
     case existingBranch(name: String, expectedTip: String, fastForwardTo: String?)
     case detached(startPoint: GitRevisionTarget)
 }

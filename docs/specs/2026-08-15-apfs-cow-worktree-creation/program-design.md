@@ -512,7 +512,11 @@ realizes it.
   barrier seam, then runs `LibGit2BranchAttach` on a transaction opened on the
   destination repository: lock `refs/heads/<b>` (`afterBranchReferenceLockAcquired`
   seam), re-read `LibGit2BranchUseReader`, stage the creation or fast-forward,
-  lock and set the destination's `HEAD` symbolically, commit. A detached target
+  write the destination's `HEAD` through libgit2's own `HEAD` lock
+  (`afterBranchHeadAttached` seam), and commit a transaction holding only the
+  branch ref. A transaction holding both refs is never used: libgit2 commits
+  its nodes in hash-bucket order (`transaction.c`), so a branch sharing
+  `HEAD`'s bucket would be unlocked before `HEAD` named it. A detached target
   only detaches `HEAD` at the start when it differs. `LibGit2BranchUpstreamWriter`
   then writes both upstream keys in one lock of the repository-level config.
   `afterBranchAttached` follows.
@@ -522,22 +526,29 @@ realizes it.
   index tree against the start (with empty unrefreshed evidence after a reset),
   lock artifacts including the branch ref, and re-reads the snapshot;
   `afterAttachValidation` is the last seam.
-- **Journal.** `.createdBranch` (deleted with its config section by
-  `git_branch_delete`) and `.movedBranch(from:to:)`, undone by
+- **Journal.** `.createdBranch` for the carrier only (its unique name lets
+  `git_branch_delete` remove it); `.attachedBranch` for the branch the attach
+  created, removed by `LibGit2CreatedBranchCompensation` through
+  `LibGit2LocalBranchDeletionWriter`, the locked expected-commit deletion of
+  LR14, so a branch that moved meanwhile keeps its ref, configuration and
+  reflog and is residue `createdBranch` (`git_branch_delete` drops the
+  configuration and reflog before comparing the ref); and
+  `.movedBranch(from:to:)`, undone by
   `LibGit2BranchMoveUndo` under the ref lock only while the branch is still at
   `to`; otherwise residue `branchMoveNotUndone`.
 - **Plain checkout.** `LibGit2WorktreeCreateBranchAttach.plan` checks every rule
   without mutation; `addDetachedWorktree` registers the worktree through a
   call-owned carrier and checks out the pinned start detached; the worktree is
-  validated; the `beforeBranchAttach` seam follows; then the attach runs with
-  `headMove: .beforeReferenceCommit`: under the ref lock it re-reads branch use,
-  compares the tip, writes the destination `HEAD`, and commits a transaction
-  holding only the branch ref, which libgit2 renames into place last
+  validated; the `beforeBranchAttach` seam follows; then the same attach runs:
+  under the ref lock it re-reads branch use, compares the tip, writes the
+  destination `HEAD`, and commits a transaction holding only the branch ref,
+  which libgit2 renames into place last
   (`refdb_fs.c`, `loose_commit`), so a failed commit leaves the ref unmoved.
   Nothing that can fail follows a fast-forward, so the plain checkout has no
   branch-move undo. Only a new branch's upstream write follows its creation
   (after the `beforeUpstreamWrite` seam); if it fails, `WorktreeCreateRollback`
-  deletes that branch and the worktree. Writing it before the branch exists was
+  prunes the worktree and removes that branch through the same
+  `LibGit2CreatedBranchCompensation`, silently (create has no residue channel). Writing it before the branch exists was
   rejected: a failure would leave a `branch.<name>` section that a later branch
   of that name silently inherits as tracking. The returned
   snapshot is the detached read with the `HEAD` the attach wrote, and the LFS

@@ -5,10 +5,13 @@ import Foundation
 /// A caller-pinned commit: a full object identifier that must name a commit already in the repository.
 /// It is never re-resolved as a revision, so a ref that moves after the caller read it cannot change it.
 enum LibGit2PinnedCommit {
+    /// The parse must round-trip: libgit2 reads only as many hex digits as its object format holds, so a longer
+    /// identifier (a SHA-256 one on this SHA-1 build) would otherwise be truncated to a different object.
     static func objectID(_ text: String, label: String) throws(GitDataPlaneError) -> git_oid {
         var oid = git_oid()
         guard GitObjectIdentifierText.isFullObjectIdentifier(text),
-            text.withCString({ git_oid_fromstr(&oid, $0) }) >= 0
+            text.withCString({ git_oid_fromstr(&oid, $0) }) >= 0,
+            oidString(&oid) == text.lowercased()
         else {
             throw .unsupported(message: "\(label) must be a full object identifier")
         }

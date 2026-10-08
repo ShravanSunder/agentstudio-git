@@ -100,16 +100,15 @@ struct LibGit2WorktreeCreateBranchAttach {
             request: LibGit2BranchAttachRequest(
                 repositoryPath: repositoryPath,
                 transactionRepository: destination,
-                target: attachTarget,
-                headMove: .beforeReferenceCommit
+                target: attachTarget
             ),
             lockObserver: .untracked
         ).run(
             refusal: Self.dataPlaneError,
-            afterReferenceLocked: { _ throws(GitDataPlaneError) in },
+            checkpoint: { _ throws(GitDataPlaneError) in },
             landed: { effect in
-                if case .created = effect {
-                    rollback.createdBranchName = branchName
+                if case .created(_, let commit) = effect {
+                    rollback.createdBranch = (branchName, commit)
                 }
             }
         )

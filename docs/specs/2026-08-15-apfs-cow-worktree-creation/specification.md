@@ -368,13 +368,19 @@ transaction, so any failure rolls the whole fork back.
    native ref lock. With the lock held the SDK re-reads branch use (a
    worktree's `HEAD` naming the branch, or, with `HEAD` detached, a rebase of
    it or a bisect from it) and refuses `branchCheckedOut(worktreePath:)`;
-   checks an existing tip against `expectedTip` (`branchMoved`) and writes the
-   fast-forward; or creates the new branch at the start; then points the
-   destination's `HEAD` at it and commits. A detached target is detached at the
-   start. An upstream is written after the branch exists. Each landed change is
-   journaled: rollback deletes a created branch with its upstream, and moves a
-   fast-forward back only while the branch is still at its new tip; otherwise
-   the residue is `branchMoveNotUndone` with the full ref name.
+   checks an existing tip against `expectedTip` (`branchMoved`) or proves a new
+   name free; points the destination's `HEAD` at the branch; and only then
+   commits the branch ref (the fast-forward or the creation) on its own. `HEAD`
+   lands while the lock is held, so any attach that takes the lock next already
+   reads the branch as checked out, and the lone ref lands entirely or not at
+   all. A detached target is detached at the start. An upstream is written
+   after the branch exists. Each landed change is journaled: rollback removes a
+   created branch, with its upstream, only while it is still at the start,
+   through the same locked expected-commit deletion branch deletion uses (a
+   branch another writer moved keeps its ref, configuration and reflog and is
+   residue `createdBranch`), and moves a fast-forward back only while the
+   branch is still at its new tip; otherwise the residue is
+   `branchMoveNotUndone` with the full ref name.
 4. **Validation after the attach.** `HEAD` names the branch at the start (or is
    detached there), the index tree equals the start's tree under the existing
    stat-evidence rule (after a reset every entry has stats), no lock this fork

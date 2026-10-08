@@ -52,19 +52,23 @@ struct WorktreeForkBranchAttach {
             request: LibGit2BranchAttachRequest(
                 repositoryPath: plan.sourceRoot,
                 transactionRepository: repository,
-                target: target,
-                headMove: .inTransaction
+                target: target
             ),
             lockObserver: lockObserver
         ).run(
             refusal: Self.forkError,
-            afterReferenceLocked: { referenceName throws(GitWorktreeForkError) in
-                try faults.reach(.afterBranchReferenceLockAcquired(referenceName: referenceName))
+            checkpoint: { point throws(GitWorktreeForkError) in
+                switch point {
+                case .referenceLocked(let referenceName):
+                    try faults.reach(.afterBranchReferenceLockAcquired(referenceName: referenceName))
+                case .headAttached(let referenceName):
+                    try faults.reach(.afterBranchHeadAttached(referenceName: referenceName))
+                }
             },
             landed: { effect in
                 switch effect {
                 case .created(let referenceName, let commit):
-                    journal.record(.createdBranch(referenceName: referenceName, targetOID: commit))
+                    journal.record(.attachedBranch(referenceName: referenceName, targetOID: commit))
                 case .fastForwarded(let referenceName, let from, let to):
                     journal.record(.movedBranch(referenceName: referenceName, fromOID: from, toOID: to))
                 }

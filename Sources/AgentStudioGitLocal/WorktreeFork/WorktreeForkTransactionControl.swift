@@ -49,6 +49,8 @@ enum WorktreeForkFaultPoint: Hashable, Sendable {
     case afterResetCheckout
     /// The barrier seam before the branch attach: everything is copied and validated, nothing is attached.
     case beforeBranchAttach
+    /// Inside the attach: the destination's `HEAD` names the branch and the branch lock is still held.
+    case afterBranchHeadAttached(referenceName: String)
     case afterBranchAttached
     case afterAttachValidation
     case rollbackRemovingDestination

@@ -4,8 +4,10 @@ import Foundation
 struct WorktreeCreateRollback {
     let repositoryPath: URL
     let worktreeName: String
-    /// The carrier branch while it exists, or a new branch the attach created, until its upstream write succeeds.
-    var createdBranchName: String?
+    /// The call-owned carrier branch while it exists; its unique name lets plain deletion remove it.
+    var carrierBranchName: String?
+    /// A new branch the attach created, until its upstream write succeeds; removed only at that commit.
+    var createdBranch: (name: String, commit: String)?
     var createdWorktree = false
     private var isArmed = true
 
@@ -40,8 +42,12 @@ struct WorktreeCreateRollback {
         if createdWorktree {
             pruneWorktreeIfPresent(named: worktreeName, repository: repository)
         }
-        if let createdBranchName {
-            deleteLocalBranchIfPresent(named: createdBranchName, repository: repository)
+        if let carrierBranchName {
+            deleteLocalBranchIfPresent(named: carrierBranchName, repository: repository)
+        }
+        if let createdBranch {
+            _ = LibGit2CreatedBranchCompensation(repositoryPath: repositoryPath, runtime: runtime)
+                .remove(branchName: createdBranch.name, createdAt: createdBranch.commit)
         }
     }
 }
@@ -68,6 +74,7 @@ private func pruneWorktreeIfPresent(named name: String, repository: OpaquePointe
     _ = git_worktree_prune(worktree, &options)
 }
 
+/// Plain deletion, for the carrier only.
 private func deleteLocalBranchIfPresent(named name: String, repository: OpaquePointer) {
     var reference: OpaquePointer?
     let lookupResult = name.withCString { namePointer in

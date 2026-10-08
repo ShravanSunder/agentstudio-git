@@ -39,37 +39,37 @@ struct LibGit2BranchAttachLockObserver: Sendable {
     let failed: @Sendable ([GitLockFact]) -> Void
 }
 
-/// Whether, and when, the transaction repository's own `HEAD` is pointed at the branch.
-enum LibGit2BranchAttachHeadMove: Equatable, Sendable {
-    case leaveHead
-    /// `HEAD` is locked and written in the same ref transaction; a failed commit can leave either written, so the
-    /// caller journals what landed.
-    case inTransaction
-    /// `HEAD` is written, still under the branch lock, just before a transaction that holds only the branch ref.
-    /// That single ref is renamed into place last, so a failed commit leaves it unmoved.
-    case beforeReferenceCommit
+/// Points inside the locked attach where a caller may observe or inject failure.
+enum LibGit2BranchAttachCheckpoint: Equatable, Sendable {
+    /// The branch's ref lock is held; nothing has been read or written under it yet.
+    case referenceLocked(referenceName: String)
+    /// The worktree's `HEAD` names the branch and the branch lock is still held; the branch ref is not committed.
+    case headAttached(referenceName: String)
 }
 
 struct LibGit2BranchAttachRequest {
     /// Any worktree of the repository; branch use is read across every worktree it has.
     let repositoryPath: URL
-    /// The repository whose ref database takes the transaction and whose `HEAD` `headMove` points at the branch.
+    /// The new worktree's repository: its ref database takes the transaction, and its `HEAD` is pointed at the
+    /// branch.
     let transactionRepository: OpaquePointer
     let target: LibGit2BranchAttachTarget
-    let headMove: LibGit2BranchAttachHeadMove
 }
 
-/// The one branch attach both worktree creators share. Under the branch's native ref lock it re-reads branch
-/// use, compares the tip with the pinned expectation (or proves a new name is free), writes the creation or
-/// fast-forward, optionally points a worktree `HEAD` at the branch, and commits. The writer lane only orders
-/// callers inside one process; this lock is what orders two processes attaching the same branch.
+/// The one branch attach both worktree creators share. Under the branch's native ref lock it re-reads branch use,
+/// compares the tip with the pinned expectation (or proves a new name is free), points the new worktree's `HEAD`
+/// at the branch, and only then commits a transaction holding the branch ref alone. `HEAD` is renamed into place
+/// while the branch lock is held, so any attach that takes the lock after this one already reads the branch as
+/// checked out; a transaction holding both refs would commit them in hash order and could release the branch lock
+/// before `HEAD` lands. The single ref is renamed last, so a failed commit leaves it unmoved. The writer lane only
+/// orders callers inside one process; this lock is what orders two processes attaching the same branch.
 struct LibGit2BranchAttach {
     let request: LibGit2BranchAttachRequest
     let lockObserver: LibGit2BranchAttachLockObserver
 
     func run<Failure: Error>(
         refusal: (LibGit2BranchAttachRefusal) -> Failure,
-        afterReferenceLocked: (String) throws(Failure) -> Void,
+        checkpoint: (LibGit2BranchAttachCheckpoint) throws(Failure) -> Void,
         landed: (LibGit2BranchAttachEffect) -> Void
     ) throws(Failure) {
         let repository = request.transactionRepository
@@ -86,7 +86,7 @@ struct LibGit2BranchAttach {
             }
         }
         try lock(referenceName, fact: referenceLock, transaction: transactionHandle, refusal: refusal)
-        try afterReferenceLocked(referenceName)
+        try checkpoint(.referenceLocked(referenceName: referenceName))
 
         let use: GitBranchUse
         do {
@@ -104,26 +104,8 @@ struct LibGit2BranchAttach {
         }
 
         let effect = try stageReferenceChange(transactionHandle, refusal: refusal)
-        var heldLocks = [referenceLock]
-        switch request.headMove {
-        case .leaveHead:
-            break
-        case .beforeReferenceCommit:
-            try setHead(referenceName, refusal: refusal)
-        case .inTransaction:
-            let headLock = try lockFact(.reference(name: "HEAD"), refusal: refusal)
-            try lock("HEAD", fact: headLock, transaction: transactionHandle, refusal: refusal)
-            heldLocks.append(headLock)
-            let message = "agentstudio worktree: attach \(referenceName)"
-            let headResult = message.withCString { messagePointer in
-                referenceName.withCString { targetPointer in
-                    git_transaction_set_symbolic_target(transactionHandle, "HEAD", targetPointer, nil, messagePointer)
-                }
-            }
-            guard headResult >= 0 else {
-                throw refusal(.gitFailure(LibGit2ErrorCapture.failure(code: headResult)))
-            }
-        }
+        try setHead(referenceName, refusal: refusal)
+        try checkpoint(.headAttached(referenceName: referenceName))
 
         errno = 0
         let commitResult = git_transaction_commit(transactionHandle)
@@ -132,11 +114,11 @@ struct LibGit2BranchAttach {
             if let effect, referencePoints(referenceName, at: effect.newTip) {
                 landed(effect.value)
             }
-            lockObserver.failed(heldLocks)
+            lockObserver.failed([referenceLock])
             throw refusal(
                 .gitFailure(
                     LibGit2ErrorCapture.failure(
-                        code: commitResult, lockFacts: heldLocks, systemErrorCode: commitErrorNumber)))
+                        code: commitResult, lockFacts: [referenceLock], systemErrorCode: commitErrorNumber)))
         }
         if let effect {
             landed(effect.value)

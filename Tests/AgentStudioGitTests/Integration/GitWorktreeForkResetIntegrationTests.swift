@@ -18,8 +18,8 @@ struct GitWorktreeForkResetIntegrationTests {
         // Arrange
         let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-reset-dirty")
         defer { fixture.remove() }
-        try fixture.write(".gitignore", "*.log\nbuild/\ncache/\n")
-        for name in ["same.txt", "modified.txt", "head-only.txt"] {
+        try fixture.write(".gitignore", "*.log\n*.o\nbuild/\ncache/\n")
+        for name in ["same.txt", "modified.txt", "head-only.txt", "tools/a.txt"] {
             try fixture.write(name, "base \(name)\n")
         }
         try fixture.write("differs.txt", "head version\n")
@@ -30,7 +30,8 @@ struct GitWorktreeForkResetIntegrationTests {
             try fixture.write("start-only.txt", "only at the start\n", in: starter)
             try fixture.write("build/version.txt", "start tracks this\n", in: starter)
             try fixture.git.run(["rm", "-q", "head-only.txt"], currentDirectory: starter)
-            try fixture.git.run(["add", "-f", "differs.txt", "start-only.txt", "build/version.txt"], currentDirectory: starter)
+            try fixture.git.run(
+                ["add", "-f", "differs.txt", "start-only.txt", "build/version.txt"], currentDirectory: starter)
         }
         try fixture.write("modified.txt", "work in progress\n")
         try fixture.write("scratch.txt", "untracked\n")
@@ -40,13 +41,17 @@ struct GitWorktreeForkResetIntegrationTests {
         try fixture.write("cache/blob.txt", "ignored folder, not included\n")
         try fixture.write("build/out.bin", "included build output\n")
         try fixture.write("build/version.txt", "source build output\n")
+        // `tools/` is included but not ignored, so its entries are classified one by one.
+        try fixture.write("tools/scratch.txt", "untracked inside an included folder\n")
+        try fixture.write("tools/out.o", "ignored inside an included folder\n")
         try makeIndependentRepository(at: "build/checkouts/dep", in: fixture)
         try makeIndependentRepository(at: "vendor/tool", in: fixture)
         try backdateSourceFiles(fixture)
         _ = try fixture.git.succeeds("update-index", "-q", "--refresh")
         let sourceStatusBefore = try fixture.statusLines(at: fixture.source)
         let destination = fixture.destination()
-        let copyRules = GitWorktreeCopyRules(ignoredPaths: .copyMatching([try GitPathPattern("build/")]))
+        let copyRules = GitWorktreeCopyRules(
+            ignoredPaths: .copyMatching([try GitPathPattern("build/"), try GitPathPattern("tools/")]))
 
         // Act
         let result = try await LibGit2AgentStudioGitLocalClient().forkWorktree(
@@ -59,13 +64,18 @@ struct GitWorktreeForkResetIntegrationTests {
         #expect(
             try fixture.git.run(["write-tree"], currentDirectory: destination)
                 == fixture.git.run("rev-parse", "\(start)^{tree}"))
-        #expect(try fixture.statusLines(at: destination) == ["!! build/checkouts/", "!! build/out.bin"])
+        #expect(
+            try fixture.statusLines(at: destination) == ["!! build/checkouts/", "!! build/out.bin", "!! tools/out.o"])
+        #expect(try text("tools/a.txt", in: destination) == "base tools/a.txt\n")
+        #expect(try text("tools/out.o", in: destination) == "ignored inside an included folder\n")
         #expect(try text("differs.txt", in: destination) == "start version\n")
         #expect(try text("start-only.txt", in: destination) == "only at the start\n")
         #expect(try text("modified.txt", in: destination) == "base modified.txt\n")
         #expect(try text("build/version.txt", in: destination) == "start tracks this\n")
         #expect(try text("build/out.bin", in: destination) == "included build output\n")
-        for absent in ["head-only.txt", "scratch.txt", "staged-new.txt", "debug.log", "cache", "vendor"] {
+        for absent in [
+            "head-only.txt", "scratch.txt", "staged-new.txt", "debug.log", "cache", "vendor", "tools/scratch.txt",
+        ] {
             #expect(!GitWorktreeForkFileProbe.exists(destination.appending(path: absent)), "\(absent)")
         }
         for unchanged in ["same.txt", ".gitignore", "build/out.bin", "build/checkouts/dep/dep.txt"] {
@@ -74,8 +84,10 @@ struct GitWorktreeForkResetIntegrationTests {
         #expect(GitWorktreeForkFileProbe.privateSize(destination.appending(path: "same.txt")) == 0)
         #expect(try modificationTime("modified.txt", in: destination) != Self.backdated)
         #expect(
-            try fixture.git.run(["rev-parse", "HEAD"], currentDirectory: destination.appending(path: "build/checkouts/dep"))
-                == fixture.git.run(["rev-parse", "HEAD"], currentDirectory: fixture.source.appending(path: "build/checkouts/dep")))
+            try fixture.git.run(
+                ["rev-parse", "HEAD"], currentDirectory: destination.appending(path: "build/checkouts/dep"))
+                == fixture.git.run(
+                    ["rev-parse", "HEAD"], currentDirectory: fixture.source.appending(path: "build/checkouts/dep")))
         #expect(try fixture.statusLines(at: fixture.source) == sourceStatusBefore)
         guard case .copyOnWrite(let report) = result.materialization else {
             Issue.record("expected a copy-on-write report")
@@ -83,8 +95,9 @@ struct GitWorktreeForkResetIntegrationTests {
         }
         #expect(report.sourceState == .reset)
         #expect(report.submodulesNotAtStart.isEmpty)
-        #expect(report.largeFiles == GitLargeFileFill(materializedCount: 0, missing: [], residuePaths: [], scan: .complete))
-        #expect(report.ignoredIncludedPatterns == ["build/"])
+        #expect(
+            report.largeFiles == GitLargeFileFill(materializedCount: 0, missing: [], residuePaths: [], scan: .complete))
+        #expect(report.ignoredIncludedPatterns == ["build/", "tools/"])
     }
 
     @Test("a start equal to the captured HEAD copies as is; a detached reset is detached at the start")
@@ -198,8 +211,10 @@ struct GitWorktreeForkResetIntegrationTests {
         #expect(!GitWorktreeForkFileProbe.exists(destination.appending(path: "sub-removed")))
         #expect(try fixture.blobID("HEAD", at: destination.appending(path: "sub-changed")) == changedCurrent)
         #expect(try text("tool.txt", in: destination.appending(path: "sub-changed")) == "tool.txt\n")
-        #expect(try FileManager.default.contentsOfDirectory(atPath: destination.appending(path: "sub-new").path).isEmpty)
-        #expect(try fixture.git.run(["ls-files", "-s", "sub-changed"], currentDirectory: destination).contains(changedNext))
+        #expect(
+            try FileManager.default.contentsOfDirectory(atPath: destination.appending(path: "sub-new").path).isEmpty)
+        #expect(
+            try fixture.git.run(["ls-files", "-s", "sub-changed"], currentDirectory: destination).contains(changedNext))
         #expect(try fixture.git.run(["ls-files", "sub-removed"], currentDirectory: destination).isEmpty)
     }
 
@@ -228,7 +243,9 @@ struct GitWorktreeForkResetIntegrationTests {
         // pointer blobs, as a git-lfs checkout leaves the index. A size mismatch alone would never be re-hashed.
         try fixture.git.run("-c", "filter.lfs.clean=\(Self.cleanFilter)", "add", "same.bin", "changed.bin")
         #expect(try fixture.statusLines(at: fixture.source).isEmpty)
-        #expect(try fixture.stagedBlobID("same.bin", at: fixture.source) == fixture.blobID("HEAD:same.bin", at: fixture.source))
+        #expect(
+            try fixture.stagedBlobID("same.bin", at: fixture.source)
+                == fixture.blobID("HEAD:same.bin", at: fixture.source))
         let destination = fixture.destination()
 
         // Act
@@ -248,7 +265,8 @@ struct GitWorktreeForkResetIntegrationTests {
             Issue.record("expected a copy-on-write report")
             return
         }
-        #expect(report.largeFiles == GitLargeFileFill(materializedCount: 1, missing: [], residuePaths: [], scan: .complete))
+        #expect(
+            report.largeFiles == GitLargeFileFill(materializedCount: 1, missing: [], residuePaths: [], scan: .complete))
     }
 
     @Test("a sparse source comes out as a full checkout with no sparse state")
@@ -279,7 +297,9 @@ struct GitWorktreeForkResetIntegrationTests {
         #expect(try text("kept/inside.txt", in: destination) == "inside\n")
         #expect(!(try fixture.git.run(["ls-files", "-t"], currentDirectory: destination).contains("S ")))
         #expect(!(try fixture.git.succeeds("config", "--get", "core.sparseCheckout", currentDirectory: destination)))
-        #expect(!GitWorktreeForkFileProbe.exists(fixture.linkedWorktreeAdministration().appending(path: "info/sparse-checkout")))
+        #expect(
+            !GitWorktreeForkFileProbe.exists(
+                fixture.linkedWorktreeAdministration().appending(path: "info/sparse-checkout")))
         #expect(try fixture.statusLines(at: destination).isEmpty)
     }
 
@@ -292,7 +312,8 @@ struct GitWorktreeForkResetIntegrationTests {
             try fixture.write("start.txt", "start\n", in: starter)
             try fixture.git.run(["add", "start.txt"], currentDirectory: starter)
         }
-        let injected = GitWorktreeForkError.entryFailed(relativePath: "injected", reason: .entryCreationFailed, errorNumber: nil)
+        let injected = GitWorktreeForkError.entryFailed(
+            relativePath: "injected", reason: .entryCreationFailed, errorNumber: nil)
         let faults = WorktreeForkFaultInjector { reached throws(GitWorktreeForkError) in
             if reached == .afterResetCheckout {
                 throw injected
@@ -349,7 +370,8 @@ struct GitWorktreeForkResetIntegrationTests {
 
     /// Sets every working file's modification time into the past, outside `.git` directories.
     private func backdateSourceFiles(_ fixture: GitWorktreeForkFixture) throws {
-        let enumerator = try #require(FileManager.default.enumerator(at: fixture.source, includingPropertiesForKeys: nil))
+        let enumerator = try #require(
+            FileManager.default.enumerator(at: fixture.source, includingPropertiesForKeys: nil))
         for case let url as URL in enumerator {
             if url.lastPathComponent == ".git" {
                 enumerator.skipDescendants()
@@ -380,7 +402,8 @@ struct GitWorktreeForkResetIntegrationTests {
         let objectID = sha256(payload)
         let object = fixture.source.appending(
             path: ".git/lfs/objects/\(objectID.prefix(2))/\(objectID.dropFirst(2).prefix(2))/\(objectID)")
-        try FileManager.default.createDirectory(at: object.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: object.deletingLastPathComponent(), withIntermediateDirectories: true)
         try payload.write(to: object)
     }
 

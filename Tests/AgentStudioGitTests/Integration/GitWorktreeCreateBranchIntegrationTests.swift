@@ -189,6 +189,73 @@ struct GitWorktreeCreateBranchIntegrationTests {
         #expect(!FileManager.default.fileExists(atPath: fixture.linkedWorktreePath("fresh").path))
     }
 
+    @Test("a branch another worktree takes at the barrier refuses branchCheckedOut with nothing left behind")
+    func branchTakenAtBarrierIsRefused() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-create-barrier")
+        defer { fixture.remove() }
+        let base = try revision("HEAD", in: fixture)
+        try fixture.git.run("branch", "parked")
+        let rival = fixture.linkedWorktreePath("rival")
+        let client = LibGit2AgentStudioGitLocalClient(
+            worktreeWriter: LibGit2WorktreeWriter(
+                createFaults: WorktreeCreateFaultInjector { point in
+                    if point == .beforeBranchAttach {
+                        try fixture.git.run("worktree", "add", "-q", rival.path, "parked")
+                    }
+                }))
+
+        // Act
+        let failure = await failure {
+            _ = try await client.createWorktree(
+                request(
+                    fixture, "parked-checkout", .existingBranch(name: "parked", expectedTip: base, fastForwardTo: nil)))
+        }
+
+        // Assert
+        #expect(failure == .branchCheckedOut(worktreePath: rival))
+        #expect(try revision("parked", in: fixture) == base)
+        #expect(!FileManager.default.fileExists(atPath: fixture.linkedWorktreePath("parked-checkout").path))
+        #expect(!(try fixture.git.run("worktree", "list", "--porcelain").contains("parked-checkout")))
+        #expect(try GitProcess(repositoryPath: rival).run("symbolic-ref", "HEAD") == "refs/heads/parked\n")
+        #expect(!(try fixture.git.run("for-each-ref", "refs/heads").contains("carrier")))
+    }
+
+    @Test("a new branch another writer moves before compensation keeps its ref, config, and reflog")
+    func movedCreatedBranchSurvivesRollback() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-create-moved-created")
+        defer { fixture.remove() }
+        let base = try revision("HEAD", in: fixture)
+        let tip = try commit("tip.txt", in: fixture)
+        let client = LibGit2AgentStudioGitLocalClient(
+            worktreeWriter: LibGit2WorktreeWriter(
+                createFaults: WorktreeCreateFaultInjector { point in
+                    if point == .beforeUpstreamWrite {
+                        try fixture.git.run("update-ref", "-m", "another writer", "refs/heads/fresh", tip)
+                        try fixture.git.run("config", "branch.fresh.description", "kept by another writer")
+                        throw GitDataPlaneError.unsupported(message: "injected upstream write failure")
+                    }
+                }))
+
+        // Act
+        let failure = await failure {
+            _ = try await client.createWorktree(
+                request(
+                    fixture, "fresh",
+                    .newBranch(
+                        name: "fresh", startPoint: .named(base),
+                        upstream: GitBranchUpstream(remoteName: "origin", branchName: "fresh"))))
+        }
+
+        // Assert
+        #expect(failure == .unsupported(message: "injected upstream write failure"))
+        #expect(try revision("fresh", in: fixture) == tip)
+        #expect(try fixture.git.run("config", "branch.fresh.description") == "kept by another writer\n")
+        #expect(try fixture.git.run("reflog", "-1", "--format=%gs", "fresh") == "another writer\n")
+        #expect(!FileManager.default.fileExists(atPath: fixture.linkedWorktreePath("fresh").path))
+    }
+
     @Test("a new branch at a pinned commit writes its upstream; a detached checkout sits at its commit")
     func newBranchWithUpstreamAndDetachedCommit() async throws {
         // Arrange
