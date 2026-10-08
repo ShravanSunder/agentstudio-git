@@ -110,6 +110,44 @@ struct GitRemoteBranchProbeIntegrationTests {
         #expect(decomposedExact == .present(commit: commits[2]))
     }
 
+    @Test("a branch with U+2028 in its name probes present, then one-branch fetch writes its tracking ref, no tags")
+    func lineSeparatorBranchProbesAndFetches() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-remote-probe-fetch-separator")
+        defer { fixture.remove() }
+        let originPath = fixture.root.appending(path: "origin.git")
+        try fixture.git.run("init", "-q", "--bare", originPath.path, currentDirectory: fixture.root)
+        try fixture.git.run("remote", "add", "origin", originPath.path)
+        try fixture.write("separator.txt", contents: "separator\n")
+        try fixture.git.run("add", "separator.txt")
+        try fixture.git.run("commit", "-qm", "separator")
+        let separatorTip = try fixture.git.run("rev-parse", "HEAD").trimmingCharacters(in: .whitespacesAndNewlines)
+        try fixture.git.run("push", "-q", "origin", "main")
+        let branchName = "a\u{2028}b"
+        try fixture.git.run(
+            ["update-ref", "--stdin"], currentDirectory: originPath,
+            standardInput: Data("update refs/heads/\(branchName) \(separatorTip)\n".utf8))
+        try fixture.git.run(["tag", "remote-only-tag", separatorTip], currentDirectory: originPath)
+        let trackingReference = "refs/remotes/origin/\(branchName)"
+        #expect(!(try fixture.git.succeeds("rev-parse", "--verify", "--quiet", trackingReference)))
+        let client = SystemGitRemoteClient(configuration: .init(allowedProtocols: [.file]))
+
+        // Act
+        let presence = try await client.probeRemoteBranch(
+            GitRemoteBranchProbeRequest(
+                repositoryPath: fixture.repositoryPath, remoteName: "origin", branchName: branchName))
+        let fetched = try await client.fetch(
+            GitFetchRequest(repositoryPath: fixture.repositoryPath, remoteName: "origin", branchName: branchName))
+
+        // Assert
+        #expect(presence == .present(commit: separatorTip))
+        #expect(fetched.fetchedCommit == separatorTip)
+        #expect(
+            try fixture.git.run("rev-parse", "--verify", "\(trackingReference)^{commit}")
+                .trimmingCharacters(in: .whitespacesAndNewlines) == separatorTip)
+        #expect(!(try fixture.git.succeeds("rev-parse", "--verify", "--quiet", "refs/tags/remote-only-tag")))
+    }
+
     @Test("an unreachable remote is thrown, never reported absent")
     func unreachableRemoteIsThrown() async throws {
         // Arrange
