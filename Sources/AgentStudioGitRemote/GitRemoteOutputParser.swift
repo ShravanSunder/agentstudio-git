@@ -11,7 +11,9 @@ public struct GitRemoteOutputParser: Sendable {
         var orderedNames: [String] = []
 
         for rawLine in output.utf8.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: false) {
-            let line = String(decoding: rawLine, as: UTF8.self)
+            guard let line = String(rawLine) else {
+                throw .unsupported(message: "malformed ls-remote output")
+            }
             if line.isEmpty {
                 continue
             }

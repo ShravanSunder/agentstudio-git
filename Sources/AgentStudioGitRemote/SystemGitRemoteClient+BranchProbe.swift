@@ -40,8 +40,7 @@ extension SystemGitRemoteClient {
             guard fields.count == 2, fields[1].elementsEqual(referenceBytes) else {
                 continue
             }
-            let commit = String(decoding: fields[0], as: UTF8.self)
-            guard GitObjectIdentifierText.isFullObjectIdentifier(commit) else {
+            guard let commit = String(fields[0]), GitObjectIdentifierText.isFullObjectIdentifier(commit) else {
                 throw .unsupported(message: "ls-remote returned an invalid object identifier")
             }
             return .present(commit: commit)
