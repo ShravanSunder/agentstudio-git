@@ -25,8 +25,9 @@ struct WorktreeCreateRollback {
     }
 
     /// Removes what the failed call made and moves a fast-forwarded branch back. Returns `branchMoveNotUndone`, which
-    /// replaces the call's own error, unless a re-read confirms the branch is back at `from`: an undo that failed,
-    /// could not be read back, or found another writer's move (left in place) is never silent.
+    /// replaces the call's own error, unless this call's own undo is confirmed by a re-read: an undo that failed or
+    /// could not be read back is never silent, and a branch another writer moved, even back to `from`, is reported
+    /// and left alone.
     func rollback(runtime: LibGit2Runtime, faults: WorktreeCreateFaultInjector) -> GitDataPlaneError? {
         guard isArmed else {
             return nil

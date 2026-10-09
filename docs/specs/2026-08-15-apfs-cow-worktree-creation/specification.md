@@ -87,10 +87,10 @@ upstream write. A failure before the attach moves no branch. The attach's
 commit can report failure after the ref landed (below), so the call re-reads
 the ref: a created branch is removed as after a failed upstream write, and a
 fast-forward is moved back to `expectedTip` under the ref lock only while the
-branch is still at `fastForwardTo`. When a re-read confirms the branch back at
-`expectedTip`, the call fails with its own error. Otherwise (the undo failed,
-its result could not be read, or another writer moved the branch, a move the
-undo leaves in place) the call fails with
+branch is still at `fastForwardTo`. When a re-read confirms the call's own
+undo, the call fails with its own error. Otherwise (the undo failed, its result
+could not be read, or another writer moved the branch, even back to
+`expectedTip`, a move the undo leaves in place) the call fails with
 `GitDataPlaneError.branchMoveNotUndone(branchName:fromOID:toOID:)` instead:
 the branch and the attempted transition, not a verified final tip (D22). A detached checkout
 creates no branch at all. A branch held by another worktree fails

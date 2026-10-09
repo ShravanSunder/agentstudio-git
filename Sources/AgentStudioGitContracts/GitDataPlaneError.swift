@@ -28,10 +28,11 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
     /// The branch is held by the worktree at `worktreePath`: its `HEAD` names it, or it is rebasing or bisecting
     /// it. Nothing changed.
     case branchCheckedOut(worktreePath: URL)
-    /// A failed call fast-forwarded `branchName` from `fromOID` to `toOID` and could not confirm moving it back: the
-    /// undo failed, its result could not be read, or the branch was no longer at `toOID` (another writer moved it,
-    /// and the undo left that move alone). The payload is the attempted transition, not a verified final ref value;
-    /// read the branch for that. This error replaces the call's own failure.
+    /// A failed call fast-forwarded `branchName` from `fromOID` to `toOID`, and this call's own undo was not confirmed
+    /// by a re-read: the undo failed, its result could not be read, or another writer had moved the branch. A branch
+    /// another writer moved, even back to `fromOID`, is reported this way and left alone. The payload is the
+    /// attempted transition, not a verified final ref value; read the branch for that. This error replaces the
+    /// call's own failure.
     case branchMoveNotUndone(branchName: String, fromOID: String, toOID: String)
 
     private enum CodingKeys: String, CodingKey, CaseIterable {

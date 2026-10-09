@@ -191,6 +191,35 @@ struct GitWorktreeCreateUndoIntegrationTests {
         #expect(!FileManager.default.fileExists(atPath: fixture.linkedWorktreePath("behind").path))
     }
 
+    /// A characterization test of the contract at fcc3ad4: "confirmed" means this call's own undo was confirmed. When
+    /// another writer sets the branch back to exactly `fromOID` before the undo, the undo writes nothing and the call
+    /// still reports `branchMoveNotUndone`, so the caller learns another writer changed the branch during the call.
+    @Test("a branch another writer sets back to from before the undo is still reported and keeps that writer's value")
+    func branchSetBackToFromByAnotherWriterIsStillReported() async throws {
+        // Arrange
+        let fixture = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-create-undo-foreign-from")
+        defer { fixture.remove() }
+        let base = try revision("HEAD", in: fixture)
+        try fixture.git.run("branch", "behind")
+        let tip = try commit("tip.txt", in: fixture)
+        let client = client(at: .afterBranchAttached) {
+            try fixture.git.run("update-ref", "-m", "another writer", "refs/heads/behind", base)
+            throw GitDataPlaneError.unsupported(message: "injected after the attach")
+        }
+
+        // Act
+        let failure = await failure {
+            _ = try await client.createWorktree(
+                request(fixture, "behind", .existingBranch(name: "behind", expectedTip: base, fastForwardTo: tip)))
+        }
+
+        // Assert: the branch holds the other writer's value, and the undo wrote no entry of its own.
+        #expect(failure == .branchMoveNotUndone(branchName: "behind", fromOID: base, toOID: tip))
+        #expect(try revision("behind", in: fixture) == base)
+        #expect(try fixture.git.run("reflog", "-1", "--format=%gs", "behind") == "another writer\n")
+        #expect(!FileManager.default.fileExists(atPath: fixture.linkedWorktreePath("behind").path))
+    }
+
     private func client(
         at faultPoint: WorktreeCreateFaultPoint,
         _ action: @escaping @Sendable () throws -> Void

@@ -560,10 +560,10 @@ realizes it.
   residue channel), and moves a fast-forward back through
   `LibGit2BranchMoveUndo`, which re-reads the branch after its own commit.
   `rollback` returns `GitDataPlaneError.branchMoveNotUndone(branchName:fromOID:toOID:)`
-  unless that re-read confirms the branch at `from`, and `createWorktree` throws
-  it in place of its own error (owner decision D22): an undo that failed, could
-  not be read back, or found another writer's move (left in place) is never
-  silent. The `afterBranchMoveUndoCommitted` seam sits between the undo's commit
+  unless that re-read confirms the call's own undo, and `createWorktree` throws
+  it in place of its own error (owner decision D22): an undo that failed or could
+  not be read back is never silent, and a branch another writer moved, even back
+  to `from`, is reported and left alone. The `afterBranchMoveUndoCommitted` seam sits between the undo's commit
   and that re-read. `plan` also checks the upstream with
   `LibGit2BranchUpstreamWriter.isValid`, the fork planner's own rule. Writing
   the upstream before the branch exists was
