@@ -324,3 +324,72 @@ public struct GitRemoteReference: Codable, Equatable, Hashable, Sendable {
         self.symrefTarget = symrefTarget
     }
 }
+
+/// Asks one configured remote whether it has one branch, before `new` decides which ref to trust.
+public struct GitRemoteBranchProbeRequest: Codable, Equatable, Hashable, Sendable {
+    public let repositoryPath: URL
+    public let remoteName: String
+    /// Short branch name on the remote, without `refs/heads/`.
+    public let branchName: String
+
+    public init(repositoryPath: URL, remoteName: String, branchName: String) {
+        self.repositoryPath = repositoryPath
+        self.remoteName = remoteName
+        self.branchName = branchName
+    }
+}
+
+/// What the remote answered. A failed question is thrown, never reported as `absent`.
+public enum GitRemoteBranchPresence: Equatable, Hashable, Sendable {
+    case present(commit: String)
+    case absent
+}
+
+extension GitRemoteBranchPresence: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case kind
+        case commit
+    }
+
+    private enum Kind: String, Codable {
+        case present
+        case absent
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let keys = Set(container.allKeys)
+        switch try container.decode(Kind.self, forKey: .kind) {
+        case .present:
+            let commit = try container.decode(String.self, forKey: .commit)
+            guard keys == [.kind, .commit], GitObjectIdentifierText.isFullObjectIdentifier(commit) else {
+                throw Self.invalidPayload(decoder)
+            }
+            self = .present(commit: commit)
+        case .absent:
+            guard keys == [.kind] else {
+                throw Self.invalidPayload(decoder)
+            }
+            self = .absent
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .present(let commit):
+            try container.encode(Kind.present, forKey: .kind)
+            try container.encode(commit, forKey: .commit)
+        case .absent:
+            try container.encode(Kind.absent, forKey: .kind)
+        }
+    }
+
+    private static func invalidPayload(_ decoder: Decoder) -> DecodingError {
+        .dataCorrupted(
+            DecodingError.Context(
+                codingPath: decoder.codingPath,
+                debugDescription: "a present remote branch carries exactly one full commit identifier"
+            ))
+    }
+}

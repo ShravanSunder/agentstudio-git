@@ -15,7 +15,8 @@ normal create
 
 APFS Worktree Fork
   one source worktree's current filesystem is the byte source of truth
-  its captured HEAD is the destination Git/index source of truth
+  its start commit is the destination Git/index source of truth: the captured
+  HEAD (the copy as it is) or another commit (the copy reset to it)
 ```
 
 The Worktree Fork does not replace or alter normal creation.
@@ -44,7 +45,7 @@ Outside the boundary
 | Step | Current observable pain | Required observable difference | Requirement |
 | --- | --- | --- | --- |
 | Select a prepared source worktree | It may contain dependencies, build caches, generated files, dirty edits, submodules, or nested repositories that normal creation discards. | The fork accepts the existing worktree path as its source. | U-02, U-06 |
-| Select destination Git identity | A different base would make the copied filesystem an ambiguous overlay. | Every fork identity resolves to the source's captured `HEAD`. | U-03 |
+| Select the start and branch target | A different base is an ambiguous overlay unless the overlay is defined. | A start equal to the captured `HEAD` copies the source as it is; any other start resets the copy to that commit by the rules in "Start, reset, and branch attach". The branch target attaches only after the copy is validated. | U-03 |
 | Create | Normal checkout rewrites files; naive copying can duplicate data or preserve unsafe `.git` pointers. | Regular-file payloads are APFS clones and Git administration is destination-safe. | U-04, U-07 |
 | Start work | Source staging must not leak, and later changes must not cross between copies. | The destination index represents captured `HEAD`; both filesystems diverge independently. | U-03, U-11 |
 | Diagnose omissions or failure | A snapshot alone cannot explain skipped runtime entries or incomplete cleanup. | Success includes a materialization report; failure includes typed cause and any cleanup residue. | U-08, U-09 |
@@ -58,14 +59,44 @@ The package MUST preserve this method and its current behavior:
 ```swift
 func createWorktree(
     _ request: GitCreateWorktreeRequest
-) async throws(GitDataPlaneError) -> GitWorktreeSnapshot
+) async throws(GitDataPlaneError) -> GitWorktreeCreation
 ```
 
-`GitCreateWorktreeRequest(repositoryPath:destinationPath:mode:)`, its
-three-argument initializer, its three current modes, and its encoded field
-shape MUST remain unchanged. Decoding an existing payload MUST continue to
-produce the same normal request. Existing normal success and failure behavior
-MUST not depend on CoW availability.
+`GitCreateWorktreeRequest(repositoryPath:destinationPath:mode:)` keeps its
+three-argument initializer and its case-keyed mode encoding. Its normal success
+and failure behavior MUST not depend on CoW availability.
+
+The creation follow-up (Agent Studio worktree lifecycle, owner decisions
+D13–D20) cut the modes over in one pin bump to the fork's branch shapes:
+
+- `.newBranch(name:startPoint:upstream:)`: a new branch at the resolved start
+  point; a non-nil `GitBranchUpstream` writes `branch.<name>.remote` and
+  `branch.<name>.merge`.
+- `.existingBranch(name:expectedTip:fastForwardTo:)`: an existing branch whose
+  tip, read under its ref lock, MUST equal `expectedTip` (else `branchMoved`);
+  with `fastForwardTo`, which MUST descend from `expectedTip`, the branch
+  moves there.
+- `.detached(startPoint:)`.
+
+Every rule is checked before anything is created, including the fork's
+upstream rule (a valid remote name and branch name, no NUL). The worktree is
+then registered and checked out detached at the pinned start commit,
+validated, and only then attached through the same locked attach as the fork
+(below): that attach is the last step that can fail, apart from a new branch's
+upstream write. A failure before the attach moves no branch. The attach's
+commit can report failure after the ref landed (below), so the call re-reads
+the ref: a created branch is removed as after a failed upstream write, and a
+fast-forward is moved back to `expectedTip` under the ref lock only while the
+branch is still at `fastForwardTo`. When a re-read confirms the call's own
+undo, the call fails with its own error. Otherwise (the undo failed, its result
+could not be read, or another writer moved the branch, even back to
+`expectedTip`, a move the undo leaves in place) the call fails with
+`GitDataPlaneError.branchMoveNotUndone(branchName:fromOID:toOID:)` instead:
+the branch and the attempted transition, not a verified final tip (D22). A detached checkout
+creates no branch at all. A branch held by another worktree fails
+`GitDataPlaneError.branchCheckedOut(worktreePath:)`.
+Both tips are full object identifiers; decoding rejects anything else, so an
+`existingBranch` payload without `expectedTip` no longer decodes.
 
 ### New Worktree Fork
 
@@ -83,13 +114,20 @@ func forkWorktree(
   state will be captured;
 - `destinationPath`: a nonexistent destination on the same clone-capable APFS
   filesystem;
-- `mode`: a `GitForkWorktreeMode` selecting `.existingBranch(name:)`,
-  `.newBranch(name:)`, or `.detached`.
+- `mode`: a `GitForkWorktreeMode` selecting the branch target and its start:
+  `.newBranch(name:start:upstream:)`,
+  `.existingBranch(name:expectedTip:fastForwardTo:)`, or `.detached(start:)`,
+  where `GitForkStart` is `.sourceHead` or `.commit(oid)`;
+- `materialization`: `.copyOnWrite` or `.changesOnly`;
+- `copyRules`: which ignored paths a copy-on-write fork carries.
 
-The fork mode contains no arbitrary start point. A new branch is created at
-the source's captured `HEAD`; a detached destination uses that commit; an
-existing branch is accepted only if it resolves to that commit and is not
-already checked out in another worktree. A mismatch MUST fail before mutation.
+An existing branch's start is its resulting tip (`fastForwardTo` when given,
+else `expectedTip`). A branch target MUST be rejected before mutation when its
+name is invalid, a new branch already exists, an existing branch is missing or
+not at `expectedTip` (`branchMoved`), `fastForwardTo` does not descend from
+`expectedTip`, an upstream name is invalid, or any worktree holds the branch
+(`branchCheckedOut(worktreePath:)`). A changes-only fork, and a `.copyAll`
+fork, MUST start at the captured `HEAD`; another start is `invalidStart`.
 
 The new protocol requirement MUST have a default implementation that throws a
 typed unsupported-capability error so existing source conformers and test
@@ -99,7 +137,8 @@ compatibility is promised.
 
 `GitWorktreeForkError` MUST be a new stable Codable error contract rather than
 new cases on `GitDataPlaneError`. It MUST distinguish request/preflight
-rejection, wrapped Git data-plane failure, source-race failure, strict-clone or
+rejection, a branch held by another worktree (with that worktree's absolute
+path), wrapped Git data-plane failure, source-race failure, strict-clone or
 entry-policy failure, cancellation, validation failure, and cleanup-incomplete
 failure. Keeping fork-only variants out of the existing public enum avoids
 breaking downstream exhaustive switches over `GitDataPlaneError`.
@@ -107,7 +146,10 @@ breaking downstream exhaustive switches over `GitDataPlaneError`.
 `GitForkWorktreeResult` MUST contain:
 
 - `worktree`: the validated `GitWorktreeSnapshot`;
-- `materialization`: a `GitWorktreeMaterializationReport`.
+- `materialization`: a `GitWorktreeMaterializationResult`; a copy-on-write
+  fork's `GitWorktreeMaterializationReport` also carries `sourceState`
+  (`asIs` or `reset`), `submodulesNotAtStart`, and `largeFiles` (present
+  exactly for a reset).
 
 The report MUST contain stable counts for cloned regular files, created
 directories, recreated symbolic links, preserved hard links, preserved Git
@@ -140,7 +182,8 @@ The operation MUST reject without mutation unless all of these are true:
 - source and destination roots do not overlap or contain one another;
 - every initialized nested or submodule Git common directory and object
   alternate that must be mirrored resolves to that same filesystem/device;
-- the selected branch mode satisfies the captured-`HEAD` rules;
+- the selected branch target satisfies its pre-mutation rules and the start is
+  allowed for the materialization and copy rules;
 - neither the source root nor the destination parent is a File
   Provider-managed location (iCloud Drive, iCloud Desktop & Documents,
   `~/Library/CloudStorage/*` domains), as reported by the item's ubiquity
@@ -235,8 +278,10 @@ The destination MUST be a normal linked worktree sharing the superproject's
 common Git object/ref administration. Its root `.git` pointer MUST be the one
 created for the destination, never a copy of the source root `.git` entry.
 
-The destination `HEAD` MUST remain the captured source `HEAD` commit. Its index
-MUST be rebuilt from that commit without rewriting materialized working files.
+For an as-is copy, the destination `HEAD` MUST end at the captured source
+`HEAD` commit. Its index MUST be rebuilt from that commit without rewriting
+materialized working files. A reset copy is defined in "Start, reset, and
+branch attach".
 Before success, every tracked index entry whose destination working file
 matches the captured tree MUST carry current destination stat data, so a later
 status that does not refresh the index does not re-hash unchanged files. That
@@ -253,9 +298,10 @@ captured tree's object ID. Consequently:
 
 ### Sparse worktrees
 
-If the source uses sparse checkout, the destination MUST preserve the source's
-effective sparse patterns, worktree-specific sparse configuration, and
-skip-worktree semantics while rebuilding content from captured `HEAD`.
+If the source uses sparse checkout, an as-is destination MUST preserve the
+source's effective sparse patterns, worktree-specific sparse configuration, and
+skip-worktree semantics while rebuilding content from captured `HEAD`. A reset
+destination comes out as a full checkout of its start with no sparse state.
 Intentionally absent sparse paths MUST not appear as mass deletions. Sparse
 index representation itself is not a compatibility promise; an equivalent
 full index is acceptable when status and checkout behavior are the same.
@@ -304,6 +350,71 @@ files are captured under the ordinary dirty-file rules. An independent nested
 repository copied as content keeps all of these exactly as they are in the
 source.
 
+## Start, reset, and branch attach
+
+The rule lives next to the captured `HEAD`: a start equal to it keeps the copy
+as it is (`sourceState: asIs`); any other start resets the copy
+(`sourceState: reset`). Steps 1, 2, 5, 6 and 7 apply only to a reset; steps 3
+and 4 apply to every fork. All of them run inside the fork's journaled
+transaction, so any failure rolls the whole fork back.
+
+1. **What a reset copies.** An entry is carried only when it is in the captured
+   `HEAD` tree or is an ignored path the copy rules include (it or an ancestor
+   matches). Untracked files that are not ignored, entries only in the source
+   index (staged additions, intent-to-add), and independent nested
+   repositories outside an included ignored folder are the source's work in
+   progress and are left out. An included ignored folder is kept whole, nested
+   repositories included; a matched folder that is not ignored is classified
+   entry by entry.
+2. **The reset checkout.** After the copy is validated detached at the captured
+   `HEAD`, the start's tree is checked out forced with the rebuilt index as the
+   explicit baseline. A file whose content differs from the start gets the
+   start's content; a path tracked at the captured `HEAD` and absent at the
+   start is removed; a file equal at both commits MUST NOT be rewritten, so it
+   keeps its clone and timestamps; an untracked (included ignored) file stays
+   unless the start tracks its path. The index becomes the start's tree.
+3. **The attach.** Every fork registers its linked worktree detached at the
+   captured `HEAD` and attaches the branch target only now, under the branch's
+   native ref lock. With the lock held the SDK re-reads branch use (a
+   worktree's `HEAD` naming the branch, or, with `HEAD` detached, a rebase of
+   it or a bisect from it; administration it cannot read, other than a file
+   that does not exist, fails the read rather than counting as free) and
+   refuses `branchCheckedOut(worktreePath:)`;
+   checks an existing tip against `expectedTip` (`branchMoved`) or proves a new
+   name free; points the destination's `HEAD` at the branch; and only then
+   commits the branch ref (the fast-forward or the creation) on its own. `HEAD`
+   lands while the lock is held, so any attach that takes the lock next already
+   reads the branch as checked out, and the lone ref lands entirely or not at
+   all. A commit that reports failure may still have landed it: with ref
+   fsync on, libgit2 renames the ref into place and then syncs its directory,
+   so the SDK re-reads the ref after any commit error and journals a change
+   that landed. A detached target is detached at the start. An upstream is written
+   after the branch exists. Each landed change is journaled: rollback removes a
+   created branch, with its upstream, only while it is still at the start,
+   through the same locked expected-commit deletion branch deletion uses (a
+   branch another writer moved keeps its ref, configuration and reflog and is
+   residue `createdBranch`), and moves a fast-forward back only while the
+   branch is still at its new tip; otherwise the residue is
+   `branchMoveNotUndone` with the full ref name. The undo's own commit can
+   report failure after it landed too, so the branch counts as restored when a
+   re-read finds it at `expectedTip`.
+4. **Validation after the attach.** `HEAD` names the branch at the start (or is
+   detached there), the index tree equals the start's tree under the existing
+   stat-evidence rule (after a reset every entry has stats), no lock this fork
+   took remains, and the returned snapshot is read again so it reports the
+   branch.
+5. **Git LFS.** After a reset's attach, the start's LFS pointers are filled from
+   the repository's local store; an unchanged LFS file keeps the source's real
+   content because the checkout does not rewrite it. The fill never fails the
+   fork and is reported as `largeFiles`.
+6. **Submodules.** A gitlink of the start whose copied checkout is not at that
+   commit (another commit, or not initialized) is listed in
+   `submodulesNotAtStart`; checkouts are never moved. A submodule the start
+   lacks is removed with its directory and is not listed.
+7. **Sparse sources.** A reset writes no sparse state and keeps no
+   skip-worktree bits, so a later checkout in the destination does not make it
+   sparse again.
+
 ## Completion, cancellation, and failure
 
 The SDK MUST return success only after validating:
@@ -329,7 +440,8 @@ For every synchronous error or cancellation after mutation:
 1. remove destination working content created by the transaction;
 2. remove linked-worktree and nested destination administration created by the
    transaction;
-3. delete only a branch created by the transaction;
+3. delete only a branch created by the transaction, and move a branch the
+   transaction fast-forwarded back only while it is still at the new tip;
 4. verify the absence of each recorded artifact.
 
 If cleanup itself fails, the SDK MUST return a typed cleanup-incomplete error
@@ -356,13 +468,14 @@ processes remain outside this isolation guarantee.
 
 ## Compatibility and encoding
 
-- Encoding a normal `GitCreateWorktreeRequest` MUST produce the same keys and
-  case representation as before this feature.
-- Existing normal request payloads MUST decode without a new field or default.
+- A normal `GitCreateWorktreeRequest` keeps its case-keyed mode encoding; the
+  creation follow-up's branch shapes are a deliberate hard cutover.
 - The fork request, mode, result, report, skip reasons, capability failures,
   cancellation, and cleanup-residue failures MUST round-trip through Codable.
-- `GitDataPlaneError` MUST retain its existing cases and encoding; fork Git
-  failures are carried as a payload of `GitWorktreeForkError`.
+- Fork Git failures are carried as a payload of `GitWorktreeForkError`.
+  `GitDataPlaneError` gains only the plain checkout's attach refusals,
+  `branchMoved` and `branchCheckedOut(worktreePath:)`, in the same explicit
+  case-keyed encoding.
 - Stable public enums MUST use explicit wire representations and reject unknown
   cases rather than reinterpret them.
 - Existing `AgentStudioGitLocalClient` conformers MUST compile through the
@@ -385,6 +498,7 @@ contract identities:
 | U-10 | P-08 — blocking traversal and actor reentrancy threaten responsiveness and ordering | O-06 — responsive serialization | R-08 — execute off the cooperative executor while retaining same-repository mutation custody | C-08 — Execution and serialization | V-07 |
 | U-11 | P-09 — CoW may be mistaken for synchronization or snapshot isolation | O-03 — storage truth | R-09 — provide independent divergence with explicit mixed-time traversal semantics | C-09 — Containment and source races | V-03, V-08 |
 | U-13 | P-10 — mock or status evidence cannot prove APFS/Git behavior | O-01 through O-06 | R-10 — prove contracts at their real unit, Git, APFS, concurrency, and performance boundaries | C-10 — Proof obligations | V-01 through V-08 |
+| U-03 (D13–D20) | P-11 — a fork onto another branch, and its branch attach, can strand work or race another worktree | O-02, O-05 | R-11 — reset a copy to another start by defined rules and attach every branch under its ref lock | C-11 — Start, reset, and branch attach | V-09 |
 
 | Proof ID | Requirements | Evidence that distinguishes pass from fail |
 | --- | --- | --- |
@@ -396,15 +510,16 @@ contract identities:
 | V-06 | U-09 | Unit coverage for entry policy and stable report counts, skipped entries, and normalized entries plus integration fixtures for FIFO recreation, socket skipping, metadata normalization, unsupported special entries, and dataless clone failure without source materialization where available. |
 | V-07 | U-10 | Same-repository concurrent mutation integration proves non-interleaving while an unrelated repository can progress; executor responsiveness is observed independently of wall-clock sleeps. |
 | V-08 | U-13 | Representative ordinary, 50,000-file, and prepared-cache benchmarks report preflight, planning, materialization, index, validation, first-status, and physical-allocation phases without replacing behavioral tests. |
+| V-09 | U-03 (D13–D20) | Real repositories with backdated sources: a dirty source reset onto another branch (start's files and index, `HEAD` and snapshot on the branch, no untracked or staged-only strays, included ignored files and a nested repository with source timestamps, unchanged tracked files still clones, a modified one rewritten, the start's content over an included ignored path); submodules changed, new and removed; an unchanged LFS file kept and a changed one filled; a sparse source full; a barrier seam where another worktree takes the branch (`branchCheckedOut`, rolled back); a moved tip (`branchMoved`); a fast-forward undone after each later phase and a blocked undo reported as residue; a ref commit that fails after its rename (fsync on, an unreadable `refs/heads`) moved back in both creators, and plain-checkout undos that fail, cannot be read back, or meet another writer's move failing `branchMoveNotUndone` (that writer's tip kept); unsearchable rebase state failing both creators; invalid upstream names refused before mutation; upstream with `push.default=simple`; the plain checkout's same shapes. |
 
 ## Negative space
 
-The operation does not provide an alternate-base overlay, source staging
-preservation, ongoing synchronization, source locking, coherent snapshot
-isolation, physical-copy fallback, cross-volume operation, Windows/Linux
-implementation, product topology publication, crash recovery, secret filtering,
-an active Git-operation continuation, or an experimental whole-directory clone
-fast path.
+The operation does not merge the source's uncommitted changes onto another
+start (a reset leaves them out), preserve source staging, or provide ongoing
+synchronization, source locking, coherent snapshot isolation, physical-copy
+fallback, cross-volume operation, Windows/Linux implementation, product
+topology publication, crash recovery, secret filtering, an active Git-operation
+continuation, or an experimental whole-directory clone fast path.
 
 All ignored content is included. Deciding that secret-shaped ignored paths need
 product-level exclusion belongs to an Agent Studio policy layer and requires a

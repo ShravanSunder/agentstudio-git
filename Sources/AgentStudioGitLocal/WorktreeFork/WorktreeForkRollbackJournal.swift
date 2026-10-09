@@ -10,7 +10,12 @@ enum WorktreeForkJournalEntry: Equatable, Sendable {
     case destinationRoot(path: URL, identity: WorktreeForkEntryIdentity?)
     /// Same ownership rule as the destination: confirmed only after `git_worktree_add` succeeded.
     case linkedWorktreeAdministration(name: String, path: URL, identity: WorktreeForkEntryIdentity?)
+    /// A transaction carrier: its unique name is known only to this call, so plain deletion is safe.
     case createdBranch(referenceName: String, targetOID: String)
+    /// The branch the attach created; compensated only at `targetOID` through the locked expected-OID deletion.
+    case attachedBranch(referenceName: String, targetOID: String)
+    /// A fast-forward the attach landed; rollback moves the branch back only if it is still at `toOID`.
+    case movedBranch(referenceName: String, fromOID: String, toOID: String)
     /// `identity` is filled once the transaction's own `mkdir` succeeded; nil means creation was attempted
     /// but not confirmed, so a present path may belong to someone else and is never deleted.
     case nestedAdministration(path: URL, reportLocation: String, identity: WorktreeForkEntryIdentity?)
@@ -135,6 +140,22 @@ struct WorktreeForkRollbackJournal {
                 !deleteBranch(referenceName, targetOID: targetOID)
             {
                 residue.append(GitWorktreeForkResidue(kind: .createdBranch, location: referenceName))
+            }
+        }
+        for entry in entries {
+            guard case .attachedBranch(let referenceName, let targetOID) = entry else { continue }
+            let removal = LibGit2CreatedBranchCompensation(repositoryPath: commonDirectory, runtime: runtime).remove(
+                branchName: String(referenceName.dropFirst("refs/heads/".count)), createdAt: targetOID)
+            residue += removal.lockResidue.map { GitWorktreeForkResidue(kind: .lockFile, location: lockLocation($0)) }
+            if !removal.removed {
+                residue.append(GitWorktreeForkResidue(kind: .createdBranch, location: referenceName))
+            }
+        }
+        for entry in entries {
+            if case .movedBranch(let referenceName, let fromOID, let toOID) = entry,
+                !undoBranchMove(referenceName, from: fromOID, to: toOID)
+            {
+                residue.append(GitWorktreeForkResidue(kind: .branchMoveNotUndone, location: referenceName))
             }
         }
         let reportedLockLocations = Set(residue.filter { $0.kind == .lockFile }.map(\.location))
@@ -297,6 +318,22 @@ struct WorktreeForkRollbackJournal {
             git_reference_free(probe)
         }
         return probeResult == GIT_ENOTFOUND.rawValue
+    }
+}
+
+extension WorktreeForkRollbackJournal {
+    private func undoBranchMove(_ referenceName: String, from fromOID: String, to toOID: String) -> Bool {
+        guard (try? runtime.ensureInitialized()) != nil else {
+            return false
+        }
+        var repository: OpaquePointer?
+        let openResult = commonDirectory.path.withCString { git_repository_open_bare(&repository, $0) }
+        guard openResult >= 0, let repository else {
+            return false
+        }
+        defer { git_repository_free(repository) }
+        return LibGit2BranchMoveUndo(lockObserver: .tracking(lockTracker))
+            .undo(referenceName, from: fromOID, to: toOID, repository: repository)
     }
 }
 

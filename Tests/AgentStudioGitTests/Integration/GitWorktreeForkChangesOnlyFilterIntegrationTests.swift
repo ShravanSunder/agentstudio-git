@@ -19,7 +19,7 @@ struct GitWorktreeForkChangesOnlyFilterIntegrationTests {
         // Act
         let result = try await LibGit2AgentStudioGitLocalClient().forkWorktree(
             fixture.request(
-                destination: destination, mode: .newBranch(name: "fork-lfs-smudged"), materialization: .changesOnly)
+                destination: destination, mode: .newBranch(name: "fork-lfs-smudged", start: .sourceHead, upstream: nil), materialization: .changesOnly)
         )
 
         // Assert
@@ -60,7 +60,7 @@ struct GitWorktreeForkChangesOnlyFilterIntegrationTests {
         let result = try await LibGit2AgentStudioGitLocalClient().forkWorktree(
             fixture.request(
                 destination: destination,
-                mode: .newBranch(name: "fork-lfs-store-fallback"),
+                mode: .newBranch(name: "fork-lfs-store-fallback", start: .sourceHead, upstream: nil),
                 materialization: .changesOnly
             )
         )
@@ -130,7 +130,7 @@ struct GitWorktreeForkChangesOnlyFilterIntegrationTests {
         let result = try await client.forkWorktree(
             fixture.request(
                 destination: destination,
-                mode: .newBranch(name: "fork-lfs-carried-pointer-mode"),
+                mode: .newBranch(name: "fork-lfs-carried-pointer-mode", start: .sourceHead, upstream: nil),
                 materialization: .changesOnly
             )
         )
@@ -163,7 +163,7 @@ struct GitWorktreeForkChangesOnlyFilterIntegrationTests {
         // Act
         let result = try await LibGit2AgentStudioGitLocalClient().forkWorktree(
             fixture.request(
-                destination: destination, mode: .newBranch(name: "fork-lfs-mode"), materialization: .changesOnly)
+                destination: destination, mode: .newBranch(name: "fork-lfs-mode", start: .sourceHead, upstream: nil), materialization: .changesOnly)
         )
 
         // Assert
@@ -207,7 +207,7 @@ struct GitWorktreeForkChangesOnlyFilterIntegrationTests {
             _ = try await client.forkWorktree(
                 fixture.request(
                     destination: destination,
-                    mode: .newBranch(name: "fork-lfs-source-mode-tamper"),
+                    mode: .newBranch(name: "fork-lfs-source-mode-tamper", start: .sourceHead, upstream: nil),
                     materialization: .changesOnly
                 )
             )
@@ -249,7 +249,7 @@ struct GitWorktreeForkChangesOnlyFilterIntegrationTests {
             _ = try await client.forkWorktree(
                 fixture.request(
                     destination: destination,
-                    mode: .newBranch(name: "fork-lfs-mode-tamper"),
+                    mode: .newBranch(name: "fork-lfs-mode-tamper", start: .sourceHead, upstream: nil),
                     materialization: .changesOnly
                 )
             )
@@ -296,7 +296,7 @@ struct GitWorktreeForkChangesOnlyFilterIntegrationTests {
             _ = try await client.forkWorktree(
                 fixture.request(
                     destination: destination,
-                    mode: .newBranch(name: "fork-lfs-inode-tamper"),
+                    mode: .newBranch(name: "fork-lfs-inode-tamper", start: .sourceHead, upstream: nil),
                     materialization: .changesOnly
                 )
             )
@@ -327,7 +327,7 @@ struct GitWorktreeForkChangesOnlyFilterIntegrationTests {
         let request = GitForkWorktreeRequest(
             sourceWorktreePath: fixture.source,
             destinationPath: destination,
-            mode: .newBranch(name: "fork-lfs-pointer"),
+            mode: .newBranch(name: "fork-lfs-pointer", start: .sourceHead, upstream: nil),
             materialization: .changesOnly,
             copyRules: GitWorktreeCopyRules(ignoredPaths: .copyAll)
         )
@@ -364,7 +364,7 @@ struct GitWorktreeForkChangesOnlyFilterIntegrationTests {
         let request = GitForkWorktreeRequest(
             sourceWorktreePath: fixture.source,
             destinationPath: destination,
-            mode: .newBranch(name: "fork-custom-filter"),
+            mode: .newBranch(name: "fork-custom-filter", start: .sourceHead, upstream: nil),
             materialization: .changesOnly,
             copyRules: GitWorktreeCopyRules(ignoredPaths: .copyAll)
         )
@@ -397,7 +397,7 @@ struct GitWorktreeForkChangesOnlyFilterIntegrationTests {
         let beforeBranches = try fixture.branchNames()
         let request = fixture.request(
             destination: destination,
-            mode: .newBranch(name: "fork-edited-attributes"),
+            mode: .newBranch(name: "fork-edited-attributes", start: .sourceHead, upstream: nil),
             materialization: .changesOnly
         )
 
@@ -433,7 +433,7 @@ struct GitWorktreeForkChangesOnlyFilterIntegrationTests {
         let beforeBranches = try fixture.branchNames()
         let request = fixture.request(
             destination: destination,
-            mode: .newBranch(name: "fork-staged-attributes"),
+            mode: .newBranch(name: "fork-staged-attributes", start: .sourceHead, upstream: nil),
             materialization: .changesOnly
         )
 
@@ -470,7 +470,7 @@ struct GitWorktreeForkChangesOnlyFilterIntegrationTests {
         let beforeBranches = try fixture.branchNames()
         let request = fixture.request(
             destination: destination,
-            mode: .newBranch(name: "fork-ignored-nested-attributes"),
+            mode: .newBranch(name: "fork-ignored-nested-attributes", start: .sourceHead, upstream: nil),
             materialization: .changesOnly
         )
 
@@ -508,7 +508,7 @@ struct GitWorktreeForkChangesOnlyFilterIntegrationTests {
         let beforeBranches = try fixture.branchNames()
         let request = fixture.request(
             destination: destination,
-            mode: .newBranch(name: "fork-ignored-root-attributes"),
+            mode: .newBranch(name: "fork-ignored-root-attributes", start: .sourceHead, upstream: nil),
             materialization: .changesOnly
         )
 
@@ -542,7 +542,7 @@ struct GitWorktreeForkChangesOnlyFilterIntegrationTests {
         let destination = fixture.destination()
         let request = fixture.request(
             destination: destination,
-            mode: .newBranch(name: "fork-nested-lfs-attributes"),
+            mode: .newBranch(name: "fork-nested-lfs-attributes", start: .sourceHead, upstream: nil),
             materialization: .changesOnly
         )
 

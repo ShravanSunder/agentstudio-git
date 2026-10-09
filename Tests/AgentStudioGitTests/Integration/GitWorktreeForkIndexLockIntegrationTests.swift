@@ -50,7 +50,7 @@ struct GitWorktreeForkIndexLockIntegrationTests {
             _ = try await client.forkWorktree(
                 fixture.request(
                     destination: destination,
-                    mode: .newBranch(name: worktreeName),
+                    mode: .newBranch(name: worktreeName, start: .sourceHead, upstream: nil),
                     materialization: .changesOnly
                 )
             )

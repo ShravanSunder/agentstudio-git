@@ -1,18 +1,5 @@
 import Foundation
 
-/// Selects the destination Git identity of a Worktree Fork. Every mode resolves to the source
-/// worktree's captured `HEAD`; there is deliberately no start point, because a different base
-/// would turn the copied filesystem into an ambiguous overlay.
-public enum GitForkWorktreeMode: Equatable, Hashable, Sendable {
-    /// Check out an existing local branch that already points at the captured `HEAD` and is not
-    /// checked out in another worktree.
-    case existingBranch(name: String)
-    /// Create a new local branch at the captured `HEAD`.
-    case newBranch(name: String)
-    /// Detach the destination at the captured `HEAD` without creating any branch.
-    case detached
-}
-
 /// Selects how the destination worktree receives its filesystem contents.
 public enum GitWorktreeForkMaterialization: String, Codable, CaseIterable, Hashable, Sendable {
     /// Strict APFS clone of the source worktree's filesystem.
@@ -84,52 +71,6 @@ public struct GitWorktreeCopyRules: Codable, Equatable, Hashable, Sendable {
     }
 }
 
-extension GitForkWorktreeMode: Codable {
-    private enum CodingKeys: String, CodingKey {
-        case kind
-        case name
-    }
-
-    private enum Kind: String, Codable {
-        case existingBranch
-        case newBranch
-        case detached
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        switch try container.decode(Kind.self, forKey: .kind) {
-        case .existingBranch:
-            self = .existingBranch(name: try container.decode(String.self, forKey: .name))
-        case .newBranch:
-            self = .newBranch(name: try container.decode(String.self, forKey: .name))
-        case .detached:
-            guard !container.contains(.name) else {
-                throw DecodingError.dataCorrupted(
-                    DecodingError.Context(
-                        codingPath: decoder.codingPath,
-                        debugDescription: "detached fork modes must not carry a branch name"
-                    ))
-            }
-            self = .detached
-        }
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        switch self {
-        case .existingBranch(let name):
-            try container.encode(Kind.existingBranch, forKey: .kind)
-            try container.encode(name, forKey: .name)
-        case .newBranch(let name):
-            try container.encode(Kind.newBranch, forKey: .kind)
-            try container.encode(name, forKey: .name)
-        case .detached:
-            try container.encode(Kind.detached, forKey: .kind)
-        }
-    }
-}
-
 public struct GitForkWorktreeRequest: Codable, Equatable, Hashable, Sendable {
     /// An existing main or linked worktree whose current filesystem state is captured.
     public let sourceWorktreePath: URL
@@ -185,6 +126,8 @@ extension GitWorktreeMaterializationResult: Codable {
         case ignoredIncludedPatterns
         case ignoredExcludedCount
         case nestedWorktreesSkipped
+        case sourceState
+        case submodulesNotAtStart
         case trackedChanges
         case untrackedFiles
         case ignoredExcluded
@@ -200,35 +143,19 @@ extension GitWorktreeMaterializationResult: Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         switch try container.decode(Kind.self, forKey: .kind) {
         case .copyOnWrite:
-            let expectedKeys: Set<CodingKeys> = [
+            var expectedKeys: Set<CodingKeys> = [
                 .kind, .clonedRegularFileCount, .createdDirectoryCount, .recreatedSymbolicLinkCount,
                 .preservedHardLinkCount, .preservedGitRepositoryCount, .recreatedFIFOCount,
                 .logicalRegularFileBytes, .skippedEntries, .normalizedEntries, .ignoredIncludedPatterns,
-                .ignoredExcludedCount, .nestedWorktreesSkipped,
+                .ignoredExcludedCount, .nestedWorktreesSkipped, .sourceState, .submodulesNotAtStart,
             ]
+            if container.contains(.largeFiles) {
+                expectedKeys.insert(.largeFiles)
+            }
             guard Set(container.allKeys) == expectedKeys else {
                 throw Self.invalidPayload(decoder)
             }
-            self = .copyOnWrite(
-                GitWorktreeMaterializationReport(
-                    clonedRegularFileCount: try container.decode(Int.self, forKey: .clonedRegularFileCount),
-                    createdDirectoryCount: try container.decode(Int.self, forKey: .createdDirectoryCount),
-                    recreatedSymbolicLinkCount: try container.decode(Int.self, forKey: .recreatedSymbolicLinkCount),
-                    preservedHardLinkCount: try container.decode(Int.self, forKey: .preservedHardLinkCount),
-                    preservedGitRepositoryCount: try container.decode(Int.self, forKey: .preservedGitRepositoryCount),
-                    recreatedFIFOCount: try container.decode(Int.self, forKey: .recreatedFIFOCount),
-                    logicalRegularFileBytes: try container.decode(Int64.self, forKey: .logicalRegularFileBytes),
-                    skippedEntries: try container.decode(
-                        [GitWorktreeMaterializationSkippedEntry].self, forKey: .skippedEntries),
-                    normalizedEntries: try container.decode(
-                        [GitWorktreeMaterializationNormalizedEntry].self, forKey: .normalizedEntries),
-                    ignoredIncludedPatterns: try container.decode(
-                        [String].self, forKey: .ignoredIncludedPatterns),
-                    ignoredExcludedCount: try container.decode(Int.self, forKey: .ignoredExcludedCount),
-                    nestedWorktreesSkipped: try container.decode(
-                        [String].self, forKey: .nestedWorktreesSkipped)
-                )
-            )
+            self = .copyOnWrite(try GitWorktreeMaterializationReport(from: decoder))
         case .changesOnly:
             let expectedKeys: Set<CodingKeys> = [
                 .kind, .trackedChanges, .untrackedFiles, .ignoredExcluded, .largeFiles,
@@ -270,6 +197,9 @@ extension GitWorktreeMaterializationResult: Codable {
             try container.encode(report.ignoredIncludedPatterns, forKey: .ignoredIncludedPatterns)
             try container.encode(report.ignoredExcludedCount, forKey: .ignoredExcludedCount)
             try container.encode(report.nestedWorktreesSkipped, forKey: .nestedWorktreesSkipped)
+            try container.encode(report.sourceState, forKey: .sourceState)
+            try container.encode(report.submodulesNotAtStart, forKey: .submodulesNotAtStart)
+            try container.encodeIfPresent(report.largeFiles, forKey: .largeFiles)
         case .changesOnly(let report):
             try container.encode(Kind.changesOnly, forKey: .kind)
             try container.encode(report.trackedChanges, forKey: .trackedChanges)
@@ -366,6 +296,12 @@ public struct GitWorktreeMaterializationReport: Codable, Equatable, Hashable, Se
     /// Number of excluded walked paths, including directories and hard-link members, excluding sockets.
     public let ignoredExcludedCount: Int
     public let nestedWorktreesSkipped: [String]
+    public let sourceState: GitForkSourceState
+    /// Submodules the start has whose copied checkout is not at the start's commit: at another commit, or not
+    /// initialized (new at the start). Their checkouts are left as copied. Always empty for an as-is copy.
+    public let submodulesNotAtStart: [String]
+    /// The local-store fill of the start's Git LFS pointers. Present exactly for a reset copy.
+    public let largeFiles: GitLargeFileFill?
 
     public init(
         clonedRegularFileCount: Int,
@@ -379,7 +315,10 @@ public struct GitWorktreeMaterializationReport: Codable, Equatable, Hashable, Se
         normalizedEntries: [GitWorktreeMaterializationNormalizedEntry],
         ignoredIncludedPatterns: [String],
         ignoredExcludedCount: Int,
-        nestedWorktreesSkipped: [String]
+        nestedWorktreesSkipped: [String],
+        sourceState: GitForkSourceState,
+        submodulesNotAtStart: [String],
+        largeFiles: GitLargeFileFill?
     ) {
         self.clonedRegularFileCount = clonedRegularFileCount
         self.createdDirectoryCount = createdDirectoryCount
@@ -393,7 +332,79 @@ public struct GitWorktreeMaterializationReport: Codable, Equatable, Hashable, Se
         self.ignoredIncludedPatterns = ignoredIncludedPatterns
         self.ignoredExcludedCount = ignoredExcludedCount
         self.nestedWorktreesSkipped = nestedWorktreesSkipped
+        self.sourceState = sourceState
+        self.submodulesNotAtStart = submodulesNotAtStart
+        self.largeFiles = largeFiles
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case clonedRegularFileCount
+        case createdDirectoryCount
+        case recreatedSymbolicLinkCount
+        case preservedHardLinkCount
+        case preservedGitRepositoryCount
+        case recreatedFIFOCount
+        case logicalRegularFileBytes
+        case skippedEntries
+        case normalizedEntries
+        case ignoredIncludedPatterns
+        case ignoredExcludedCount
+        case nestedWorktreesSkipped
+        case sourceState
+        case submodulesNotAtStart
+        case largeFiles
+    }
+
+    /// An as-is copy reports no submodule drift and no fill; a reset copy always reports its fill.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let sourceState = try container.decode(GitForkSourceState.self, forKey: .sourceState)
+        let submodulesNotAtStart = try container.decode([String].self, forKey: .submodulesNotAtStart)
+        let largeFiles = try container.decodeIfPresent(GitLargeFileFill.self, forKey: .largeFiles)
+        switch sourceState {
+        case .asIs:
+            guard submodulesNotAtStart.isEmpty, largeFiles == nil else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(
+                        codingPath: decoder.codingPath,
+                        debugDescription: "an as-is copy carries no submodule drift or large-file fill"
+                    ))
+            }
+        case .reset:
+            guard largeFiles != nil else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(
+                        codingPath: decoder.codingPath, debugDescription: "a reset copy carries its large-file fill"
+                    ))
+            }
+        }
+        self.init(
+            clonedRegularFileCount: try container.decode(Int.self, forKey: .clonedRegularFileCount),
+            createdDirectoryCount: try container.decode(Int.self, forKey: .createdDirectoryCount),
+            recreatedSymbolicLinkCount: try container.decode(Int.self, forKey: .recreatedSymbolicLinkCount),
+            preservedHardLinkCount: try container.decode(Int.self, forKey: .preservedHardLinkCount),
+            preservedGitRepositoryCount: try container.decode(Int.self, forKey: .preservedGitRepositoryCount),
+            recreatedFIFOCount: try container.decode(Int.self, forKey: .recreatedFIFOCount),
+            logicalRegularFileBytes: try container.decode(Int64.self, forKey: .logicalRegularFileBytes),
+            skippedEntries: try container.decode([GitWorktreeMaterializationSkippedEntry].self, forKey: .skippedEntries),
+            normalizedEntries: try container.decode(
+                [GitWorktreeMaterializationNormalizedEntry].self, forKey: .normalizedEntries),
+            ignoredIncludedPatterns: try container.decode([String].self, forKey: .ignoredIncludedPatterns),
+            ignoredExcludedCount: try container.decode(Int.self, forKey: .ignoredExcludedCount),
+            nestedWorktreesSkipped: try container.decode([String].self, forKey: .nestedWorktreesSkipped),
+            sourceState: sourceState,
+            submodulesNotAtStart: submodulesNotAtStart,
+            largeFiles: largeFiles
+        )
+    }
+}
+
+/// Whether a copy-on-write fork kept its source exactly as it was or reset it to another start.
+public enum GitForkSourceState: String, Codable, CaseIterable, Hashable, Sendable {
+    /// The start was the captured `HEAD`: uncommitted, untracked, and conflicted files came along.
+    case asIs
+    /// The start was another commit: tracked files and the index are that commit's; work in progress was left out.
+    case reset
 }
 
 public struct GitWorktreeMaterializationSkippedEntry: Codable, Equatable, Hashable, Sendable {

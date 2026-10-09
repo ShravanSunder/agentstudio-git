@@ -51,7 +51,7 @@ struct GitWorktreeForkCopyRulesRealCheckoutTests {
             let started = ContinuousClock.now
             let result = try await LibGit2AgentStudioGitLocalClient().forkWorktree(
                 .init(
-                    sourceWorktreePath: source, destinationPath: destination, mode: .detached,
+                    sourceWorktreePath: source, destinationPath: destination, mode: .detached(start: .sourceHead),
                     materialization: .copyOnWrite, copyRules: .init(ignoredPaths: policy)))
             let elapsed = started.duration(to: .now)
             #expect(try git.run(["rev-parse", "HEAD"], currentDirectory: destination) == sourceHead)

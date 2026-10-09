@@ -42,6 +42,27 @@ struct GitRemoteOutputParserTests {
                 )))
     }
 
+    /// A characterization test: it passes on the parser as it stands. Splitting on the `Character` newline never
+    /// breaks at U+2028, unlike `isNewline`, because a newline is a grapheme boundary except after a carriage return,
+    /// which a git ref name cannot hold.
+    @Test("ls-remote parser keeps a name holding U+2028 as one reference with its own object")
+    func lsRemoteParserKeepsLineSeparatorNameWhole() throws {
+        let separatorInside = "refs/heads/a\u{2028}b"
+        let output = """
+            1111111111111111111111111111111111111111\trefs/heads/main
+            2222222222222222222222222222222222222222\t\(separatorInside)
+
+            """
+
+        let references = try GitRemoteOutputParser().parse(output)
+
+        #expect(references.map { Array($0.name.utf8) } == [Array("refs/heads/main".utf8), Array(separatorInside.utf8)])
+        #expect(
+            references.map(\.oid) == [
+                "1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222",
+            ])
+    }
+
     @Test("ls-remote parser rejects malformed lines")
     func lsRemoteParserRejectsMalformedLines() throws {
         do {

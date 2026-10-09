@@ -23,6 +23,17 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
     case remoteRefTransactionIndeterminate(message: String)
     case libgit2Failure(code: Int32, klass: Int32, message: String)
     case unsupported(message: String)
+    /// An existing branch's tip, read under its ref lock, is not the tip the request pinned; nothing changed.
+    case branchMoved
+    /// The branch is held by the worktree at `worktreePath`: its `HEAD` names it, or it is rebasing or bisecting
+    /// it. Nothing changed.
+    case branchCheckedOut(worktreePath: URL)
+    /// A failed call fast-forwarded `branchName` from `fromOID` to `toOID`, and this call's own undo was not confirmed
+    /// by a re-read: the undo failed, its result could not be read, or another writer had moved the branch. A branch
+    /// another writer moved, even back to `fromOID`, is reported this way and left alone. The payload is the
+    /// attempted transition, not a verified final ref value; read the branch for that. This error replaces the
+    /// call's own failure.
+    case branchMoveNotUndone(branchName: String, fromOID: String, toOID: String)
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case repositoryNotFound
@@ -47,6 +58,9 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
         case remoteRefTransactionIndeterminate
         case libgit2Failure
         case unsupported
+        case branchMoved
+        case branchCheckedOut
+        case branchMoveNotUndone
     }
 
     private enum PayloadKeys: String, CodingKey {
@@ -66,6 +80,10 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
         case count
         case fact
         case resource
+        case worktreePath
+        case branchName
+        case fromOID
+        case toOID
     }
 
     public init(from decoder: Decoder) throws {
@@ -90,6 +108,8 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
             self = try .locked(message: payload.decode(String.self, forKey: .message))
         } else if let lockFailure = try Self.decodeLockFailure(from: container) {
             self = lockFailure
+        } else if let branchFailure = try Self.decodeBranchFailure(from: container) {
+            self = branchFailure
         } else if container.contains(.worktreeNotPrunable) {
             let payload = try container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .worktreeNotPrunable)
             self = try .worktreeNotPrunable(
@@ -175,6 +195,28 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
         if container.contains(.permissionDenied) {
             let payload = try container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .permissionDenied)
             return try .permissionDenied(path: payload.decodeIfPresent(URL.self, forKey: .path))
+        }
+        return nil
+    }
+
+    private static func decodeBranchFailure(
+        from container: KeyedDecodingContainer<CodingKeys>
+    ) throws -> Self? {
+        if container.contains(.branchMoved) {
+            _ = try container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .branchMoved)
+            return .branchMoved
+        }
+        if container.contains(.branchCheckedOut) {
+            let payload = try container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .branchCheckedOut)
+            return try .branchCheckedOut(worktreePath: payload.decode(URL.self, forKey: .worktreePath))
+        }
+        if container.contains(.branchMoveNotUndone) {
+            let payload = try container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .branchMoveNotUndone)
+            return try .branchMoveNotUndone(
+                branchName: payload.decode(String.self, forKey: .branchName),
+                fromOID: payload.decode(String.self, forKey: .fromOID),
+                toOID: payload.decode(String.self, forKey: .toOID)
+            )
         }
         return nil
     }
@@ -280,6 +322,16 @@ public enum GitDataPlaneError: Error, Codable, Equatable, Sendable {
         case .unsupported(let message):
             var payload = container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .unsupported)
             try payload.encode(message, forKey: .message)
+        case .branchMoved:
+            _ = container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .branchMoved)
+        case .branchCheckedOut(let worktreePath):
+            var payload = container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .branchCheckedOut)
+            try payload.encode(worktreePath, forKey: .worktreePath)
+        case .branchMoveNotUndone(let branchName, let fromOID, let toOID):
+            var payload = container.nestedContainer(keyedBy: PayloadKeys.self, forKey: .branchMoveNotUndone)
+            try payload.encode(branchName, forKey: .branchName)
+            try payload.encode(fromOID, forKey: .fromOID)
+            try payload.encode(toOID, forKey: .toOID)
         }
     }
 }

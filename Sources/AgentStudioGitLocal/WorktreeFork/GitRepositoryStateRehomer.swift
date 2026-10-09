@@ -60,7 +60,8 @@ struct GitRepositoryStateRehomer: Sendable {
 
     func rehome(journal: inout WorktreeForkRollbackJournal) throws(GitWorktreeForkError) -> WorktreeForkRehomeOutcome {
         let topology = plan.gitTopology
-        if let rootSparse = topology.rootSparse {
+        // A reset comes out as a full checkout of its start, so the source's sparse state is not reproduced.
+        if let rootSparse = topology.rootSparse, !plan.resetsToStart {
             try writeSparseState(rootSparse, administration: rootAdministration, reportPath: ".")
         }
         var outcome = WorktreeForkRehomeOutcome()

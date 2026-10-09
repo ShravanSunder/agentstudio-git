@@ -4,6 +4,8 @@ import Foundation
 
 /// Applies policy in one top-down pass over the sorted walked plan. Classification stops at excluded,
 /// include-matched, and opaque roots. A matched non-ignored directory only probes for report evidence.
+/// A reset copy keeps an entry only when it is in the captured `HEAD` tree or is an ignored path an include
+/// covers; a matched directory that is not ignored is classified entry by entry instead of kept whole.
 struct WorktreeForkCopyFilter: Sendable {
     let cancellation: WorktreeForkCancellation
 
@@ -14,6 +16,7 @@ struct WorktreeForkCopyFilter: Sendable {
         let sourceGitDirectory: URL
         let capturedHead: WorktreeForkCapturedHead
         let copyRules: GitWorktreeCopyRules
+        let resetsToStart: Bool
     }
     struct Result: Sendable {
         let filesystem: WorktreeForkFilesystemPlan
@@ -40,7 +43,8 @@ struct WorktreeForkCopyFilter: Sendable {
         }
         let tracked = try WorktreeForkCopyTrackedPaths.capture(
             sourceRoot: input.sourceRoot,
-            gitDirectory: input.sourceGitDirectory, capturedHead: input.capturedHead)
+            gitDirectory: input.sourceGitDirectory, capturedHead: input.capturedHead,
+            includingIndex: !input.resetsToStart)
         let nestedRoots = Set(
             input.filesystem.nestedGitEntryPaths.map { WorktreeForkDescriptors.splitParent($0).parent }
         )
@@ -50,9 +54,13 @@ struct WorktreeForkCopyFilter: Sendable {
             nestedRoots: nestedRoots, skippedWorktrees: Set(skipped))
         do {
             return try LibGit2IgnoreReader().withIgnoreSession(repositoryAt: input.sourceRoot) { session in
-                try classify(
-                    tree: &tree, patterns: patterns, tracked: tracked, session: session,
-                    filesystem: input.filesystem, skipped: skipped)
+                input.resetsToStart
+                    ? try classifyForReset(
+                        tree: &tree, patterns: patterns, tracked: tracked, session: session,
+                        filesystem: input.filesystem, skipped: skipped)
+                    : try classify(
+                        tree: &tree, patterns: patterns, tracked: tracked, session: session,
+                        filesystem: input.filesystem, skipped: skipped)
             }
         } catch let error as GitWorktreeForkError { throw error } catch let error as GitDataPlaneError {
             throw .gitFailure(error)
@@ -113,6 +121,62 @@ struct WorktreeForkCopyFilter: Sendable {
             }
             if node.isDirectory && !node.opaque {
                 pending.append(contentsOf: node.children.reversed().map { ($0, ignored) })
+            }
+        }
+        return Result(
+            filesystem: try filesystem.excludingSubtrees(excluded),
+            ignoredIncludedPatterns: patterns.indices.filter { includedPatterns.contains($0) }.map {
+                patterns[$0].rawValue
+            },
+            ignoredExcludedCount: excludedCount, nestedWorktreesSkipped: skipped,
+            classifiedPathCount: classifiedCount, ignoreQueryCount: ignoreQueries)
+    }
+
+    /// Reset mode. Each pending node carries the include patterns its ancestors matched, so an ignored entry under
+    /// a matched folder that is not itself ignored still counts as included. `ignoredExcludedCount` counts only
+    /// ignored exclusions; the untracked work in progress a reset leaves out is not an ignored path.
+    private func classifyForReset(
+        tree: inout WorktreeForkCopyTree, patterns: [GitPathPattern],
+        tracked: WorktreeForkCopyTrackedPaths, session: LibGit2IgnoreSession,
+        filesystem: WorktreeForkFilesystemPlan, skipped: [String]
+    ) throws -> Result {
+        var excluded = skipped
+        var excludedCount = 0
+        var includedPatterns = Set<Int>()
+        var classifiedCount = 0
+        var ignoreQueries = 0
+        var pending = tree.nodes[0].children.reversed().map { ($0, false, [Int]()) }
+        while let (index, parentIgnored, inheritedPatterns) = pending.popLast() {
+            try cancellation.throwIfCancelled()
+            let node = tree.nodes[index]
+            if node.skippedWorktree { continue }
+            classifiedCount += 1
+            // A captured HEAD path, including a submodule's gitlink, is kept as it is.
+            if node.tracked { continue }
+            let ignored: Bool
+            if parentIgnored {
+                ignored = true
+            } else {
+                ignoreQueries += 1
+                ignored = try session.isPathIgnored(relativePath: node.isDirectory ? node.path + "/" : node.path)
+            }
+            let matched = tree.matches(at: index, patterns: patterns, ignoreCase: tracked.ignoreCase)
+            let covering = inheritedPatterns + matched
+            if ignored && !covering.isEmpty {
+                includedPatterns.formUnion(covering)
+                continue
+            }
+            let descends =
+                node.isDirectory && !node.opaque
+                && (node.hasTrackedDescendant || !covering.isEmpty
+                    || tree.containsIncludedDescendant(at: index, patterns: patterns, ignoreCase: tracked.ignoreCase))
+            if descends {
+                pending.append(contentsOf: node.children.reversed().map { ($0, ignored, covering) })
+                continue
+            }
+            excluded.append(node.path)
+            if ignored {
+                excludedCount += node.pathCount
             }
         }
         return Result(

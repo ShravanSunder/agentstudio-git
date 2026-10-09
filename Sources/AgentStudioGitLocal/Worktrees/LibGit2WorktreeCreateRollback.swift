@@ -1,10 +1,17 @@
+import AgentStudioGitContracts
 import CLibGit2Local
 import Foundation
 
 struct WorktreeCreateRollback {
     let repositoryPath: URL
     let worktreeName: String
-    var createdBranchName: String?
+    /// The call-owned carrier branch while it exists; its unique name lets plain deletion remove it.
+    var carrierBranchName: String?
+    /// A new branch the attach created, until its upstream write succeeds; removed only at that commit.
+    var createdBranch: (name: String, commit: String)?
+    /// An existing branch the attach fast-forwarded. Its commit can report failure after the ref landed, so a
+    /// failed call moves it back to `from` under its ref lock, only while it is still at `to`.
+    var movedBranch: (name: String, from: String, to: String)?
     var createdWorktree = false
     private var isArmed = true
 
@@ -17,14 +24,21 @@ struct WorktreeCreateRollback {
         isArmed = false
     }
 
-    func rollback(runtime: LibGit2Runtime) {
+    /// Removes what the failed call made and moves a fast-forwarded branch back. Returns `branchMoveNotUndone`, which
+    /// replaces the call's own error, unless this call's own undo is confirmed by a re-read: an undo that failed or
+    /// could not be read back is never silent, and a branch another writer moved, even back to `from`, is reported
+    /// and left alone.
+    func rollback(runtime: LibGit2Runtime, faults: WorktreeCreateFaultInjector) -> GitDataPlaneError? {
         guard isArmed else {
-            return
+            return nil
+        }
+        let moveNotUndone = movedBranch.map {
+            GitDataPlaneError.branchMoveNotUndone(branchName: $0.name, fromOID: $0.from, toOID: $0.to)
         }
         do {
             try runtime.ensureInitialized()
         } catch {
-            return
+            return moveNotUndone
         }
 
         var repository: OpaquePointer?
@@ -32,16 +46,28 @@ struct WorktreeCreateRollback {
             git_repository_open_ext(&repository, pathPointer, 0, nil)
         }
         guard openResult >= 0, let repository else {
-            return
+            return moveNotUndone
         }
         defer { git_repository_free(repository) }
 
         if createdWorktree {
             pruneWorktreeIfPresent(named: worktreeName, repository: repository)
         }
-        if let createdBranchName {
-            deleteLocalBranchIfPresent(named: createdBranchName, repository: repository)
+        if let carrierBranchName {
+            deleteLocalBranchIfPresent(named: carrierBranchName, repository: repository)
         }
+        if let createdBranch {
+            _ = LibGit2CreatedBranchCompensation(repositoryPath: repositoryPath, runtime: runtime)
+                .remove(branchName: createdBranch.name, createdAt: createdBranch.commit)
+        }
+        guard let movedBranch else {
+            return nil
+        }
+        let undo = LibGit2BranchMoveUndo(
+            lockObserver: .untracked, afterCommit: { try? faults.reach(.afterBranchMoveUndoCommitted) })
+        let restored = undo.undo(
+            "refs/heads/\(movedBranch.name)", from: movedBranch.from, to: movedBranch.to, repository: repository)
+        return restored ? nil : moveNotUndone
     }
 }
 
@@ -67,6 +93,7 @@ private func pruneWorktreeIfPresent(named name: String, repository: OpaquePointe
     _ = git_worktree_prune(worktree, &options)
 }
 
+/// Plain deletion, for the carrier only.
 private func deleteLocalBranchIfPresent(named name: String, repository: OpaquePointer) {
     var reference: OpaquePointer?
     let lookupResult = name.withCString { namePointer in

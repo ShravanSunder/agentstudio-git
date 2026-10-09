@@ -49,3 +49,35 @@ struct GitFixtureRepository {
         try? FileManager.default.removeItem(at: root)
     }
 }
+
+extension GitFixtureRepository {
+    /// `url` with every symbolic link resolved (`/var` becomes `/private/var`), the way libgit2 reports paths.
+    static func resolvedPath(_ url: URL) -> String {
+        guard let resolved = realpath(url.path, nil) else {
+            return url.path
+        }
+        defer { free(resolved) }
+        return String(cString: resolved)
+    }
+
+    /// A linked worktree on `branch` (created here at `HEAD`) stopped by an add/add conflict while rebasing with
+    /// `--merge` onto a commit this adds to the current branch: its `HEAD` is detached and `rebase-merge/head-name`
+    /// names `branch`. Returns the worktree and that `rebase-merge` directory.
+    func addWorktreeStoppedInRebase(branch: String) throws -> (worktree: URL, rebaseState: URL) {
+        let worktree = linkedWorktreePath("\(branch)-rebasing")
+        try git.run("worktree", "add", "-q", "-b", branch, worktree.path)
+        try write("\(branch)-conflict.txt", contents: "\(branch) side\n", in: worktree)
+        try git.run(["add", "."], currentDirectory: worktree)
+        try git.run(["commit", "-qm", "\(branch) side"], currentDirectory: worktree)
+        try write("\(branch)-conflict.txt", contents: "other side\n")
+        try git.run("add", "\(branch)-conflict.txt")
+        try git.run("commit", "-qm", "other side of \(branch)")
+        let onto = try git.run("rev-parse", "HEAD").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard try !git.succeeds("rebase", "--merge", onto, currentDirectory: worktree) else {
+            throw CocoaError(.featureUnsupported, userInfo: [NSDebugDescriptionErrorKey: "the rebase did not stop"])
+        }
+        let gitDirectory = try git.run(["rev-parse", "--absolute-git-dir"], currentDirectory: worktree)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (worktree, URL(fileURLWithPath: gitDirectory).appending(path: "rebase-merge"))
+    }
+}

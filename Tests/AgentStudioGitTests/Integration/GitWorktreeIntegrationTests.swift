@@ -255,20 +255,21 @@ struct GitWorktreeIntegrationTests {
         let fixture = try GitFixtureRepository.makeRepository()
         defer { fixture.remove() }
         try fixture.git.run("branch", "feature/existing")
+        let head = try fixture.git.run("rev-parse", "HEAD").trimmingCharacters(in: .whitespacesAndNewlines)
         let client = LibGit2AgentStudioGitLocalClient()
 
         let existingCreation = try await client.createWorktree(
             GitCreateWorktreeRequest(
                 repositoryPath: fixture.repositoryPath,
                 destinationPath: fixture.linkedWorktreePath("existing"),
-                mode: .existingBranch(name: "feature/existing")
+                mode: .existingBranch(name: "feature/existing", expectedTip: head, fastForwardTo: nil)
             )
         )
         let newCreation = try await client.createWorktree(
             GitCreateWorktreeRequest(
                 repositoryPath: fixture.repositoryPath,
                 destinationPath: fixture.linkedWorktreePath("new-branch"),
-                mode: .newBranch(name: "feature/new", startPoint: .named("HEAD"))
+                mode: .newBranch(name: "feature/new", startPoint: .named("HEAD"), upstream: nil)
             )
         )
         let detachedCreation = try await client.createWorktree(
@@ -295,12 +296,12 @@ struct GitWorktreeIntegrationTests {
             try fixture.git.run("rev-parse", "--verify", "feature/new").trimmingCharacters(in: .whitespacesAndNewlines)
                 .count == 40)
 
-        await #expect(throws: GitDataPlaneError.self) {
+        await #expect(throws: GitDataPlaneError.branchCheckedOut(worktreePath: fixture.repositoryPath)) {
             _ = try await client.createWorktree(
                 GitCreateWorktreeRequest(
                     repositoryPath: fixture.repositoryPath,
                     destinationPath: fixture.linkedWorktreePath("main-branch-again"),
-                    mode: .existingBranch(name: "main")
+                    mode: .existingBranch(name: "main", expectedTip: head, fastForwardTo: nil)
                 )
             )
         }
@@ -319,7 +320,7 @@ struct GitWorktreeIntegrationTests {
                 GitCreateWorktreeRequest(
                     repositoryPath: fixture.repositoryPath,
                     destinationPath: destinationPath,
-                    mode: .newBranch(name: "feature/rollback", startPoint: .named("HEAD"))
+                    mode: .newBranch(name: "feature/rollback", startPoint: .named("HEAD"), upstream: nil)
                 )
             )
         }

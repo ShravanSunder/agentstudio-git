@@ -39,6 +39,33 @@ struct GitWireEnumSnapshotTests {
         try expectWireSnapshot(GitDataPlaneError.permissionDenied(path: nil), expected: #"{"permissionDenied":{}}"#)
     }
 
+    @Test("branch attach refusals keep explicit stable wire tags")
+    func branchAttachRefusalsKeepExplicitStableWireTags() throws {
+        let holder = GitDataPlaneError.branchCheckedOut(worktreePath: URL(fileURLWithPath: "/tmp/repository.feat"))
+
+        try expectWireSnapshot(GitDataPlaneError.branchMoved, expected: #"{"branchMoved":{}}"#)
+        try expectWireSnapshot(
+            holder, expected: #"{"branchCheckedOut":{"worktreePath":"file:\/\/\/tmp\/repository.feat"}}"#)
+        #expect(try JSONDecoder().decode(GitDataPlaneError.self, from: JSONEncoder().encode(holder)) == holder)
+        #expect(
+            try JSONDecoder().decode(GitDataPlaneError.self, from: Data(#"{"branchMoved":{}}"#.utf8)) == .branchMoved)
+        #expect(throws: DecodingError.self) {
+            _ = try JSONDecoder().decode(GitDataPlaneError.self, from: Data(#"{"branchCheckedOut":{}}"#.utf8))
+        }
+        let notUndone = GitDataPlaneError.branchMoveNotUndone(
+            branchName: "feat", fromOID: String(repeating: "a", count: 40), toOID: String(repeating: "b", count: 40))
+        try expectWireSnapshot(
+            notUndone,
+            expected:
+                #"{"branchMoveNotUndone":{"branchName":"feat","fromOID":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","toOID":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}"#
+        )
+        #expect(try JSONDecoder().decode(GitDataPlaneError.self, from: JSONEncoder().encode(notUndone)) == notUndone)
+        #expect(throws: DecodingError.self) {
+            _ = try JSONDecoder().decode(
+                GitDataPlaneError.self, from: Data(#"{"branchMoveNotUndone":{"branchName":"feat"}}"#.utf8))
+        }
+    }
+
     @Test("branch deletion payloads keep explicit stable wire tags")
     func branchDeletionPayloadsKeepExplicitStableWireTags() throws {
         let repositoryPath = URL(fileURLWithPath: "/tmp/repository")
@@ -252,7 +279,8 @@ struct GitWireEnumSnapshotTests {
                 "sourceHeadUnavailable",
                 "invalidDestinationPath", "destinationParentMissing", "destinationExists", "overlappingRoots",
                 "linkedWorktreeNameInUse", "invalidBranchName", "branchNotFound", "branchAlreadyExists",
-                "branchNotAtCapturedHead", "branchCheckedOut", "fileProviderManagedLocation", "datalessContent",
+                "branchMoved", "invalidStart", "fastForwardNotDescendant", "invalidUpstream",
+                "fileProviderManagedLocation", "datalessContent",
             ])
         #expect(
             GitWorktreeForkSourceRaceReason.allCases.map(\.rawValue) == [
@@ -261,6 +289,7 @@ struct GitWireEnumSnapshotTests {
             ])
         #expect(
             GitWorktreeForkMaterialization.allCases.map(\.rawValue) == ["copyOnWrite", "changesOnly"])
+        #expect(GitForkSourceState.allCases.map(\.rawValue) == ["asIs", "reset"])
         #expect(
             GitWorktreeWorkingStateRefusalReason.allCases.map(\.rawValue) == [
                 "conflicts", "operationInProgress", "submoduleChanged", "nestedRepository",
@@ -281,7 +310,7 @@ struct GitWireEnumSnapshotTests {
         #expect(
             GitWorktreeForkResidueKind.allCases.map(\.rawValue) == [
                 "destinationContent", "linkedWorktreeAdministration", "nestedAdministration", "createdBranch",
-                "temporaryArtifact", "lockFile",
+                "temporaryArtifact", "lockFile", "branchMoveNotUndone",
             ])
     }
 }

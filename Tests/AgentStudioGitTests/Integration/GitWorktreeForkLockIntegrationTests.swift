@@ -164,7 +164,7 @@ struct GitWorktreeForkLockIntegrationTests {
             let failure = await Self.forkFailure(
                 fixture.request(
                     destination: destination,
-                    mode: .newBranch(name: branchName),
+                    mode: .newBranch(name: branchName, start: .sourceHead, upstream: nil),
                     materialization: mode.materialization))
 
             // Assert
@@ -211,7 +211,7 @@ struct GitWorktreeForkLockIntegrationTests {
         // Act
         let failure = await Self.forkFailure(
             client,
-            fixture.request(destination: destination, mode: .newBranch(name: "fork-index")))
+            fixture.request(destination: destination, mode: .newBranch(name: "fork-index", start: .sourceHead, upstream: nil)))
 
         // Assert
         if case .cleanupIncomplete(let primary, let residue) = failure {
@@ -271,7 +271,7 @@ struct GitWorktreeForkLockIntegrationTests {
         // Act
         let failure = await Self.forkFailure(
             client,
-            fixture.request(destination: destination, mode: .newBranch(name: "fork-index-eacces")))
+            fixture.request(destination: destination, mode: .newBranch(name: "fork-index-eacces", start: .sourceHead, upstream: nil)))
 
         // Assert
         #expect(failure == .gitFailure(.permissionDenied(path: administration)))
@@ -300,7 +300,7 @@ struct GitWorktreeForkLockIntegrationTests {
             _ = try await client.forkWorktree(
                 fixture.request(
                     destination: destination,
-                    mode: .newBranch(name: branchName),
+                    mode: .newBranch(name: branchName, start: .sourceHead, upstream: nil),
                     materialization: forkCase.materialization))
 
             // Assert
@@ -350,7 +350,7 @@ struct GitWorktreeForkLockIntegrationTests {
         // Act
         let failure = await Self.forkFailure(
             client,
-            fixture.request(destination: destination, mode: .newBranch(name: branchName)))
+            fixture.request(destination: destination, mode: .newBranch(name: branchName, start: .sourceHead, upstream: nil)))
 
         // Assert
         #expect(
@@ -405,7 +405,7 @@ struct GitWorktreeForkLockIntegrationTests {
         // Act
         let failure = await Self.forkFailure(
             client,
-            fixture.request(destination: destination, mode: .newBranch(name: branchName)))
+            fixture.request(destination: destination, mode: .newBranch(name: branchName, start: .sourceHead, upstream: nil)))
         _ = referenceDirectory.path.withCString { chmod($0, originalMode) }
 
         // Assert
@@ -459,7 +459,7 @@ struct GitWorktreeForkLockIntegrationTests {
         // Act
         let failure = await Self.forkFailure(
             client,
-            fixture.request(destination: fixture.destination(branchName), mode: .newBranch(name: branchName)))
+            fixture.request(destination: fixture.destination(branchName), mode: .newBranch(name: branchName, start: .sourceHead, upstream: nil)))
         _ = referenceDirectory.path.withCString { chmod($0, originalMode) }
 
         // Assert
@@ -484,7 +484,7 @@ struct GitWorktreeForkLockIntegrationTests {
         let lockPath = commonDirectory.appending(path: "\(referenceName).lock").standardizedFileURL
         let destination = fixture.destination(branchName)
         let faults = WorktreeForkFaultInjector { point throws(GitWorktreeForkError) in
-            guard point == .afterIdentityCreated else {
+            guard point == .afterBranchAttached else {
                 return
             }
             // Preserve the inode libgit2 acquired and committed at the lock path to model a survivor at final validation.
@@ -504,7 +504,7 @@ struct GitWorktreeForkLockIntegrationTests {
         // Act
         let failure = await Self.forkFailure(
             client,
-            fixture.request(destination: destination, mode: .newBranch(name: branchName)))
+            fixture.request(destination: destination, mode: .newBranch(name: branchName, start: .sourceHead, upstream: nil)))
 
         // Assert
         #expect(
@@ -549,7 +549,7 @@ struct GitWorktreeForkLockIntegrationTests {
         // Act
         let failure = await Self.forkFailure(
             client,
-            fixture.request(destination: destination, mode: .newBranch(name: branchName)))
+            fixture.request(destination: destination, mode: .newBranch(name: branchName, start: .sourceHead, upstream: nil)))
 
         // Assert
         #expect(failure == .rejected(reason: .branchAlreadyExists))

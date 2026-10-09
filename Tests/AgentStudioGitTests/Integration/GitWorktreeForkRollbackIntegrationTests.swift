@@ -110,8 +110,11 @@ struct GitWorktreeForkRollbackIntegrationTests {
             .afterDirectoryMetadataApplied,
             .afterIndexesBuilt,
             .afterValidation,
+            .beforeBranchAttach,
+            .afterBranchAttached,
+            .afterAttachValidation,
         ],
-        [GitForkWorktreeMode.newBranch(name: "fork"), .detached]
+        [GitForkWorktreeMode.newBranch(name: "fork", start: .sourceHead, upstream: nil), .detached(start: .sourceHead)]
     )
     func failureAfterEachPhaseRollsBack(point: WorktreeForkFaultPoint, mode: GitForkWorktreeMode) async throws {
         // Arrange
@@ -135,6 +138,52 @@ struct GitWorktreeForkRollbackIntegrationTests {
         #expect(!GitWorktreeForkFileProbe.exists(fixture.linkedWorktreeAdministration()))
         #expect(try fixture.branchNames() == branchesBefore)
         #expect(try fixture.git.run("worktree", "list", "--porcelain") == worktreesBefore)
+    }
+
+    @Test("a failure with HEAD attached under the branch lock commits nothing and releases the lock")
+    func failureWithHeadAttachedCommitsNothing() async throws {
+        // Arrange
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-rollback-head-attached")
+        defer { fixture.remove() }
+        let base = try fixture.blobID("HEAD", at: fixture.source)
+        try fixture.git.run("branch", "behind")
+        try fixture.write("tip.txt", "tip\n")
+        try fixture.git.run("add", "tip.txt")
+        try fixture.git.run("commit", "-qm", "tip")
+        let tip = try fixture.blobID("HEAD", at: fixture.source)
+        let referencesBefore = try fixture.git.run("for-each-ref")
+        let behindReflogBefore = try fixture.git.run("reflog", "--format=%gs", "behind")
+        let worktreesBefore = try fixture.git.run("worktree", "list", "--porcelain")
+        let targets: [(branchName: String, mode: GitForkWorktreeMode)] = [
+            ("fork", .newBranch(name: "fork", start: .sourceHead, upstream: nil)),
+            ("behind", .existingBranch(name: "behind", expectedTip: base, fastForwardTo: tip)),
+        ]
+
+        for target in targets {
+            let referenceName = "refs/heads/\(target.branchName)"
+            let reached = OSAllocatedUnfairLock(initialState: false)
+            let faults = WorktreeForkFaultInjector { point throws(GitWorktreeForkError) in
+                if point == .afterBranchHeadAttached(referenceName: referenceName) {
+                    reached.withLock { $0 = true }
+                    throw Self.injected
+                }
+            }
+            let client = LibGit2AgentStudioGitLocalClient(
+                worktreeForkWriter: LibGit2WorktreeForkWriter(faults: faults))
+
+            // Act
+            let failure = await forkFailure(client, fixture.request(mode: target.mode))
+
+            // Assert: the injected error, not cleanup residue, so no lock this fork took remains.
+            #expect(reached.withLock { $0 }, "\(referenceName)")
+            #expect(failure == Self.injected, "\(referenceName)")
+            #expect(!GitWorktreeForkFileProbe.exists(fixture.source.appending(path: ".git/\(referenceName).lock")))
+            #expect(!GitWorktreeForkFileProbe.exists(fixture.destination()))
+            #expect(!GitWorktreeForkFileProbe.exists(fixture.linkedWorktreeAdministration()))
+            #expect(try fixture.git.run("for-each-ref") == referencesBefore, "\(referenceName)")
+            #expect(try fixture.git.run("reflog", "--format=%gs", "behind") == behindReflogBefore)
+            #expect(try fixture.git.run("worktree", "list", "--porcelain") == worktreesBefore)
+        }
     }
 
     @Test(
