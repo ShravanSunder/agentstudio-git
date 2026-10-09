@@ -153,9 +153,11 @@ identity.
 
 Fork-only failures live in the new `GitWorktreeForkError` union. Existing
 libgit2/Git failures are wrapped as a payload rather than adding cases to
-`GitDataPlaneError`. The creation follow-up adds exactly two cases there,
+`GitDataPlaneError`. The creation follow-up adds exactly three cases there:
 `branchMoved` and `branchCheckedOut(worktreePath:)`, because the plain checkout
-now refuses through the same attach.
+now refuses through the same attach, and
+`branchMoveNotUndone(branchName:fromOID:toOID:)`, because a failed plain
+checkout reports a fast-forward its own undo could not confirm (D22).
 
 The existing `createWorktree` method and writer path do not delegate through
 fork logic. They share `LibGit2BranchAttach` and `LibGit2BranchUpstreamWriter`,

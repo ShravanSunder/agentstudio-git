@@ -179,7 +179,9 @@ public enum GitWorktreeForkResidueKind: String, Codable, CaseIterable, Sendable 
     case createdBranch
     case temporaryArtifact
     case lockFile
-    /// A fast-forward the fork made whose undo failed; `location` is the full ref name, left at the new tip.
+    /// A fast-forward the fork attempted that its own undo could not confirm moved back; `location` is the full ref
+    /// name. The undo failed, its result could not be read, or another writer had moved the branch, even back to the
+    /// old tip, and the undo left it alone. The ref may hold any of those values: read it for the current tip.
     case branchMoveNotUndone
 }
 
