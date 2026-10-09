@@ -7,6 +7,8 @@ enum WorktreeCreateFaultPoint: Hashable, Sendable {
     /// The branch ref is committed and the worktree is on it; a new branch's upstream is not written yet. A fault
     /// here also stands for an attach whose commit reported failure after its ref landed.
     case afterBranchAttached
+    /// The rollback's undo of a fast-forward has committed and has not yet re-read the branch to confirm it.
+    case afterBranchMoveUndoCommitted
 }
 
 /// Production passes `.production`.

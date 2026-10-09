@@ -9,6 +9,8 @@ import Foundation
 /// directory, so a commit error can follow an undo that landed; the ref is re-read either way.
 struct LibGit2BranchMoveUndo {
     let lockObserver: LibGit2BranchAttachLockObserver
+    /// Runs after the undo's commit and before the re-read that confirms it; a fault seam for tests.
+    var afterCommit: () -> Void = {}
 
     /// True only when the branch is verified back at `fromOID`.
     func undo(
@@ -47,6 +49,7 @@ struct LibGit2BranchMoveUndo {
         if git_transaction_commit(transaction) < 0 {
             lockObserver.failed([referenceLockFact])
         }
+        afterCommit()
         return referenceTip(referenceName, repository: repository) == fromOID.lowercased()
     }
 

@@ -74,8 +74,8 @@ public enum GitWorktreeCreateMode: Equatable, Hashable, Sendable {
     /// An existing local branch no worktree holds whose tip, read under its ref lock, is `expectedTip` (else
     /// `branchMoved`). With `fastForwardTo`, the ref moves to that descendant commit as the last step, after the
     /// checkout is validated. If that step reports failure after the ref landed, the call moves it back to
-    /// `expectedTip` under the ref lock before it fails, unless another writer moved it meanwhile. The failure
-    /// does not yet say which happened, so a caller re-reads the branch rather than assume it is at `expectedTip`.
+    /// `expectedTip` under the ref lock before it fails, unless another writer moved it meanwhile. A move it cannot
+    /// confirm undone fails with `branchMoveNotUndone` instead of the call's own error.
     case existingBranch(name: String, expectedTip: String, fastForwardTo: String?)
     case detached(startPoint: GitRevisionTarget)
 }

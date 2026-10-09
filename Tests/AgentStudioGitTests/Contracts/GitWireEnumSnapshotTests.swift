@@ -52,6 +52,18 @@ struct GitWireEnumSnapshotTests {
         #expect(throws: DecodingError.self) {
             _ = try JSONDecoder().decode(GitDataPlaneError.self, from: Data(#"{"branchCheckedOut":{}}"#.utf8))
         }
+        let notUndone = GitDataPlaneError.branchMoveNotUndone(
+            branchName: "feat", fromOID: String(repeating: "a", count: 40), toOID: String(repeating: "b", count: 40))
+        try expectWireSnapshot(
+            notUndone,
+            expected:
+                #"{"branchMoveNotUndone":{"branchName":"feat","fromOID":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","toOID":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}"#
+        )
+        #expect(try JSONDecoder().decode(GitDataPlaneError.self, from: JSONEncoder().encode(notUndone)) == notUndone)
+        #expect(throws: DecodingError.self) {
+            _ = try JSONDecoder().decode(
+                GitDataPlaneError.self, from: Data(#"{"branchMoveNotUndone":{"branchName":"feat"}}"#.utf8))
+        }
     }
 
     @Test("branch deletion payloads keep explicit stable wire tags")

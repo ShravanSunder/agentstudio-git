@@ -87,10 +87,12 @@ upstream write. A failure before the attach moves no branch. The attach's
 commit can report failure after the ref landed (below), so the call re-reads
 the ref: a created branch is removed as after a failed upstream write, and a
 fast-forward is moved back to `expectedTip` under the ref lock only while the
-branch is still at `fastForwardTo`. The call fails with its own error either
-way. Provisional, pending the owner's decision on how to report it: a move the
-rollback cannot confirm undone (another writer moved the branch meanwhile) is
-not reported, so a caller re-reads the branch after a failure. A detached checkout
+branch is still at `fastForwardTo`. When a re-read confirms the branch back at
+`expectedTip`, the call fails with its own error. Otherwise (the undo failed,
+its result could not be read, or another writer moved the branch, a move the
+undo leaves in place) the call fails with
+`GitDataPlaneError.branchMoveNotUndone(branchName:fromOID:toOID:)` instead:
+the branch and the attempted transition, not a verified final tip (D22). A detached checkout
 creates no branch at all. A branch held by another worktree fails
 `GitDataPlaneError.branchCheckedOut(worktreePath:)`.
 Both tips are full object identifiers; decoding rejects anything else, so an
@@ -508,7 +510,7 @@ contract identities:
 | V-06 | U-09 | Unit coverage for entry policy and stable report counts, skipped entries, and normalized entries plus integration fixtures for FIFO recreation, socket skipping, metadata normalization, unsupported special entries, and dataless clone failure without source materialization where available. |
 | V-07 | U-10 | Same-repository concurrent mutation integration proves non-interleaving while an unrelated repository can progress; executor responsiveness is observed independently of wall-clock sleeps. |
 | V-08 | U-13 | Representative ordinary, 50,000-file, and prepared-cache benchmarks report preflight, planning, materialization, index, validation, first-status, and physical-allocation phases without replacing behavioral tests. |
-| V-09 | U-03 (D13–D20) | Real repositories with backdated sources: a dirty source reset onto another branch (start's files and index, `HEAD` and snapshot on the branch, no untracked or staged-only strays, included ignored files and a nested repository with source timestamps, unchanged tracked files still clones, a modified one rewritten, the start's content over an included ignored path); submodules changed, new and removed; an unchanged LFS file kept and a changed one filled; a sparse source full; a barrier seam where another worktree takes the branch (`branchCheckedOut`, rolled back); a moved tip (`branchMoved`); a fast-forward undone after each later phase and a blocked undo reported as residue; a ref commit that fails after its rename (fsync on, an unreadable `refs/heads`) moved back in both creators, and a plain-checkout undo another writer blocks leaving that writer's tip with the call's own error (provisional); unsearchable rebase state failing both creators; invalid upstream names refused before mutation; upstream with `push.default=simple`; the plain checkout's same shapes. |
+| V-09 | U-03 (D13–D20) | Real repositories with backdated sources: a dirty source reset onto another branch (start's files and index, `HEAD` and snapshot on the branch, no untracked or staged-only strays, included ignored files and a nested repository with source timestamps, unchanged tracked files still clones, a modified one rewritten, the start's content over an included ignored path); submodules changed, new and removed; an unchanged LFS file kept and a changed one filled; a sparse source full; a barrier seam where another worktree takes the branch (`branchCheckedOut`, rolled back); a moved tip (`branchMoved`); a fast-forward undone after each later phase and a blocked undo reported as residue; a ref commit that fails after its rename (fsync on, an unreadable `refs/heads`) moved back in both creators, and plain-checkout undos that fail, cannot be read back, or meet another writer's move failing `branchMoveNotUndone` (that writer's tip kept); unsearchable rebase state failing both creators; invalid upstream names refused before mutation; upstream with `push.default=simple`; the plain checkout's same shapes. |
 
 ## Negative space
 

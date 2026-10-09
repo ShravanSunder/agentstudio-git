@@ -161,8 +161,8 @@ The existing `createWorktree` method and writer path do not delegate through
 fork logic. They share `LibGit2BranchAttach` and `LibGit2BranchUpstreamWriter`,
 which run after the checkout as its last fallible steps, and the rollback
 primitives `LibGit2CreatedBranchCompensation` and `LibGit2BranchMoveUndo`, which
-undo whatever the attach landed (how create reports an undo it cannot confirm
-is pending; see the plain-checkout bullet). An unavailable CoW platform stays
+undo whatever the attach landed (an undo create cannot confirm fails the call
+with `branchMoveNotUndone`; see the plain-checkout bullet). An unavailable CoW platform stays
 irrelevant to normal creation.
 
 ### Repository mutation submission
@@ -558,10 +558,13 @@ realizes it.
   `WorktreeCreateRollback` prunes the worktree, removes a created branch
   through the same `LibGit2CreatedBranchCompensation` (silently: create has no
   residue channel), and moves a fast-forward back through
-  `LibGit2BranchMoveUndo`. The call fails with its own error either way.
-  Provisional: whether that undo was confirmed is not reported yet; the owner
-  will choose the reporting (a typed error, or the existing error with an
-  explanation). `plan` also checks the upstream with
+  `LibGit2BranchMoveUndo`, which re-reads the branch after its own commit.
+  `rollback` returns `GitDataPlaneError.branchMoveNotUndone(branchName:fromOID:toOID:)`
+  unless that re-read confirms the branch at `from`, and `createWorktree` throws
+  it in place of its own error (owner decision D22): an undo that failed, could
+  not be read back, or found another writer's move (left in place) is never
+  silent. The `afterBranchMoveUndoCommitted` seam sits between the undo's commit
+  and that re-read. `plan` also checks the upstream with
   `LibGit2BranchUpstreamWriter.isValid`, the fork planner's own rule. Writing
   the upstream before the branch exists was
   rejected: a failure would leave a `branch.<name>` section that a later branch

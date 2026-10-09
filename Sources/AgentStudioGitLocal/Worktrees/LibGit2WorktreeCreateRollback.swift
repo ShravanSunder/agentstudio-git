@@ -1,3 +1,4 @@
+import AgentStudioGitContracts
 import CLibGit2Local
 import Foundation
 
@@ -9,7 +10,7 @@ struct WorktreeCreateRollback {
     /// A new branch the attach created, until its upstream write succeeds; removed only at that commit.
     var createdBranch: (name: String, commit: String)?
     /// An existing branch the attach fast-forwarded. Its commit can report failure after the ref landed, so a
-    /// failed call tries to move it back to `from` under its ref lock.
+    /// failed call moves it back to `from` under its ref lock, only while it is still at `to`.
     var movedBranch: (name: String, from: String, to: String)?
     var createdWorktree = false
     private var isArmed = true
@@ -23,15 +24,20 @@ struct WorktreeCreateRollback {
         isArmed = false
     }
 
-    /// Removes what the failed call made and tries to move a fast-forwarded branch back.
-    func rollback(runtime: LibGit2Runtime) {
+    /// Removes what the failed call made and moves a fast-forwarded branch back. Returns `branchMoveNotUndone`, which
+    /// replaces the call's own error, unless a re-read confirms the branch is back at `from`: an undo that failed,
+    /// could not be read back, or found another writer's move (left in place) is never silent.
+    func rollback(runtime: LibGit2Runtime, faults: WorktreeCreateFaultInjector) -> GitDataPlaneError? {
         guard isArmed else {
-            return
+            return nil
+        }
+        let moveNotUndone = movedBranch.map {
+            GitDataPlaneError.branchMoveNotUndone(branchName: $0.name, fromOID: $0.from, toOID: $0.to)
         }
         do {
             try runtime.ensureInitialized()
         } catch {
-            return
+            return moveNotUndone
         }
 
         var repository: OpaquePointer?
@@ -39,7 +45,7 @@ struct WorktreeCreateRollback {
             git_repository_open_ext(&repository, pathPointer, 0, nil)
         }
         guard openResult >= 0, let repository else {
-            return
+            return moveNotUndone
         }
         defer { git_repository_free(repository) }
 
@@ -53,12 +59,14 @@ struct WorktreeCreateRollback {
             _ = LibGit2CreatedBranchCompensation(repositoryPath: repositoryPath, runtime: runtime)
                 .remove(branchName: createdBranch.name, createdAt: createdBranch.commit)
         }
-        if let movedBranch {
-            // Provisional: an undo that cannot confirm the branch is back at `from` is not reported yet. The call
-            // fails with its own error either way, until the owner decides how an unconfirmed restore is reported.
-            _ = LibGit2BranchMoveUndo(lockObserver: .untracked).undo(
-                "refs/heads/\(movedBranch.name)", from: movedBranch.from, to: movedBranch.to, repository: repository)
+        guard let movedBranch else {
+            return nil
         }
+        let undo = LibGit2BranchMoveUndo(
+            lockObserver: .untracked, afterCommit: { try? faults.reach(.afterBranchMoveUndoCommitted) })
+        let restored = undo.undo(
+            "refs/heads/\(movedBranch.name)", from: movedBranch.from, to: movedBranch.to, repository: repository)
+        return restored ? nil : moveNotUndone
     }
 }
 
